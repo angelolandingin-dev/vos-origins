@@ -2,6 +2,8 @@
 //! credentials stay in the CLI/OS store, never in state/logs.
 
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::github::models::AuthStatus;
@@ -83,8 +85,17 @@ fn extract_scopes(output: &str) -> Vec<String> {
         .collect()
 }
 
-/// `GH_TOKEN` / `GITHUB_TOKEN` first, then `gh auth token`.
-pub fn auth_token() -> Option<String> {
+/// `gh auth token` output is cached for [`TOKEN_TTL`] so a burst of commands
+/// (e.g. tab switches) spawns at most one `gh` process. `GH_TOKEN` /
+/// `GITHUB_TOKEN` always win and bypass the cache.
+const TOKEN_TTL: Duration = Duration::from_secs(300);
+
+fn token_cache() -> &'static Mutex<(Option<String>, Option<Instant>)> {
+    static CACHE: OnceLock<Mutex<(Option<String>, Option<Instant>)>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new((None, None)))
+}
+
+fn env_token() -> Option<String> {
     for key in ["GH_TOKEN", "GITHUB_TOKEN"] {
         if let Ok(value) = std::env::var(key) {
             let trimmed = value.trim();
@@ -93,6 +104,15 @@ pub fn auth_token() -> Option<String> {
             }
         }
     }
+    None
+}
+
+/// `GH_TOKEN` / `GITHUB_TOKEN` first, then `gh auth token` (cached).
+pub fn auth_token() -> Option<String> {
+    auth_token_with_provider(&probe_gh_token)
+}
+
+fn probe_gh_token() -> Option<String> {
     let out = Command::new("gh")
         .args(["auth", "token", "--hostname", DEFAULT_HOST])
         .output()
@@ -105,6 +125,37 @@ pub fn auth_token() -> Option<String> {
         None
     } else {
         Some(token)
+    }
+}
+
+/// Token resolution with an injectable `gh` seam (tests count provider
+/// calls to prove the cache holds across commands).
+pub fn auth_token_with_provider(provider: &dyn Fn() -> Option<String>) -> Option<String> {
+    if let Some(token) = env_token() {
+        return Some(token);
+    }
+    if let Ok(cached) = token_cache().lock() {
+        if let (Some(token), Some(at)) = (cached.0.clone(), cached.1) {
+            if at.elapsed() < TOKEN_TTL {
+                return Some(token);
+            }
+        }
+    }
+    let fresh = provider()?;
+    let fresh = fresh.trim().to_string();
+    if fresh.is_empty() {
+        return None;
+    }
+    if let Ok(mut cached) = token_cache().lock() {
+        *cached = (Some(fresh.clone()), Some(Instant::now()));
+    }
+    Some(fresh)
+}
+
+#[cfg(test)]
+pub fn clear_token_cache_for_tests() {
+    if let Ok(mut cached) = token_cache().lock() {
+        *cached = (None, None);
     }
 }
 
@@ -344,4 +395,83 @@ pub fn url_is_allowlisted(url: &str) -> bool {
         || host.ends_with(".github.com")
         || host == "cli.github.com"
         || host == "docs.github.com"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Env is process-global: save, scrub, run, restore in one test so no
+    /// parallel test can observe a half-set state.
+    struct EnvGuard {
+        gh_token: Option<String>,
+        github_token: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn scrub() -> Self {
+            let guard = Self {
+                gh_token: std::env::var("GH_TOKEN").ok(),
+                github_token: std::env::var("GITHUB_TOKEN").ok(),
+            };
+            std::env::remove_var("GH_TOKEN");
+            std::env::remove_var("GITHUB_TOKEN");
+            clear_token_cache_for_tests();
+            guard
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.gh_token.as_deref() {
+                Some(value) => std::env::set_var("GH_TOKEN", value),
+                None => std::env::remove_var("GH_TOKEN"),
+            }
+            match self.github_token.as_deref() {
+                Some(value) => std::env::set_var("GITHUB_TOKEN", value),
+                None => std::env::remove_var("GITHUB_TOKEN"),
+            }
+            clear_token_cache_for_tests();
+        }
+    }
+
+    #[test]
+    fn token_provider_runs_once_and_env_wins() {
+        let _env = EnvGuard::scrub();
+        let calls = AtomicU64::new(0);
+        let provider = || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Some("cached-token".to_string())
+        };
+        assert_eq!(
+            auth_token_with_provider(&provider),
+            Some("cached-token".to_string())
+        );
+        assert_eq!(
+            auth_token_with_provider(&provider),
+            Some("cached-token".to_string())
+        );
+        assert_eq!(
+            auth_token_with_provider(&provider),
+            Some("cached-token".to_string())
+        );
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "the `gh` seam runs once; later commands reuse the cached token"
+        );
+
+        // `GH_TOKEN` bypasses the cache and never touches the provider.
+        std::env::set_var("GH_TOKEN", "env-token");
+        assert_eq!(
+            auth_token_with_provider(&provider),
+            Some("env-token".to_string())
+        );
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "env tokens short-circuit before the provider"
+        );
+    }
 }

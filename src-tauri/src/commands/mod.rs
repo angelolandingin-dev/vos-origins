@@ -11,6 +11,8 @@ pub mod workflows;
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::fixtures::FixtureWorld;
 use crate::AppState;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 pub(crate) fn read_world<T>(
     state: &AppState,
@@ -32,4 +34,110 @@ pub(crate) fn write_world<T>(
             .with_remedy("Restart the application; report this if it recurs.")
     })?;
     f(&mut world)
+}
+
+/// Cache-first live read with in-flight coalescing: concurrent commands that
+/// compute the same `key` share one `compute` call (one clone+`gh` round),
+/// and every result lands in the 90s response cache for later tab visits.
+pub(crate) fn cached_json<T>(
+    state: &AppState,
+    key: &str,
+    compute: impl FnOnce() -> AppResult<T>,
+) -> AppResult<T>
+where
+    T: Serialize + DeserializeOwned,
+{
+    if let Some(hit) = state.cache.get(key) {
+        if let Ok(value) = serde_json::from_str::<T>(&hit) {
+            return Ok(value);
+        }
+    }
+    let slot = state.singleflight.lock_for(key);
+    let _guard = slot.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(hit) = state.cache.get(key) {
+        if let Ok(value) = serde_json::from_str::<T>(&hit) {
+            state.singleflight.remove_if_unused(key);
+            return Ok(value);
+        }
+    }
+    let outcome = compute();
+    state.singleflight.remove_if_unused(key);
+    let value = outcome?;
+    if let Ok(encoded) = serde_json::to_string(&value) {
+        state.cache.put(key, encoded);
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn cache_hit_skips_compute() {
+        let state = AppState::new();
+        let calls = AtomicU64::new(0);
+        let first: String = cached_json(&state, "k::one", || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok("value".to_string())
+        })
+        .expect("compute");
+        assert_eq!(first, "value");
+        let second: String = cached_json(&state, "k::one", || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok("other".to_string())
+        })
+        .expect("cached");
+        assert_eq!(second, "value", "second call hits the cache");
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn concurrent_identical_calls_share_one_compute() {
+        let state = std::sync::Arc::new(AppState::new());
+        let calls = std::sync::Arc::new(AtomicU64::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let state = state.clone();
+            let calls = calls.clone();
+            handles.push(std::thread::spawn(move || {
+                // Slow compute so all threads overlap inside the slot.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                cached_json(&state, "k::shared", || {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    Ok("shared".to_string())
+                })
+            }));
+        }
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(handle.join().expect("thread").expect("value"));
+        }
+        assert!(results.iter().all(|value| value == "shared"));
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "eight concurrent identical requests share one compute"
+        );
+        assert_eq!(
+            state.singleflight.len_for_tests(),
+            0,
+            "slots are released after use"
+        );
+    }
+
+    #[test]
+    fn errors_are_not_cached() {
+        let state = AppState::new();
+        let calls = AtomicU64::new(0);
+        for _ in 0..2 {
+            let failed: AppResult<String> = cached_json(&state, "k::err", || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                Err(AppError::invalid_request("nope"))
+            });
+            assert!(failed.is_err());
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
 }

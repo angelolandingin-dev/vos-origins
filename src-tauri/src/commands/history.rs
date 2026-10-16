@@ -8,7 +8,7 @@ use crate::services::engine::github_ops::RealGitHubOps;
 use crate::services::live_read;
 use crate::AppState;
 
-use super::read_world;
+use super::{cached_json, read_world};
 
 fn live_token() -> AppResult<String> {
     crate::github::gh_cli::auth_token().ok_or_else(|| {
@@ -18,6 +18,19 @@ fn live_token() -> AppResult<String> {
         )
         .with_remedy("Run `gh auth login --hostname github.com` or set GH_TOKEN, then retry.")
     })
+}
+
+pub(crate) fn history_cache_key(
+    mode: &str,
+    target_branch: Option<&str>,
+    subsystem_id: Option<&str>,
+    limit: u32,
+) -> String {
+    format!(
+        "{mode}::history::{}::{}::{limit}",
+        target_branch.unwrap_or("<default>"),
+        subsystem_id.unwrap_or("<all>")
+    )
 }
 
 #[tauri::command]
@@ -46,29 +59,41 @@ pub async fn list_integration_history(
     subsystem_id: Option<String>,
     limit: Option<u32>,
 ) -> AppResult<IntegrationHistory> {
-    if live_read::use_fixtures() {
-        return read_world(&state, |world| {
-            state.adapter.integration_history(
-                world,
-                target_branch.as_deref(),
-                subsystem_id.as_deref(),
-                limit.unwrap_or(50),
-            )
-        });
-    }
-    let registry = live_read::load_live_registry()?;
-    let token = live_token()?;
-    let (target_dir, mut target_cleanup) =
-        live_read::resolve_target_checkout(&registry.main_repository, Some(&token))?;
-    let github = RealGitHubOps::new(token);
-    let result = live_read::integration_history_live(
-        &target_dir,
-        &registry,
-        &github,
+    let capped = limit.unwrap_or(50);
+    let mode = if live_read::use_fixtures() {
+        "fixture"
+    } else {
+        "live"
+    };
+    let key = history_cache_key(
+        mode,
         target_branch.as_deref(),
         subsystem_id.as_deref(),
-        limit.unwrap_or(50),
+        capped,
     );
-    live_read::cleanup_dir(&mut target_cleanup);
-    result
+    cached_json(&state, &key, || {
+        if live_read::use_fixtures() {
+            return read_world(&state, |world| {
+                state.adapter.integration_history(
+                    world,
+                    target_branch.as_deref(),
+                    subsystem_id.as_deref(),
+                    capped,
+                )
+            });
+        }
+        let registry = live_read::load_live_registry()?;
+        let token = live_token()?;
+        let (target_dir, _) =
+            live_read::resolve_target_checkout(&registry.main_repository, Some(&token))?;
+        let github = RealGitHubOps::new(token);
+        live_read::integration_history_live(
+            &target_dir,
+            &registry,
+            &github,
+            target_branch.as_deref(),
+            subsystem_id.as_deref(),
+            capped,
+        )
+    })
 }

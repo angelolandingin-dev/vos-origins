@@ -12,12 +12,13 @@ use std::sync::Mutex;
 
 use fixtures::FixtureWorld;
 use github::api::GitHubAdapter;
-use services::cache::Cache;
+use services::cache::{Cache, Singleflight};
 
 /// Disposable fixture world + response cache; never authoritative.
 pub struct AppState {
     pub world: Mutex<FixtureWorld>,
     pub cache: Cache,
+    pub singleflight: Singleflight,
     pub adapter: GitHubAdapter,
 }
 
@@ -26,6 +27,7 @@ impl AppState {
         Self {
             world: Mutex::new(FixtureWorld::build()),
             cache: Cache::new(256),
+            singleflight: Singleflight::new(),
             adapter: GitHubAdapter::default(),
         }
     }
@@ -45,6 +47,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::auth::get_auth_status,
             commands::registry::list_subsystems,
+            commands::registry::get_registry,
+            commands::registry::save_registry,
             commands::registry::list_target_branches,
             commands::registry::submit_subsystem_registration,
             commands::commits::get_subsystem_commits,

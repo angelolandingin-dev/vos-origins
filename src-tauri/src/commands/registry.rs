@@ -1,5 +1,6 @@
 //! Registry commands: live (registry-backed) by default, fixtures on opt-in.
 
+use serde::Serialize;
 use tauri::State;
 
 use crate::error::{AppError, AppResult, ErrorCode};
@@ -9,6 +10,7 @@ use crate::github::models::{
 };
 use crate::services::live_read;
 use crate::services::registration;
+use crate::services::registry::Registry;
 use crate::AppState;
 
 use super::{read_world, write_world};
@@ -113,4 +115,92 @@ fn format_findings(findings: &[crate::github::models::ValidationFinding]) -> Str
         .map(|finding| format!("[{:?}] {} {}", finding.level, finding.code, finding.message))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RegistrySource {
+    Bundled,
+    Override,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistrySnapshot {
+    pub config: Registry,
+    pub source: RegistrySource,
+    pub override_path: String,
+    pub override_exists: bool,
+}
+
+fn registry_snapshot() -> AppResult<RegistrySnapshot> {
+    let override_path = Registry::app_data_override_path();
+    let override_exists = override_path
+        .as_deref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
+    let config = Registry::load(override_path.as_deref())?;
+    Ok(RegistrySnapshot {
+        config,
+        source: if override_exists {
+            RegistrySource::Override
+        } else {
+            RegistrySource::Bundled
+        },
+        override_path: override_path
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "(no user configuration directory is available)".to_string()),
+        override_exists,
+    })
+}
+
+#[tauri::command]
+pub async fn get_registry() -> AppResult<RegistrySnapshot> {
+    registry_snapshot()
+}
+
+/// Validates fail-closed, then writes the tool-local override (`%APPDATA%`). Never touches a repo.
+#[tauri::command]
+pub async fn save_registry(config: Registry) -> AppResult<RegistrySnapshot> {
+    let path = Registry::app_data_override_path().ok_or_else(|| {
+        AppError::new(
+            ErrorCode::Internal,
+            "No user configuration directory is available to save the registry.",
+        )
+        .with_remedy("Set the APPDATA (or XDG_CONFIG_HOME) environment variable and retry.")
+    })?;
+
+    config.validate().map_err(|err| {
+        AppError::invalid_registry(format!("Registry validation failed: {}", err.message))
+            .with_remedy(err.remedy.unwrap_or_else(|| {
+                "Correct the registry entry; the tool refuses to save an unsafe policy.".to_string()
+            }))
+    })?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            AppError::new(
+                ErrorCode::Internal,
+                format!("Could not create {}: {err}", parent.display()),
+            )
+        })?;
+    }
+
+    let json = serde_json::to_string_pretty(&config).map_err(|err| {
+        AppError::new(
+            ErrorCode::Internal,
+            format!("Could not encode the registry: {err}"),
+        )
+    })?;
+
+    std::fs::write(&path, json).map_err(|err| {
+        AppError::new(
+            ErrorCode::Internal,
+            format!("Could not write {}: {err}", path.display()),
+        )
+        .with_remedy("Check permissions for the user configuration directory.")
+    })?;
+
+    registry_snapshot()
 }

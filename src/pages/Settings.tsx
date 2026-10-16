@@ -24,6 +24,7 @@ import {
 } from '../components/ui/primitives';
 import { cx } from '../components/ui/cx';
 import { formatDateTime } from '../components/ui/format';
+import { RegistryEditor } from '../components/RegistryEditor';
 
 /** Settings (spec §3.3). */
 export function Settings() {
@@ -85,9 +86,8 @@ export function Settings() {
       {status?.dataSource === 'fixture' ? (
         <InlineAlert tone="warning" title="Fixture data mode is active">
           Registry, commit, workflow and PR records are fictitious sample data served by the Rust
-          backend. GitHub CLI detection is real. Switching to live data replaces the GitHub adapter
-          in <span className="mono">src-tauri/src/github/api.rs</span> — the commands, types and
-          screens stay the same.
+          backend. GitHub CLI detection is real. Unset{' '}
+          <span className="mono">VOS_USE_FIXTURES</span> to read live Git history and GitHub data.
         </InlineAlert>
       ) : null}
 
@@ -105,9 +105,6 @@ export function Settings() {
                 </KeyValue>
                 <KeyValue label="Registry branch">
                   <span className="mono">{status?.registryBranch}</span>
-                </KeyValue>
-                <KeyValue label="Promotion workflow">
-                  <span className="mono">{status?.workflowFile}</span>
                 </KeyValue>
                 <KeyValue label="Registry entries">{app.subsystems.data?.length ?? 0}</KeyValue>
                 <KeyValue label="Data source">
@@ -137,21 +134,11 @@ export function Settings() {
               >
                 Open main repository
               </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                icon={ExternalLink}
-                onClick={() =>
-                  status?.mainRepository &&
-                  app.openExternal(`https://github.com/${status.mainRepository}/actions`)
-                }
-                disabled={!status?.mainRepository}
-              >
-                Open Actions runs
-              </Button>
             </div>
           </div>
         </Panel>
+
+        <RegistryEditor />
 
         <Panel
           title="GitHub CLI"
@@ -203,9 +190,10 @@ export function Settings() {
               </InlineAlert>
             ) : (
               <InlineAlert tone="success" title={status?.message ?? 'GitHub CLI is ready'}>
-                Read-only queries use <span className="mono">gh api</span>; promotions use{' '}
-                <span className="mono">gh workflow run</span> with explicit argument arrays — never
-                a shell-assembled string.
+                Reads and promotions use <span className="mono">gh api</span> and{' '}
+                <span className="mono">git</span> with explicit argument arrays — never a
+                shell-assembled string. The tool opens an integration PR and adds no files to the
+                target repositories.
               </InlineAlert>
             )}
 
@@ -215,14 +203,16 @@ export function Settings() {
                 Required setup
               </p>
               <pre className="mono mt-2 whitespace-pre-wrap text-2xs leading-relaxed text-slate-300">
-                {`gh auth login --hostname github.com --scopes repo,workflow
+                {`gh auth login --hostname github.com --scopes repo
 gh auth status
-gh workflow list --repo ${status?.mainRepository ?? 'ORG/main-system'}`}
+git --version
+npm --version`}
               </pre>
               <p className="mt-2 flex items-start gap-2 text-2xs text-slate-500">
                 <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                Dispatch requires permission to run workflows on the main repository. If that is
-                missing, the request fails with an actionable error instead of a silent success.
+                Promotion needs a token with write access to the main repository (the{' '}
+                <span className="mono">repo</span> scope). Without it the request fails with an
+                actionable error instead of a silent success.
               </p>
             </div>
           </div>

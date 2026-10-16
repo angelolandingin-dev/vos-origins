@@ -1,7 +1,7 @@
 //! Lockfile regeneration (spec §6.4/§7): never ship a stale lockfile.
 //! Unsupported managers / missing lockfiles report `skipped`; fail closed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,8 +53,32 @@ pub fn manager_for_dir(dir: &Path) -> Option<&'static str> {
     }
 }
 
+/// Resolve a CLI name to a runnable path. Node CLIs are `.cmd` shims on Windows and
+/// `Command::new("npm")` cannot find them (Command does not apply PATHEXT), so search PATH.
+fn resolve_program(program: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if Path::new(program).extension().is_none() {
+            if let Some(paths) = std::env::var_os("PATH") {
+                for dir in std::env::split_paths(&paths) {
+                    for ext in [".exe", ".cmd", ".bat", ".com"] {
+                        let candidate = dir.join(format!("{program}{ext}"));
+                        if candidate.is_file() {
+                            return candidate;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    PathBuf::from(program)
+}
+
 pub fn cli_available(program: &str) -> Option<String> {
-    let output = Command::new(program).arg("--version").output().ok()?;
+    let output = Command::new(resolve_program(program))
+        .arg("--version")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -98,7 +122,7 @@ impl LockfileGenerator for RealLockfileGenerator {
         };
 
         let command_line = format!("{program} {}", args.join(" "));
-        let output = Command::new(program)
+        let output = Command::new(resolve_program(program))
             .args(&args)
             .current_dir(worktree_dir)
             .output();
@@ -193,5 +217,33 @@ mod tests {
         std::fs::write(dir.join("package-lock.json"), "{}").unwrap();
         assert_eq!(manager_for_dir(&dir), Some("npm"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_program_finds_real_clis_and_passes_through_unknown_names() {
+        #[cfg(windows)]
+        {
+            // `cmd` is a real executable on PATH in every Windows environment.
+            let resolved = resolve_program("cmd");
+            assert!(
+                resolved.is_file(),
+                "expected `cmd` to resolve, got {resolved:?}"
+            );
+            // The reported bug: Node CLIs are `.cmd` shims. If Node is installed, the
+            // resolver must find `npm.cmd` (not the extensionless shell script).
+            let npm_cmd_on_path = std::env::var_os("PATH")
+                .map(|paths| std::env::split_paths(&paths).any(|d| d.join("npm.cmd").is_file()))
+                .unwrap_or(false);
+            if npm_cmd_on_path {
+                let npm = resolve_program("npm");
+                assert!(
+                    npm.is_file() && npm.to_string_lossy().to_lowercase().ends_with(".cmd"),
+                    "npm.cmd is on PATH but resolve_program returned {npm:?}"
+                );
+            }
+        }
+        // A name that is not on PATH is returned unchanged.
+        let missing = resolve_program("vos-no-such-cli-xyz");
+        assert_eq!(missing, PathBuf::from("vos-no-such-cli-xyz"));
     }
 }

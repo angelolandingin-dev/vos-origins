@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod checkouts;
 pub mod commit_index;
 pub mod engine;
 pub mod live_read;

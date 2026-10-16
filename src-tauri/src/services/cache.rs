@@ -2,7 +2,7 @@
 //! entries expire and are never persisted (spec §8.4).
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::github::models::{CacheStats, DataSource};
@@ -23,6 +23,54 @@ struct Inner {
 
 pub struct Cache {
     inner: Mutex<Inner>,
+}
+
+/// Coalesces concurrent identical live reads: the first command to miss the
+/// [`Cache`] runs the clone+read while latecomers wait on the same key and
+/// then hit the freshly populated entry, so N simultaneous tab mounts cost
+/// one clone+call instead of N.
+pub struct Singleflight {
+    inner: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+impl Singleflight {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn lock_for(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut slots = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        slots.get(key).cloned().unwrap_or_else(|| {
+            let slot = Arc::new(Mutex::new(()));
+            slots.insert(key.to_string(), slot.clone());
+            slot
+        })
+    }
+
+    /// Drop the slot once nobody is waiting on it, so the map stays small.
+    /// A waiter that arrived before the removal holds its own `Arc` and still
+    /// serializes correctly; newcomers create a fresh slot and hit the cache.
+    pub fn remove_if_unused(&self, key: &str) {
+        let mut slots = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(slot) = slots.get(key) {
+            if Arc::strong_count(slot) <= 2 {
+                slots.remove(key);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn len_for_tests(&self) -> usize {
+        self.inner.lock().map(|slots| slots.len()).unwrap_or(0)
+    }
+}
+
+impl Default for Singleflight {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Cache {

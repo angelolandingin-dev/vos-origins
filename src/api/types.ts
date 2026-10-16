@@ -462,3 +462,46 @@ export interface ApiErrorPayload {
   details: string | null;
   retryable: boolean;
 }
+
+/** Integration semantics per subsystem (mirrors the Rust `SubsystemEntry.integrationPolicy`). */
+export interface RegistryIntegrationPolicy {
+  applicationFiles: string;
+  packageJson: string;
+  lockfiles: string;
+  sharedConfiguration: string;
+  githubWorkflows: string;
+  secretFiles: string;
+}
+
+export interface RegistrySubsystem {
+  id: string;
+  name: string;
+  repository: string;
+  sourceBranch: string;
+  enabled: boolean;
+  pathStrategy: string;
+  dependencyStrategy: string;
+  integrationPolicy: RegistryIntegrationPolicy;
+}
+
+export interface RegistryPromotionPolicy {
+  allowedTargetBranches: string[];
+  allowedTargetBranchPatterns: string[];
+  /** Always true: the engine only ever opens an integration PR, never a direct push. */
+  requirePullRequest: boolean;
+}
+
+/** The tool-local registry (spec §4, relocated into the tool post-pivot). */
+export interface RegistryConfig {
+  mainRepository: string;
+  promotion: RegistryPromotionPolicy;
+  subsystems: RegistrySubsystem[];
+}
+
+export interface RegistrySnapshot {
+  config: RegistryConfig;
+  /** `bundled` = the shipped defaults; `override` = the %APPDATA% file is in use. */
+  source: 'bundled' | 'override';
+  overridePath: string;
+  overrideExists: boolean;
+}

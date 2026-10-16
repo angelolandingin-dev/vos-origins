@@ -15,6 +15,8 @@ import type {
   PromotionDispatchResult,
   PromotionRequest,
   RegistrationResult,
+  RegistryConfig,
+  RegistrySnapshot,
   SubsystemRegistrationRequest,
   SubsystemSummary,
   TargetBranchList,
@@ -152,6 +154,10 @@ export const api = {
     subsystemId: string | null,
     limit: number,
   ) => call<IntegrationHistory>('list_integration_history', { targetBranch, subsystemId, limit }),
+
+  getRegistry: () => call<RegistrySnapshot>('get_registry'),
+
+  saveRegistry: (config: RegistryConfig) => call<RegistrySnapshot>('save_registry', { config }),
 
   getCacheStats: () => call<CacheStats>('get_cache_stats'),
 

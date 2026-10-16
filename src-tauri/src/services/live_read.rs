@@ -137,7 +137,7 @@ fn subsystem_not_found(id: &str, main_repo: &str) -> AppError {
         "'{id}' is not present in the tool registry (main repository {main_repo})."
     ))
     .with_remedy(
-        "Register the subsystem first; the registry lives in the tool (Settings → registry.json).",
+        "Register the subsystem first; the registry override lives at %APPDATA%\\subsystem-integration-manager\\registry.json.",
     )
 }
 
@@ -277,12 +277,14 @@ fn require_allowed_target(registry: &Registry, branch: &str) -> AppResult<String
 }
 
 // ---------------------------------------------------------------------------
-// Checkout resolution (engine clone approach)
+// Checkout resolution (reusable on-disk cache)
 // ---------------------------------------------------------------------------
 
-/// Resolve the target checkout: `VOS_TARGET_REPO_DIR` when set, else a temp
-/// clone of `mainRepository` with an authenticated URL. Returns the dir plus
-/// an optional cleanup dir (temp clone) the caller must delete.
+/// Resolve the target checkout: `VOS_TARGET_REPO_DIR` when set, a local-dir
+/// passthrough when the registry points at one, else the shared checkout
+/// cache (clone once with `--no-tags`, `git fetch` on reuse). The cleanup
+/// dir is always `None`: cached checkouts are owned by the cache and are
+/// never deleted by readers, so repeat visits reuse the same clone.
 pub fn resolve_target_checkout(
     main_repository: &str,
     token: Option<&str>,
@@ -298,29 +300,26 @@ pub fn resolve_target_checkout(
         )
         .with_remedy("Point VOS_TARGET_REPO_DIR at a local clone of the main-system repository, or unset it to clone automatically."));
     }
+    if let Some(local) = crate::services::checkouts::local_dir_for(main_repository) {
+        return Ok((local, None));
+    }
     let token = token
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .ok_or_else(no_token_error)?;
-    let stamp: String = now_rfc3339()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    let dest = std::env::temp_dir().join(format!("vos-target-{stamp}-{}", std::process::id()));
+    let key = crate::services::checkouts::target_key(main_repository);
     let url = crate::services::engine::github_ops::authenticated_remote_url(main_repository, token);
-    git::clone_no_tags(&url, &dest).map_err(|err| {
-        let _ = std::fs::remove_dir_all(&dest);
-        gh_error_to_app(git::sanitize(&err.to_string()))
-    })?;
-    Ok((dest.clone(), Some(dest)))
+    let dir = crate::services::checkouts::ensure_remote_checkout(&key, &url, Some(token))?;
+    Ok((dir, None))
 }
 
-/// Resolve a source checkout for `entry`: a local dir passes through, else a
-/// temp clone of the resolved URL. Returns the dir plus optional cleanup dir.
+/// Resolve a source checkout for `entry`: a local dir passes through, else
+/// the shared checkout cache keyed by subsystem+repository. The cleanup dir
+/// is always `None` (see above).
 pub fn resolve_source_checkout(
     entry: &SubsystemEntry,
     resolver: &dyn Fn(&SubsystemEntry) -> Option<String>,
-    temp_root: &Path,
+    token: Option<&str>,
 ) -> AppResult<(PathBuf, Option<PathBuf>)> {
     let raw = resolver(entry).ok_or_else(|| {
         AppError::new(
@@ -329,29 +328,12 @@ pub fn resolve_source_checkout(
         )
         .with_remedy("Check the registry repository slug for this subsystem.")
     })?;
-    let candidate = PathBuf::from(&raw);
-    if candidate.is_dir() {
-        return Ok((candidate, None));
+    if let Some(local) = crate::services::checkouts::local_dir_for(&raw) {
+        return Ok((local, None));
     }
-    // Local `file://` or plain path that exists.
-    if let Some(stripped) = raw.strip_prefix("file://") {
-        let local = PathBuf::from(stripped);
-        if local.is_dir() {
-            return Ok((local, None));
-        }
-    }
-    let dest = temp_root.join(format!("vos-source-{}-{}", entry.id, std::process::id()));
-    git::clone_no_tags(&raw, &dest).map_err(|err| {
-        let _ = std::fs::remove_dir_all(&dest);
-        gh_error_to_app(git::sanitize(&err.to_string()))
-    })?;
-    Ok((dest.clone(), Some(dest)))
-}
-
-pub fn cleanup_dir(dir: &mut Option<PathBuf>) {
-    if let Some(path) = dir.take() {
-        let _ = std::fs::remove_dir_all(path);
-    }
+    let key = crate::services::checkouts::source_key(entry);
+    let dir = crate::services::checkouts::ensure_remote_checkout(&key, &raw, token)?;
+    Ok((dir, None))
 }
 
 // ---------------------------------------------------------------------------
@@ -2242,5 +2224,111 @@ mod tests {
         assert!(!diff.hunks.is_empty());
         assert!(!diff.truncated);
         assert!(diff.total_lines > 0);
+    }
+
+    #[test]
+    fn cached_statuses_second_call_hits_cache_without_git_or_gh_work() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let (_src, main, a, b, registry) = sandbox_status();
+        let state = crate::AppState::new();
+        let github = StubGitHubOps::new();
+        let shas = vec![a.clone(), b.clone()];
+        let key = crate::commands::commits::statuses_cache_key(
+            "live",
+            "staging",
+            Some("hr-management"),
+            &shas,
+        );
+        let computes = AtomicU64::new(0);
+        let first: Vec<IntegrationStatus> = crate::commands::cached_json(&state, &key, || {
+            computes.fetch_add(1, Ordering::Relaxed);
+            integration_statuses_live(
+                &main,
+                &registry,
+                &github,
+                "staging",
+                Some("hr-management"),
+                &shas,
+            )
+        })
+        .expect("statuses");
+        assert_eq!(first.len(), 2);
+        let second: Vec<IntegrationStatus> = crate::commands::cached_json(&state, &key, || {
+            computes.fetch_add(1, Ordering::Relaxed);
+            integration_statuses_live(
+                &main,
+                &registry,
+                &github,
+                "staging",
+                Some("hr-management"),
+                &shas,
+            )
+        })
+        .expect("cached statuses");
+        assert_eq!(second.len(), 2);
+        assert_eq!(
+            computes.load(Ordering::Relaxed),
+            1,
+            "the second identical read must not recompute"
+        );
+        assert_eq!(
+            github.calls_named("listOpenPullRequests").len(),
+            1,
+            "no extra `gh` work on a cache hit"
+        );
+        let _ = _src;
+    }
+
+    #[test]
+    fn cached_details_second_call_hits_cache_without_git_or_gh_work() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let (src, main, _a, b, registry) = sandbox_status();
+        let state = crate::AppState::new();
+        let github = StubGitHubOps::new();
+        let key =
+            crate::commands::commits::details_cache_key("live", "hr-management", &b, "staging");
+        let computes = AtomicU64::new(0);
+        let first: CommitDetails = crate::commands::cached_json(&state, &key, || {
+            computes.fetch_add(1, Ordering::Relaxed);
+            commit_details_live(
+                &main,
+                &src,
+                &registry,
+                &github,
+                "hr-management",
+                &b,
+                "staging",
+            )
+        })
+        .expect("details");
+        assert_eq!(first.sha, b);
+        assert!(first.files.iter().any(|f| f.path == "b.txt"));
+        let pr_calls_before = github.calls_named("listOpenPullRequests").len();
+        let second: CommitDetails = crate::commands::cached_json(&state, &key, || {
+            computes.fetch_add(1, Ordering::Relaxed);
+            commit_details_live(
+                &main,
+                &src,
+                &registry,
+                &github,
+                "hr-management",
+                &b,
+                "staging",
+            )
+        })
+        .expect("cached details");
+        assert_eq!(second.sha, b);
+        assert_eq!(
+            computes.load(Ordering::Relaxed),
+            1,
+            "the second identical read must not recompute"
+        );
+        assert_eq!(
+            github.calls_named("listOpenPullRequests").len(),
+            pr_calls_before,
+            "no extra `gh` work on a cache hit"
+        );
     }
 }

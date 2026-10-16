@@ -454,6 +454,40 @@ pub fn push(repo_dir: &Path, url: &str, branch: &str) -> Result<(), GitError> {
     Ok(())
 }
 
+/// Best-effort refresh for a cached checkout: `git fetch --no-tags --prune
+/// origin` so later reads see new branches without re-cloning. The bearer
+/// token (when the origin is remote and a token is available) travels via
+/// `-c http.extraHeader`, never in argv; failures carry only redacted text.
+pub fn fetch_cached(repo_dir: &Path, token: Option<&str>) -> Result<(), GitError> {
+    let origin = run(repo_dir, &["remote", "get-url", "origin"])
+        .ok()
+        .filter(|out| out.status == 0)
+        .map(|out| out.stdout_trimmed())
+        .unwrap_or_default();
+    let remote_http = origin.starts_with("http://") || origin.starts_with("https://");
+    let secret = match (remote_http, token.map(str::trim)) {
+        (true, Some(secret)) if !secret.is_empty() => Some(secret),
+        _ => None,
+    };
+    let (mut command, mut display) = authed_command(Some(repo_dir), secret);
+    let args = ["fetch", "--no-tags", "--prune", "origin"];
+    command.args(args);
+    display.extend(args.iter().map(|s| s.to_string()));
+    let out = run_authed(command, &display).map_err(|err| GitError {
+        args: sanitize(&err.args),
+        status: err.status,
+        stderr: sanitize(&err.stderr),
+    })?;
+    if out.status != 0 {
+        return Err(GitError {
+            args: sanitize(&display.join(" ")),
+            status: Some(out.status),
+            stderr: sanitize(&out.stderr),
+        });
+    }
+    Ok(())
+}
+
 /// Split `https://user:token@host/…` into a clean URL plus the bearer token.
 /// Local paths and credential-free URLs pass through with no token.
 fn split_credentials(url: &str) -> (String, Option<String>) {
