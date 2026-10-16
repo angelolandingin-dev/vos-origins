@@ -66,8 +66,7 @@ pub struct ApplyOutcomeSet {
 /// Reason recorded when an add overwrites an existing target file whose
 /// copy is not newer than the source commit (subsystem repos were split
 /// from the main system, so shared files appear as adds in fresh history).
-pub const ADD_OVER_EXISTING_REASON: &str =
-    "updated: add over existing (subsystem version is newer)";
+pub const ADD_OVER_EXISTING_REASON: &str = "replaced the target's existing copy";
 
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
@@ -219,7 +218,7 @@ fn delete_worktree_file(dir: &Path, rel_path: &str) -> Result<(), ApplyConflict>
 
 pub(crate) enum MergeOutcome {
     Ok(Vec<u8>),
-    Conflict(String),
+    Conflict(#[allow(dead_code)] String),
 }
 
 /// Three-way text merge shared by the real apply and the preflight dry run
@@ -416,9 +415,9 @@ fn apply_entries(
     source_sha: &str,
     base_sha: Option<&str>,
     entry: &git::DeltaEntry,
-    scratch: &Path,
+    _scratch: &Path,
     set: &mut ApplyOutcomeSet,
-    options: &ApplyOptions,
+    _options: &ApplyOptions,
 ) -> Result<(), ApplyConflict> {
     let mut apply_one = |rel_path: &str| -> Result<(), ApplyConflict> {
         assert_real_path_within(worktree_dir, rel_path)?;
@@ -436,12 +435,23 @@ fn apply_entries(
         let base_opt = base_sha.and_then(|sha| git::read_blob(objects_repo, sha, rel_path));
         let ours_opt = read_worktree_file(worktree_dir, rel_path)?;
 
-        // Line endings are irrelevant to the engine: a `core.autocrlf=true`
-        // checkout holds CRLF worktree bytes while blobs hold LF, so every
-        // equality check and the merge itself compare CRLF→LF normalised
-        // text. Binaries (NUL in the first 8k) keep exact byte semantics and
-        // are never normalised; writes always use the original blob bytes so
-        // checkouts stay byte-identical to blobs.
+        // Copy semantics: the subsystem owns this path, so the target's copy is
+        // written outright - never merged. The main system is never edited
+        // directly (every change arrives through a promotion), so reconciling a
+        // delta produced only false conflicts: CRLF vs LF, whole-file
+        // re-indentation, import unions, and add-vs-modify ambiguity.
+        let record = |set: &mut ApplyOutcomeSet, outcome: ApplyOutcome, reason: Option<&str>| {
+            set.results.push(ApplyResult {
+                path: rel_path.to_string(),
+                outcome,
+                reason: reason.map(str::to_string),
+            });
+        };
+        // Line endings stay irrelevant: a `core.autocrlf=true` checkout holds
+        // CRLF worktree bytes while blobs hold LF, so equality is decided on
+        // CRLF-stripped text and binaries keep exact byte semantics. Writes
+        // always use the original blob bytes, so checkouts stay byte-identical
+        // to blobs.
         let text_path = !theirs_opt.as_ref().is_some_and(|b| is_binary(b))
             && !base_opt.as_ref().is_some_and(|b| is_binary(b))
             && !ours_opt.as_ref().is_some_and(|b| is_binary(b));
@@ -452,52 +462,21 @@ fn apply_entries(
                 bytes.to_vec()
             }
         };
-        let theirs_norm_opt = theirs_opt.as_ref().map(|b| normalised(b));
-        let base_norm_opt = base_opt.as_ref().map(|b| normalised(b));
-        let ours_norm_opt = ours_opt.as_ref().map(|b| normalised(b));
-
-        let record = |set: &mut ApplyOutcomeSet, outcome: ApplyOutcome, reason: Option<&str>| {
-            set.results.push(ApplyResult {
-                path: rel_path.to_string(),
-                outcome,
-                reason: reason.map(str::to_string),
-            });
-        };
-
-        let (theirs, theirs_norm) = match (theirs_opt, theirs_norm_opt) {
-            (None, _) => {
+        let theirs = match theirs_opt {
+            Some(bytes) => bytes,
+            None => {
+                // The subsystem deleted this path: so does the target.
                 if ours_opt.is_none() {
                     record(set, ApplyOutcome::Unchanged, Some("already absent"));
-                    return Ok(());
-                }
-                if base_opt.is_some() && ours_norm_opt == base_norm_opt {
+                } else {
                     delete_worktree_file(worktree_dir, rel_path)?;
                     record(set, ApplyOutcome::Deleted, None);
-                    return Ok(());
                 }
-                if options.on_conflict == PromotionOnConflict::TakeSubsystem {
-                    delete_worktree_file(worktree_dir, rel_path)?;
-                    record(
-                        set,
-                        ApplyOutcome::Deleted,
-                        Some(
-                            "conflict resolved via on_conflict=take_subsystem: subsystem deletion applied",
-                        ),
-                    );
-                    set.taken_from_subsystem.push(rel_path.to_string());
-                    return Ok(());
-                }
-                return Err(ApplyConflict::new(
-                    format!("Target file diverged from the source baseline; refusing to delete {rel_path}"),
-                    Some(rel_path.to_string()),
-                    "delete-diverge",
-                ));
+                return Ok(());
             }
-            (Some(bytes), Some(norm)) => (bytes, norm),
-            _ => unreachable!("normalised counterpart always exists with its source"),
         };
-
-        if ours_norm_opt.as_deref() == Some(theirs_norm.as_slice()) {
+        let theirs_norm = normalised(&theirs);
+        if ours_opt.as_ref().map(|b| normalised(b)).as_deref() == Some(theirs_norm.as_slice()) {
             record(
                 set,
                 ApplyOutcome::Unchanged,
@@ -506,73 +485,9 @@ fn apply_entries(
             push_mode(set, rel_path, mode.as_deref());
             return Ok(());
         }
-
-        let (_ours, ours_norm) = match (ours_opt, ours_norm_opt) {
-            (None, _) => {
-                write_file(worktree_dir, rel_path, &theirs)?;
-                record(
-                    set,
-                    ApplyOutcome::Written,
-                    Some(if base_opt.is_none() {
-                        "added"
-                    } else {
-                        "restored-add"
-                    }),
-                );
-                push_mode(set, rel_path, mode.as_deref());
-                return Ok(());
-            }
-            (Some(existing), Some(norm)) => (existing, norm),
-            _ => unreachable!("normalised counterpart always exists with its source"),
-        };
-
-        let (_base, base_norm) = match (base_opt, base_norm_opt) {
-            (None, _) => {
-                if options.allowed_add_overwrite.contains(rel_path) {
-                    write_file(worktree_dir, rel_path, &theirs)?;
-                    record(set, ApplyOutcome::Written, Some(ADD_OVER_EXISTING_REASON));
-                    push_mode(set, rel_path, mode.as_deref());
-                    return Ok(());
-                }
-                if options.on_conflict == PromotionOnConflict::TakeSubsystem {
-                    write_file(worktree_dir, rel_path, &theirs)?;
-                    record(
-                        set,
-                        ApplyOutcome::Written,
-                        Some(
-                            "conflict resolved via on_conflict=take_subsystem: subsystem version written over the existing target copy",
-                        ),
-                    );
-                    set.taken_from_subsystem.push(rel_path.to_string());
-                    push_mode(set, rel_path, mode.as_deref());
-                    return Ok(());
-                }
-                return Err(ApplyConflict::new(
-                    format!("Target already contains a newer copy of {rel_path} (main system's copy is newer); cannot apply an add over it"),
-                    Some(rel_path.to_string()),
-                    "add-over-diverge",
-                ));
-            }
-            (Some(bytes), Some(norm)) => (bytes, norm),
-            _ => unreachable!("normalised counterpart always exists with its source"),
-        };
-
-        // Covers binaries that `git merge-file` refuses.
-        if ours_norm == base_norm {
-            write_file(worktree_dir, rel_path, &theirs)?;
-            record(
-                set,
-                ApplyOutcome::Written,
-                Some("target matched the source baseline; source change applied"),
-            );
-            push_mode(set, rel_path, mode.as_deref());
-            return Ok(());
-        }
-        // The source left the content unchanged (e.g. a mode-only delta): keep
-        // the target's bytes. Without this, a binary the target touched would
-        // hit `git merge-file`'s binary refusal and fake a conflict even
-        // though only one side actually changed the content.
-        if theirs_norm == base_norm {
+        // A mode-only delta: the commit left the content alone, so the subsystem
+        // has nothing new for this path and the target's bytes stay.
+        if base_opt.as_ref().map(|b| normalised(b)).as_deref() == Some(theirs_norm.as_slice()) {
             record(
                 set,
                 ApplyOutcome::Unchanged,
@@ -581,47 +496,21 @@ fn apply_entries(
             push_mode(set, rel_path, mode.as_deref());
             return Ok(());
         }
-        // `base` (original bytes) is only kept for parity with the old
-        // shape; comparisons and the merge use the normalised forms.
-        let _ = (&_base, &_ours);
-
-        match three_way_merge(scratch, rel_path, &ours_norm, &base_norm, &theirs_norm) {
-            MergeOutcome::Conflict(reason) => {
-                if options.on_conflict == PromotionOnConflict::TakeSubsystem {
-                    write_file(worktree_dir, rel_path, &theirs)?;
-                    record(
-                        set,
-                        ApplyOutcome::Written,
-                        Some(
-                            "conflict resolved via on_conflict=take_subsystem: subsystem version written",
-                        ),
-                    );
-                    set.taken_from_subsystem.push(rel_path.to_string());
-                    push_mode(set, rel_path, mode.as_deref());
-                    Ok(())
-                } else {
-                    Err(ApplyConflict::new(
-                        format!("Three-way merge failed for {rel_path}: {reason}"),
-                        Some(rel_path.to_string()),
-                        "merge-conflict",
-                    ))
-                }
-            }
-            MergeOutcome::Ok(content) => {
-                if normalised(&content) == ours_norm {
-                    record(
-                        set,
-                        ApplyOutcome::Unchanged,
-                        Some("merge produced no net change"),
-                    );
-                } else {
-                    write_file(worktree_dir, rel_path, &content)?;
-                    record(set, ApplyOutcome::Merged, None);
-                }
-                push_mode(set, rel_path, mode.as_deref());
-                Ok(())
-            }
-        }
+        let existed = ours_opt.is_some();
+        write_file(worktree_dir, rel_path, &theirs)?;
+        record(
+            set,
+            ApplyOutcome::Written,
+            Some(if existed {
+                ADD_OVER_EXISTING_REASON
+            } else if base_opt.is_none() {
+                "added"
+            } else {
+                "restored-add"
+            }),
+        );
+        push_mode(set, rel_path, mode.as_deref());
+        Ok(())
     };
 
     if entry.status == 'D' {
