@@ -10,7 +10,6 @@ import {
   GitPullRequestArrow,
   Package,
   ShieldAlert,
-  Tag,
   TriangleAlert,
 } from 'lucide-react';
 
@@ -37,27 +36,27 @@ const POLICY_LABEL: Record<
 > = {
   apply: {
     label: 'copy to target',
-    className: 'text-slate-400',
+    className: 'text-muted',
     note: 'Applied at the same relative path in the main-system tree.',
   },
   regenerate_in_target: {
     label: 'regenerate in target',
-    className: 'text-amber-300',
+    className: 'text-status-unknown-ink',
     note: 'Lockfiles are never copied; the target branch lockfile is regenerated.',
   },
   review_required: {
     label: 'review required',
-    className: 'text-amber-300',
+    className: 'text-status-unknown-ink',
     note: 'Shared configuration/manifest change that needs an explicit reviewer decision.',
   },
   never_import: {
     label: 'never imported',
-    className: 'text-rose-300',
+    className: 'text-status-blocked-ink',
     note: 'Secret-looking files are rejected by policy and reported instead of transferred.',
   },
   main_owned: {
     label: 'main-owned',
-    className: 'text-rose-300',
+    className: 'text-status-blocked-ink',
     note: 'Owned by the main repository; a subsystem approval does not authorize overwriting it.',
   },
 };
@@ -65,13 +64,13 @@ const POLICY_LABEL: Record<
 function fileGlyph(file: ChangedFile): { glyph: string; className: string } {
   switch (file.change) {
     case 'added':
-      return { glyph: '+', className: 'text-emerald-400' };
+      return { glyph: '+', className: 'text-status-applied' };
     case 'deleted':
-      return { glyph: '-', className: 'text-rose-400' };
+      return { glyph: '-', className: 'text-status-blocked' };
     case 'renamed':
-      return { glyph: '→', className: 'text-sky-400' };
+      return { glyph: '→', className: 'text-status-eligible' };
     default:
-      return { glyph: '~', className: 'text-amber-300' };
+      return { glyph: '~', className: 'text-status-unknown-ink' };
   }
 }
 
@@ -115,7 +114,7 @@ export function CommitDetailsPanel({
       <EmptyState
         icon={GitCommitHorizontal}
         title="No commit selected"
-        message="Pick a commit in the list to inspect its SHA, status, changed files and dependency impact."
+        message="Pick a commit in the list to inspect it."
       />
     );
   }
@@ -137,7 +136,7 @@ export function CommitDetailsPanel({
 
   return (
     <div className="flex min-h-0 flex-col">
-      <header className="flex items-center justify-between gap-2 border-b border-ink-700/70 px-4 py-3">
+      <header className="flex items-center justify-between gap-2 border-b border-line px-2.5 py-1.5">
         <div className="flex items-center gap-2">
           <h2 className="panel-title">Commit Details</h2>
           {onClose ? (
@@ -147,14 +146,14 @@ export function CommitDetailsPanel({
         <CommitStatusBadge status={details.status} size="md" />
       </header>
 
-      <div className="scroll-area min-h-0 flex-1 space-y-4 p-4">
+      <div className="scroll-area min-h-0 flex-1 space-y-4 p-2.5">
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => void copySha()}
               title={`${details.sha}\nClick to copy the full SHA (abbreviated values are display-only)`}
-              className="mono rounded-sm text-sm font-semibold text-brand-300 hover:text-brand-200 hover:underline"
+              className="mono rounded-[3px] text-sm font-semibold text-accent-ink hover:underline"
             >
               {details.shortSha}
             </button>
@@ -169,58 +168,56 @@ export function CommitDetailsPanel({
               onClick={() => onOpenExternal(details.sourceUrl)}
             />
           </div>
-          <p className="text-sm font-medium leading-snug text-slate-100">{details.subject}</p>
+          <p className="truncate text-xs font-medium text-fg" title={details.subject}>
+            {details.subject}
+          </p>
         </div>
 
-        <div className="flex items-start gap-3 rounded-lg border border-ink-700/60 bg-ink-850/60 p-2.5">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink-700 text-2xs font-semibold uppercase text-slate-200">
+        <div className="flex items-start gap-2.5 rounded-md border border-line bg-raised p-2.5">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[3px] border border-line bg-hover text-[11px] font-semibold text-muted uppercase">
             {(details.authorLogin ?? details.authorName).slice(0, 2)}
           </span>
           <div className="min-w-0 text-xs">
-            <p className="truncate font-medium text-slate-200">
+            <p className="truncate font-medium text-fg">
               {details.authorLogin ?? details.authorName}
             </p>
-            <p className="mt-0.5 text-slate-400">{formatDateTime(details.committedAt)}</p>
-            <p className="text-2xs text-slate-500">
+            <p className="mt-0.5 text-muted">{formatDateTime(details.committedAt)}</p>
+            <p className="mono text-right text-[11px] text-disabled tabular-nums">
               {details.relativeTime} · authored {formatDateTime(details.authoredAt)}
             </p>
           </div>
         </div>
 
         {details.body ? (
-          <p className="whitespace-pre-wrap text-xs leading-relaxed text-slate-300">
+          <p className="truncate text-xs leading-relaxed text-muted" title={details.body}>
             {details.body}
           </p>
         ) : null}
 
         {details.tags.length > 0 ? (
-          <ul className="flex flex-wrap gap-1.5" aria-label="Commit tags">
-            {details.tags.map((tag) => (
-              <li
-                key={tag}
-                className="chip bg-brand-900/40 text-brand-200 ring-1 ring-inset ring-brand-700/60"
-              >
-                <Tag className="h-3 w-3" aria-hidden="true" />
-                {tag}
-              </li>
-            ))}
-          </ul>
+          <p className="text-[11px] text-muted" aria-label="Commit tags">
+            {details.tags.join(' · ')}
+          </p>
         ) : null}
 
         {details.status.evidence ? (
-          <div className="rounded-lg border border-ink-700/60 bg-ink-850/60 p-2.5 text-2xs text-slate-300">
-            <p className="flex items-center gap-1.5 font-semibold text-slate-200">
-              <GitFork className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+          <div className="rounded-md border border-line bg-raised p-2.5 text-[11px] text-muted">
+            <p className="flex items-center gap-1.5 font-semibold text-fg">
+              <GitFork className="h-3.5 w-3.5 text-status-applied" aria-hidden="true" />
               Integration evidence on {details.status.targetBranch}
             </p>
-            <p className="mono mt-1">{details.status.evidence.mainCommitSha}</p>
-            <p className="mt-0.5 text-slate-400">
+            <p
+              className="mono mt-1 truncate text-right tabular-nums"
+              title={details.status.evidence.mainCommitSha}
+            >
+              {details.status.evidence.mainCommitSha}
+            </p>
+            <p className="mono mt-0.5 text-right text-disabled tabular-nums">
               {formatDateTime(details.status.evidence.mergedAt)}
             </p>
             {details.status.evidence.inheritedFromBranch ? (
-              <p className="mt-1 text-amber-200">
-                Inherited from {details.status.evidence.inheritedFromBranch} through a main-system
-                branch merge.
+              <p className="mt-1 text-status-unknown-ink">
+                Inherited from {details.status.evidence.inheritedFromBranch}.
               </p>
             ) : null}
             {details.status.evidence.pullRequestNumber && mainRepository ? (
@@ -231,7 +228,7 @@ export function CommitDetailsPanel({
                     `https://github.com/${mainRepository}/pull/${details.status.evidence?.pullRequestNumber}`,
                   )
                 }
-                className="mt-1 inline-flex items-center gap-1 text-brand-300 hover:underline"
+                className="mt-1 inline-flex items-center gap-1 text-accent-ink hover:underline"
               >
                 Integration PR #{details.status.evidence.pullRequestNumber}
                 <ExternalLink className="h-3 w-3" aria-hidden="true" />
@@ -242,7 +239,7 @@ export function CommitDetailsPanel({
 
         {details.dependencies.length > 0 ? (
           <div className="space-y-1.5">
-            <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            <h3 className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">
               <Package className="h-3.5 w-3.5" aria-hidden="true" />
               Dependency changes
             </h3>
@@ -251,31 +248,33 @@ export function CommitDetailsPanel({
                 <li
                   key={`${dependency.section}-${dependency.name}`}
                   className={cx(
-                    'rounded-lg border p-2 text-2xs',
+                    'rounded-md border border-line p-2 text-[11px]',
                     dependency.conflict
-                      ? 'border-rose-900/70 bg-rose-950/30 text-rose-200'
-                      : 'border-ink-700/60 bg-ink-850/60 text-slate-300',
+                      ? 'bg-status-blocked-soft text-status-blocked-ink'
+                      : 'bg-raised text-muted',
                   )}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="mono text-slate-100">{dependency.name}</span>
-                    <span className="chip bg-ink-800 text-slate-300">{dependency.section}</span>
+                    <span className="mono truncate text-fg">{dependency.name}</span>
+                    <span className="chip">{dependency.section}</span>
                   </div>
-                  <p className="mt-1 flex items-center gap-1.5">
-                    <span className="text-slate-500">{dependency.fromRange ?? '(absent)'}</span>
-                    <ArrowRight className="h-3 w-3" aria-hidden="true" />
+                  <p className="mono mt-1 flex items-center gap-1.5 truncate tabular-nums">
+                    <span className="text-disabled">{dependency.fromRange ?? '(absent)'}</span>
+                    <ArrowRight className="h-3 w-3 shrink-0" aria-hidden="true" />
                     <span>{dependency.toRange ?? '(removed)'}</span>
-                    <span className="ml-auto uppercase tracking-wide text-slate-500">
+                    <span className="ml-auto tracking-wide text-disabled uppercase">
                       {dependency.change}
                     </span>
                   </p>
                   {dependency.note ? (
-                    <p className="mt-1 text-slate-400">{dependency.note}</p>
+                    <p className="mt-1 truncate" title={dependency.note}>
+                      {dependency.note}
+                    </p>
                   ) : null}
                   {dependency.conflict ? (
                     <p className="mt-1 flex items-center gap-1 font-semibold">
                       <TriangleAlert className="h-3 w-3" aria-hidden="true" />
-                      Incompatible range — the promotion fails closed until this is resolved.
+                      Incompatible range — promotion fails closed.
                     </p>
                   ) : null}
                 </li>
@@ -286,17 +285,15 @@ export function CommitDetailsPanel({
 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            <h3 className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">
               <FileText className="h-3.5 w-3.5" aria-hidden="true" />
               Files Changed
             </h3>
-            <span className="chip bg-ink-800 text-slate-300">{details.filesChanged}</span>
+            <span className="chip tabular-nums">{details.filesChanged}</span>
           </div>
 
           {details.files.length === 0 ? (
-            <p className="text-2xs text-slate-500">
-              No file list is available for this commit in the current data source.
-            </p>
+            <p className="text-[11px] text-disabled">No file list is available for this commit.</p>
           ) : (
             <ul className="space-y-0.5">
               {details.files.map((file) => {
@@ -310,10 +307,8 @@ export function CommitDetailsPanel({
                       onClick={() => onShowDiff(details.sha, file.path)}
                       title={`${file.path}\n${policy.note}`}
                       className={cx(
-                        'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
-                        active
-                          ? 'bg-ink-800 ring-1 ring-inset ring-brand-600/60'
-                          : 'hover:bg-ink-800/70',
+                        'flex h-[29px] w-full items-center gap-2 rounded-md px-2.5 text-left transition-colors',
+                        active ? 'bg-selection ring-1 ring-accent/40 ring-inset' : 'hover:bg-hover',
                       )}
                     >
                       <span
@@ -325,19 +320,23 @@ export function CommitDetailsPanel({
                       >
                         {glyph.glyph}
                       </span>
-                      <span className="mono min-w-0 flex-1 truncate text-slate-200">
+                      <span className="mono min-w-0 flex-1 truncate text-fg tabular-nums">
                         {file.path}
                       </span>
-                      <span className="shrink-0 text-2xs text-emerald-400">+{file.additions}</span>
-                      <span className="shrink-0 text-2xs text-rose-400">-{file.deletions}</span>
+                      <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
+                        +{file.additions}
+                      </span>
+                      <span className="mono shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
+                        -{file.deletions}
+                      </span>
                       {file.policy !== 'apply' ? (
-                        <span className={cx('chip shrink-0 bg-ink-800', policy.className)}>
+                        <span className={cx('chip shrink-0', policy.className)}>
                           {policy.label}
                         </span>
                       ) : null}
                     </button>
                     {file.previousPath ? (
-                      <p className="mono px-2 pl-7 text-2xs text-slate-500">
+                      <p className="mono truncate px-2.5 pl-7 text-[11px] text-disabled">
                         renamed from {file.previousPath}
                       </p>
                     ) : null}
@@ -348,21 +347,15 @@ export function CommitDetailsPanel({
           )}
         </div>
 
-        {details.note ? (
-          <InlineAlert tone="info" title="Promotion semantics">
-            {details.note}
-          </InlineAlert>
-        ) : null}
-
         {hasOpenPr || alreadyIntegrated ? (
-          <InlineAlert tone="warning" title="This SHA is not promotable to this branch">
+          <InlineAlert tone="warning" title="Not promotable on this branch">
             {alreadyIntegrated
-              ? 'It is already recorded as integrated on this target branch. Promoting again would duplicate the change; choose a different branch or revert first.'
-              : 'An integration PR for this SHA is already open on this target branch. Review or merge it instead of dispatching another run.'}
+              ? 'Already integrated on this target branch.'
+              : 'An integration PR is already open for this SHA.'}
           </InlineAlert>
         ) : null}
 
-        <div className="space-y-2 border-t border-ink-700/70 pt-3">
+        <div className="space-y-2 border-t border-line pt-3">
           <div className="flex items-stretch gap-1">
             <Button
               variant="primary"
@@ -402,30 +395,29 @@ export function CommitDetailsPanel({
             View Full Diff
           </Button>
 
-          <div className="rounded-lg border border-ink-700/60 bg-ink-850/60 p-2.5">
-            <p className="flex items-start gap-2 text-2xs leading-relaxed text-slate-400">
+          <div className="rounded-md border border-line bg-raised p-2.5">
+            <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
               <ShieldAlert
-                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-unknown"
                 aria-hidden="true"
               />
-              A promotion opens an integration PR against the chosen main-system branch. It is never
-              a direct push and never a production deploy.
+              Promotion opens an integration PR — never a direct push.
             </p>
           </div>
 
-          <dl className="rounded-lg border border-ink-700/60 bg-ink-850/60 px-3 py-1">
+          <dl className="rounded-md border border-line bg-raised px-3 py-1">
             <KeyValue label="Target branch">{targetBranch}</KeyValue>
             <KeyValue label="Parents">
               <span className="mono">
                 {details.parents.map((parent) => parent.slice(0, 7)).join(', ') || '—'}
               </span>
             </KeyValue>
-            <KeyValue label="Delta mode">
-              {details.isMerge ? 'first parent (merge commit)' : 'commit delta'}
+            <KeyValue label="Content from">
+              {details.isMerge ? 'first parent of the merge' : 'this commit'}
             </KeyValue>
             <KeyValue label="Totals">
-              <span className="text-emerald-400">+{details.additions}</span> /{' '}
-              <span className="text-rose-400">-{details.deletions}</span>
+              <span className="text-status-applied-ink">+{details.additions}</span> /{' '}
+              <span className="text-status-blocked-ink">-{details.deletions}</span>
             </KeyValue>
           </dl>
         </div>

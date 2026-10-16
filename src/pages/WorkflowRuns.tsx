@@ -38,10 +38,10 @@ function runBadge(run: WorkflowRun) {
   if (run.conclusion === 'success')
     return (
       <span
-        className="chip bg-ink-800 px-2.5 py-1 text-xs text-emerald-300 ring-1 ring-inset ring-emerald-800/70"
-        title="A successful workflow run is not an integration. Integration is only claimed from a provenance-bearing merge commit."
+        className="chip text-status-applied-ink"
+        title="A successful run is not an integration — only a merged provenance commit counts."
       >
-        <CircleCheck className="h-3.5 w-3.5" aria-hidden="true" />
+        <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-status-applied" />
         Workflow succeeded
       </span>
     );
@@ -49,10 +49,10 @@ function runBadge(run: WorkflowRun) {
 }
 
 const LEVEL_STYLE: Record<string, string> = {
-  error: 'text-rose-300',
-  warn: 'text-amber-300',
-  info: 'text-slate-300',
-  debug: 'text-slate-500',
+  error: 'text-status-blocked-ink',
+  warn: 'text-status-unknown-ink',
+  info: 'text-fg',
+  debug: 'text-disabled',
 };
 
 export function WorkflowRuns() {
@@ -84,17 +84,9 @@ export function WorkflowRuns() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-start justify-between gap-3 px-5 pb-3 pt-4">
-        <div>
-          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight text-white">
-            <Workflow className="h-5 w-5 text-brand-400" aria-hidden="true" />
-            Workflow Runs
-          </h1>
-          <p className="mt-0.5 text-xs text-slate-400">
-            Promotion workflow runs started by this tool
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+      <header className="flex min-h-[50px] flex-wrap items-center gap-3 border-b border-line px-5 py-2">
+        <h1 className="text-[14px] font-semibold text-fg">Workflow Runs</h1>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <Select
             aria-label="Filter runs by subsystem"
             className="w-[220px]"
@@ -129,7 +121,7 @@ export function WorkflowRuns() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-3 px-3 pb-3 xl:grid-cols-[400px_minmax(0,1fr)]">
+      <div className="grid min-h-0 flex-1 gap-3 p-3 xl:grid-cols-[400px_minmax(0,1fr)]">
         <Panel
           className="min-h-0"
           title="Runs"
@@ -144,10 +136,10 @@ export function WorkflowRuns() {
             <EmptyState
               icon={Workflow}
               title="No runs match these filters"
-              message="Runs appear here after a promotion is dispatched. Adjust the filters or dispatch a promotion."
+              message="Dispatch a promotion to create the first run."
             />
           ) : (
-            <ul className="divide-y divide-ink-800/70">
+            <ul className="divide-y divide-line">
               {filtered.map((run) => {
                 const active = run.id === activeRunId;
                 return (
@@ -158,22 +150,20 @@ export function WorkflowRuns() {
                       aria-current={active ? 'true' : undefined}
                       className={cx(
                         'w-full px-4 py-3 text-left transition-colors',
-                        active ? 'bg-ink-800/80' : 'hover:bg-ink-800/50',
+                        active ? 'bg-selection' : 'hover:bg-hover',
                       )}
                     >
                       <div className="flex items-center gap-2">
                         {runBadge(run)}
-                        <span className="mono ml-auto text-2xs text-slate-500">
-                          #{run.runNumber}
-                        </span>
+                        <span className="mono ml-auto text-disabled">#{run.runNumber}</span>
                       </div>
-                      <p className="mt-1.5 truncate text-xs font-medium text-slate-100">
+                      <p className="mt-1.5 truncate text-xs font-medium text-fg">
                         {run.displayTitle}
                       </p>
-                      <p className="mono mt-0.5 truncate text-2xs text-slate-500">
+                      <p className="mono mt-0.5 truncate text-muted">
                         {run.subsystemId} → {run.targetBranch} · {run.mode}
                       </p>
-                      <p className="mt-0.5 text-2xs text-slate-500">
+                      <p className="mt-0.5 truncate text-[11px] text-muted">
                         {run.actor} · {formatDateTime(run.updatedAt)}
                       </p>
                     </button>
@@ -203,7 +193,7 @@ export function WorkflowRuns() {
             <EmptyState
               icon={ScrollText}
               title="No run selected"
-              message="Pick a run on the left to inspect its steps and logs."
+              message="Pick a run to inspect its steps and logs."
             />
           ) : details.loading && !details.data ? (
             <LoadingState label="Loading run detail…" />
@@ -213,14 +203,12 @@ export function WorkflowRuns() {
             <div className="space-y-4 p-4">
               <div className="flex flex-wrap items-center gap-2">
                 {runBadge(details.data.run)}
-                <span className="chip bg-ink-800 text-slate-300">
-                  target {details.data.run.targetBranch}
-                </span>
-                <span className="chip bg-ink-800 text-slate-300">mode {details.data.run.mode}</span>
-                <span className="chip bg-ink-800 text-slate-300">{details.data.run.event}</span>
+                <span className="chip">target {details.data.run.targetBranch}</span>
+                <span className="chip">mode {details.data.run.mode}</span>
+                <span className="chip">{details.data.run.event}</span>
               </div>
 
-              <dl className="rounded-lg border border-ink-700/60 bg-ink-850/50 px-3 py-1">
+              <dl className="rounded-md border border-line bg-raised px-3 py-1">
                 <KeyValue label="Run id">
                   <span className="mono">{details.data.run.id}</span>
                 </KeyValue>
@@ -228,7 +216,7 @@ export function WorkflowRuns() {
                   <span className="mono">{details.data.run.headBranch}</span>
                 </KeyValue>
                 <KeyValue label="PR base (target branch)">
-                  <span className="mono text-brand-200">{details.data.run.targetBranch}</span>
+                  <span className="mono text-accent-ink">{details.data.run.targetBranch}</span>
                 </KeyValue>
                 <KeyValue label="Requested by">{details.data.run.actor}</KeyValue>
                 <KeyValue label="Created">{formatDateTime(details.data.run.createdAt)}</KeyValue>
@@ -240,69 +228,63 @@ export function WorkflowRuns() {
               </dl>
 
               {details.data.run.status !== 'completed' ? (
-                <InlineAlert tone="info" title="Status will not jump to Integrated">
-                  While the run is active the SHA shows{' '}
-                  <span className="font-semibold">Promotion queued</span> or{' '}
-                  <span className="font-semibold">Promotion running</span>. Integration is only
-                  recorded from reachable Git history after the PR is merged.
-                </InlineAlert>
+                <InlineAlert
+                  tone="info"
+                  title="Integration is recorded only from reachable Git history after the merge"
+                />
               ) : null}
 
               <section className="space-y-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
                   Jobs and steps
                 </h3>
                 {details.data.jobs.length === 0 ? (
-                  <p className="text-2xs text-slate-500">
-                    No job detail is available for this run.
-                  </p>
+                  <p className="text-[11px] text-muted">No job detail is available for this run.</p>
                 ) : (
                   details.data.jobs.map((job) => (
-                    <div
-                      key={job.id}
-                      className="rounded-lg border border-ink-700/60 bg-ink-850/50 p-3"
-                    >
+                    <div key={job.id} className="rounded-md border border-line bg-raised p-3">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-semibold text-slate-100">{job.name}</span>
+                        <span className="truncate text-xs font-semibold text-fg">{job.name}</span>
                         {job.status === 'in_progress' ? (
-                          <span className="flex items-center gap-1.5 text-2xs text-orange-300">
+                          <span className="flex items-center gap-1.5 text-[11px] text-status-divergent-ink">
                             <Spinner className="h-3.5 w-3.5" /> running
                           </span>
                         ) : (
-                          <span className="text-2xs text-slate-400">
+                          <span className="text-[11px] text-muted">
                             {job.conclusion ?? job.status}
                           </span>
                         )}
-                        <span className="mono ml-auto text-2xs text-slate-500">
+                        <span className="mono ml-auto text-disabled">
                           {job.startedAt ? formatDateTime(job.startedAt) : ''}
                         </span>
                       </div>
                       <ol className="mt-2 space-y-1">
                         {job.steps.map((step) => (
-                          <li key={step.number} className="flex items-center gap-2 text-2xs">
-                            <span className="mono w-5 shrink-0 text-right text-slate-500">
+                          <li
+                            key={step.number}
+                            className="flex h-[29px] items-center gap-2 text-[11px]"
+                          >
+                            <span className="mono w-5 shrink-0 text-right text-disabled">
                               {step.number}
                             </span>
                             {step.status === 'completed' && step.conclusion === 'success' ? (
                               <CircleCheck
-                                className="h-3.5 w-3.5 shrink-0 text-emerald-400"
+                                className="h-3.5 w-3.5 shrink-0 text-status-applied"
                                 aria-hidden="true"
                               />
                             ) : step.status === 'completed' && step.conclusion !== 'success' ? (
                               <TriangleAlert
-                                className="h-3.5 w-3.5 shrink-0 text-rose-400"
+                                className="h-3.5 w-3.5 shrink-0 text-status-blocked"
                                 aria-hidden="true"
                               />
                             ) : (
                               <LoaderCircle
-                                className="h-3.5 w-3.5 shrink-0 animate-spin text-brand-400"
+                                className="h-3.5 w-3.5 shrink-0 animate-spin text-accent"
                                 aria-hidden="true"
                               />
                             )}
-                            <span className="min-w-0 flex-1 truncate text-slate-300">
-                              {step.name}
-                            </span>
-                            <span className="shrink-0 text-slate-500">
+                            <span className="min-w-0 flex-1 truncate text-fg">{step.name}</span>
+                            <span className="mono shrink-0 text-right text-disabled tabular-nums">
                               {step.conclusion ?? step.status}
                             </span>
                           </li>
@@ -315,21 +297,18 @@ export function WorkflowRuns() {
 
               <section className="space-y-2">
                 <div className="flex items-center gap-2">
-                  <ScrollText className="h-4 w-4 text-slate-400" aria-hidden="true" />
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  <ScrollText className="h-4 w-4 text-muted" aria-hidden="true" />
+                  <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
                     Logs
                   </h3>
                   {details.data.logsTruncated ? (
-                    <span className="chip bg-amber-950/60 text-amber-200">bounded</span>
+                    <span className="chip text-status-unknown-ink">bounded</span>
                   ) : null}
                 </div>
                 {details.data.logs.length === 0 ? (
-                  <p className="text-2xs text-slate-500">
-                    Logs are fetched on demand.{' '}
-                    {details.data.logsUrl ? 'Open the run on GitHub for the full log.' : ''}
-                  </p>
+                  <p className="text-[11px] text-muted">Logs are fetched on demand.</p>
                 ) : (
-                  <pre className="mono max-h-[320px] overflow-auto rounded-lg border border-ink-700/60 bg-ink-925 p-3 text-2xs leading-relaxed">
+                  <pre className="mono max-h-[320px] overflow-auto rounded-md border border-line bg-ground p-3 leading-relaxed">
                     {details.data.logs.map((line) => (
                       <div
                         key={`${line.ts}-${line.text}`}
@@ -341,7 +320,7 @@ export function WorkflowRuns() {
                   </pre>
                 )}
                 {details.data.artifactNote ? (
-                  <p className="text-2xs text-slate-500">{details.data.artifactNote}</p>
+                  <p className="truncate text-[11px] text-muted">{details.data.artifactNote}</p>
                 ) : null}
               </section>
             </div>

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { GitPullRequestArrow, Package, ShieldAlert, TriangleAlert } from 'lucide-react';
+import { GitPullRequestArrow, Package, TriangleAlert } from 'lucide-react';
 
 import { api } from '../api/invoke';
 import type {
@@ -11,7 +11,6 @@ import type {
 import { useApp, useAsyncData } from '../app/context';
 import { CommitTable } from '../components/CommitTable';
 import { CommitStatusBadge } from '../components/StatusBadge';
-import { cx } from '../components/ui/cx';
 import {
   Button,
   EmptyState,
@@ -163,13 +162,9 @@ function PromoteCommitsPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-start justify-between gap-3 px-5 pb-3 pt-4">
+      <header className="flex flex-wrap items-center justify-between gap-3 px-5 pb-3 pt-4">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight text-white">Promote Commits</h1>
-          <p className="mt-0.5 text-xs text-slate-400">
-            Promote Commits onto a chosen main-system branch — by default locally in your clone
-            (pushing stays manual), never a production deploy
-          </p>
+          <h1 className="text-[14px] font-semibold text-fg">Promote Commits</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Select
@@ -199,7 +194,7 @@ function PromoteCommitsPanel({
         <Panel
           className="min-h-0"
           title="Select commits"
-          subtitle={`${subsystem.repository}@${subsystem.sourceBranch} · eligible commits are shown first`}
+          subtitle={`${subsystem.repository}@${subsystem.sourceBranch} · eligible first · target ${app.targetBranch}`}
           bodyClassName="flex min-h-0 flex-1 flex-col"
         >
           <CommitTable
@@ -231,27 +226,26 @@ function PromoteCommitsPanel({
         </Panel>
 
         <div className="scroll-area min-h-0 space-y-3">
-          <Panel title="Promotion summary" subtitle="Everything the workflow will receive">
+          <Panel title="Promotion summary" subtitle={`Selection for ${app.targetBranch}`}>
             <div className="space-y-3 p-3">
-              <dl className="rounded-lg border border-ink-700/60 bg-ink-850/50 px-3 py-1">
+              <dl className="divide-y divide-line border-y border-line px-1">
                 <KeyValue label="Source subsystem">
-                  <span className="mono">{subsystem.id}</span>
-                </KeyValue>
-                <KeyValue label="Source repo">
-                  <span className="mono">{subsystem.repository}</span>
+                  <span className="mono text-right">{subsystem.id}</span>
                 </KeyValue>
                 <KeyValue label="Source branch">
-                  <span className="mono">{subsystem.sourceBranch}</span>
+                  <span className="mono text-right">{subsystem.sourceBranch}</span>
                 </KeyValue>
                 <KeyValue label="Target branch">
-                  <span className="mono text-brand-200">{app.targetBranch}</span>
+                  <span className="mono text-right text-accent-ink">{app.targetBranch}</span>
                 </KeyValue>
                 <KeyValue label="Mode">{mode}</KeyValue>
-                <KeyValue label="Selected SHAs">{app.selectedShas.length}</KeyValue>
+                <KeyValue label="Selected SHAs">
+                  <span className="mono text-right">{app.selectedShas.length}</span>
+                </KeyValue>
               </dl>
 
               <label className="block space-y-1.5">
-                <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">
                   Mode
                 </span>
                 <Select
@@ -259,7 +253,7 @@ function PromoteCommitsPanel({
                   value={mode}
                   onChange={(event) => onModeChange(event.target.value as PromotionMode)}
                   options={[
-                    { value: 'individual', label: 'Individual (first-parent delta per SHA)' },
+                    { value: 'individual', label: 'Individual (recommended)' },
                     { value: 'cumulative', label: 'Cumulative (requires an explicit baseline)' },
                   ]}
                 />
@@ -267,21 +261,18 @@ function PromoteCommitsPanel({
 
               {app.selectedShas.length === 0 ? (
                 <InlineAlert tone="info" title="No commits selected">
-                  Tick commits in the table. Only the ticked SHAs are promoted.
+                  Tick commits in the table.
                 </InlineAlert>
               ) : (
-                <ul className="space-y-1.5">
+                <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
                   {app.selectedShas.map((sha) => {
                     const commit = listing.find((candidate) => candidate.sha === sha);
                     return (
-                      <li
-                        key={sha}
-                        className="flex flex-wrap items-center gap-2 rounded-lg border border-ink-700/60 bg-ink-850/50 px-2.5 py-2"
-                      >
-                        <span className="mono text-2xs text-brand-300" title={sha}>
+                      <li key={sha} className="flex h-[29px] items-center gap-2 px-2.5">
+                        <span className="mono shrink-0 text-[11px] text-accent-ink" title={sha}>
                           {sha.slice(0, 7)}
                         </span>
-                        <span className="min-w-0 flex-1 truncate text-2xs text-slate-200">
+                        <span className="min-w-0 flex-1 truncate text-[11px] text-fg">
                           {commit?.subject ?? 'Not on this page'}
                         </span>
                         {commit ? <CommitStatusBadge status={commit.status} /> : null}
@@ -303,29 +294,28 @@ function PromoteCommitsPanel({
             </div>
           </Panel>
 
-          <Panel title="Dependency and prerequisite review">
+          <Panel title="Dependency review">
             <div className="space-y-2 p-3">
               {dependencies.loading ? (
-                <LoadingState label="Loading dependency deltas…" />
+                <LoadingState label="Loading dependency changes…" />
               ) : (dependencies.data ?? []).length === 0 ? (
-                <p className="text-2xs text-slate-500">
-                  No manifest changes are part of the current selection.
-                </p>
+                <p className="text-[11px] text-muted">No manifest changes in this selection.</p>
               ) : (
-                <ul className="space-y-1.5">
+                <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
                   {(dependencies.data ?? []).map((dependency) => (
                     <li
                       key={`${dependency.section}-${dependency.name}`}
-                      className={cx(
-                        'rounded-lg border px-2.5 py-2 text-2xs',
-                        dependency.conflict
-                          ? 'border-rose-900/70 bg-rose-950/30 text-rose-200'
-                          : 'border-ink-700/60 bg-ink-850/50 text-slate-300',
-                      )}
+                      className="flex h-[29px] items-center gap-2 px-2.5 text-[11px]"
                     >
-                      <span className="mono text-slate-100">{dependency.name}</span>{' '}
-                      <span className="text-slate-500">{dependency.section}</span>{' '}
-                      <span>
+                      {dependency.conflict ? (
+                        <TriangleAlert
+                          className="h-3 w-3 shrink-0 text-status-blocked"
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                      <span className="mono truncate text-fg">{dependency.name}</span>
+                      <span className="shrink-0 text-muted">{dependency.section}</span>
+                      <span className="mono ml-auto shrink-0 text-right text-muted">
                         {dependency.fromRange ?? '(absent)'} → {dependency.toRange ?? '(removed)'}
                       </span>
                     </li>
@@ -335,8 +325,7 @@ function PromoteCommitsPanel({
 
               {conflicting.length > 0 ? (
                 <InlineAlert tone="danger" title="Incompatible dependency range">
-                  The promotion fails closed. Resolve the shared range in the main-system manifest
-                  or drop the conflicting commit.
+                  The promotion fails closed. Resolve the range or drop the commit.
                 </InlineAlert>
               ) : null}
 
@@ -344,62 +333,19 @@ function PromoteCommitsPanel({
                 <InlineAlert tone="warning" title="This selection changes package.json">
                   <span className="flex items-center gap-1.5">
                     <Package className="h-3.5 w-3.5" aria-hidden="true" />
-                    The manifest delta is merged and the target lockfile is regenerated. The
-                    subsystem lockfile is never copied.
+                    The target lockfile is regenerated.
                   </span>
                 </InlineAlert>
               ) : null}
-
-              <InlineAlert tone="info" title="Prerequisites are not inferred">
-                <span className="flex items-center gap-1.5">
-                  <TriangleAlert className="h-3.5 w-3.5" aria-hidden="true" />
-                  Selecting an implementation commit without its dependency commit does not import
-                  the dependency. Add it explicitly or resolve it in the integration PR.
-                </span>
-              </InlineAlert>
             </div>
           </Panel>
 
-          <Panel title="What happens next">
-            <ul className="space-y-2 p-3 text-2xs leading-relaxed text-slate-400">
-              <li className="flex gap-2">
-                <ShieldAlert
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300"
-                  aria-hidden="true"
-                />
-                <span className="flex-1">
-                  <span className="font-semibold text-slate-200">Confirm &amp; dispatch.</span> A
-                  GitHub Actions run creates a temporary integration branch from the current{' '}
-                  <span className="mono">{app.targetBranch}</span> tip and applies the selected
-                  deltas.
-                </span>
-              </li>
-              <li className="flex gap-2">
-                <GitPullRequestArrow
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-300"
-                  aria-hidden="true"
-                />
-                <span className="flex-1">
-                  <span className="font-semibold text-slate-200">Integration PR.</span> The PR base
-                  is exactly <span className="mono">{app.targetBranch}</span>. The run ref is only
-                  the workflow definition ref.
-                </span>
-              </li>
-              <li className="flex gap-2">
-                <Package
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400"
-                  aria-hidden="true"
-                />
-                <span className="flex-1">
-                  <span className="font-semibold text-slate-200">Status honesty.</span> The SHA
-                  stays <span className="font-semibold">Promotion queued</span> →{' '}
-                  <span className="font-semibold">PR open</span> and only becomes{' '}
-                  <span className="font-semibold">Integrated</span> when a provenance commit is
-                  reachable from <span className="mono">{app.targetBranch}</span>.
-                </span>
-              </li>
-            </ul>
-          </Panel>
+          <div className="border-t border-line px-1 pt-2">
+            <p className="text-[11px] leading-relaxed text-muted">
+              Promotion commits locally; pushing is manual.
+            </p>
+            <p className="text-[11px] leading-relaxed text-muted">Status is per target branch.</p>
+          </div>
         </div>
       </div>
     </div>

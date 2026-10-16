@@ -3523,3 +3523,374 @@ fn binary_with_crlf_bytes_written_byte_exact() {
         "binary must be written byte-exact, CRLF bytes preserved"
     );
 }
+
+// ===========================================================================
+// `worktree` delivery: staged into the user's own checkout, never committed
+// ===========================================================================
+
+fn staged_names(dir: &Path) -> Vec<String> {
+    let out = git_out(dir, &["diff", "--cached", "--name-only"]);
+    let mut names: Vec<String> = out.lines().map(|l| l.trim().to_string()).collect();
+    names.retain(|l| !l.is_empty());
+    names.sort();
+    names
+}
+
+#[test]
+fn worktree_promotion_stages_without_commit_or_branch() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+
+    let src_dir = make_temp_dir("src-worktree");
+    let main_dir = make_temp_dir("main-worktree");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    git_out(&main.dir, &["checkout", "-q", "staging"]);
+    let head_before = sha(&main.dir, "HEAD");
+    let staging_before = sha(&main.dir, "staging");
+    assert_eq!(status_porcelain(&main.dir), "", "target clone starts clean");
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::Worktree,
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+
+    // Nothing committed anywhere: no SHA, no trailers, no branch, no push/PR.
+    assert!(report.commit_sha.is_none(), "worktree never commits");
+    assert!(
+        report.integration_branch.is_none(),
+        "no temp branch may be advertised"
+    );
+    assert!(
+        report.provenance_message.is_none(),
+        "no provenance trailers are written without a commit"
+    );
+    assert!(report.push.is_none());
+    assert!(report.pull_request.is_none());
+    assert_eq!(sha(&main.dir, "HEAD"), head_before, "HEAD unchanged");
+    assert_eq!(
+        sha(&main.dir, "staging"),
+        staging_before,
+        "target ref unchanged"
+    );
+    let branches = git_out(&main.dir, &["branch", "--format=%(refname:short)"]);
+    assert!(
+        !branches
+            .lines()
+            .any(|b| b.trim().starts_with("integration/")),
+        "no branch may be created: {branches}"
+    );
+    let worktrees = git_out(&main.dir, &["worktree", "list"]);
+    assert!(
+        !worktrees.contains("vos-integration-"),
+        "temp worktree must be removed: {worktrees}"
+    );
+
+    // The copied paths are staged on the target branch with source content.
+    let mut expected = vec![
+        "package.json".to_string(),
+        "src/modules/hr/c.txt".to_string(),
+        "src/modules/hr/export.ts".to_string(),
+    ];
+    expected.sort();
+    assert_eq!(staged_names(&main.dir), expected);
+    assert_eq!(report.staged_paths, expected);
+    assert_eq!(
+        git_out(&main.dir, &["diff", "--name-only"]),
+        "",
+        "nothing may be left unstaged"
+    );
+    assert_eq!(
+        std::fs::read_to_string(main.dir.join("src/modules/hr/c.txt")).unwrap(),
+        "C feature\n"
+    );
+    let pkg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(main.dir.join("package.json")).unwrap())
+            .unwrap();
+    assert_eq!(pkg["dependencies"]["exceljs"], serde_json::json!("^4.4.0"));
+    assert_eq!(
+        pkg["dependencies"]["react"],
+        serde_json::json!("19.2.3"),
+        "unrelated packages retained"
+    );
+
+    // Still on the target branch, with only the staged promotion in the tree.
+    assert_eq!(
+        git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "staging"
+    );
+    assert!(
+        github.calls_named("pushBranch").is_empty(),
+        "worktree must not push: {:?}",
+        github.calls()
+    );
+    assert!(
+        github.create_pr_calls().is_empty(),
+        "worktree must not open a PR"
+    );
+}
+
+#[test]
+fn worktree_dirty_tree_is_refused_with_tree_untouched() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+
+    let src_dir = make_temp_dir("src-worktree-dirty");
+    let main_dir = make_temp_dir("main-worktree-dirty");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    git_out(&main.dir, &["checkout", "-q", "staging"]);
+    let head_before = sha(&main.dir, "HEAD");
+    let staging_before = sha(&main.dir, "staging");
+    write(&main.dir, "uncommitted.txt", b"dirty\n");
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::Worktree,
+            ..Default::default()
+        },
+    );
+    assert!(!report.ok);
+    assert!(
+        codes(&report).contains(&"DIRTY_WORKTREE".to_string()),
+        "{:?}",
+        codes(&report)
+    );
+    assert_eq!(sha(&main.dir, "HEAD"), head_before, "nothing moved");
+    assert_eq!(sha(&main.dir, "staging"), staging_before);
+    assert_eq!(
+        std::fs::read(main.dir.join("uncommitted.txt")).unwrap(),
+        b"dirty\n",
+        "user work untouched"
+    );
+    assert_eq!(
+        staged_names(&main.dir),
+        Vec::<String>::new(),
+        "nothing may be staged"
+    );
+    assert!(
+        !main.dir.join("src/modules/hr/c.txt").exists(),
+        "promoted file must not leak into the tree"
+    );
+    let branches = git_out(&main.dir, &["branch", "--format=%(refname:short)"]);
+    assert!(
+        !branches
+            .lines()
+            .any(|b| b.trim().starts_with("integration/")),
+        "failed promotion must not leave an integration/* ref: {branches}"
+    );
+}
+
+#[test]
+fn worktree_target_not_checked_out_is_refused() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+
+    let src_dir = make_temp_dir("src-worktree-branch");
+    let main_dir = make_temp_dir("main-worktree-branch");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    // HEAD stays on master; staging is the promotion target.
+    assert_eq!(
+        git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "master"
+    );
+    let staging_before = sha(&main.dir, "staging");
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::Worktree,
+            target_branch: "staging".to_string(),
+            ..Default::default()
+        },
+    );
+    assert!(!report.ok);
+    assert!(
+        codes(&report).contains(&"TARGET_NOT_CHECKED_OUT".to_string()),
+        "{:?}",
+        codes(&report)
+    );
+    let message = report
+        .blockers
+        .iter()
+        .map(|b| b.message.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        message.contains("\"staging\"") && message.contains("git checkout staging"),
+        "the refusal must name the expected branch and how to switch: {message}"
+    );
+    assert_eq!(sha(&main.dir, "staging"), staging_before, "nothing moved");
+    assert_eq!(status_porcelain(&main.dir), "", "tree untouched");
+    let branches = git_out(&main.dir, &["branch", "--format=%(refname:short)"]);
+    assert!(
+        !branches
+            .lines()
+            .any(|b| b.trim().starts_with("integration/")),
+        "failed promotion must not leave an integration/* ref: {branches}"
+    );
+}
+
+#[test]
+fn worktree_leaves_no_integrated_status_behind() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use subsystem_integration_manager_lib::services::engine::history;
+
+    let src_dir = make_temp_dir("src-worktree-status");
+    let main_dir = make_temp_dir("main-worktree-status");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    git_out(&main.dir, &["checkout", "-q", "staging"]);
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::Worktree,
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+
+    // Status is derived from reachable history, which gained no commit, so
+    // the promoted SHA stays exactly as it was (eligible, never integrated).
+    let status = history::compute_branch_status(
+        &main.dir,
+        "staging",
+        "hr-management",
+        std::slice::from_ref(&src.c),
+    );
+    assert_ne!(
+        status[0].status,
+        history::BranchStatusKind::Integrated,
+        "a worktree promotion must never integrate"
+    );
+    assert_eq!(status[0].status, history::BranchStatusKind::Eligible);
+    let log = git_out(&main.dir, &["log", "--format=%B", "staging"]);
+    assert!(
+        !log.contains(&src.c),
+        "no reachable commit may reference the promoted SHA"
+    );
+}
+
+#[test]
+fn local_direct_still_commits_onto_the_target() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+
+    let src_dir = make_temp_dir("src-still-direct");
+    let main_dir = make_temp_dir("main-still-direct");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    git_out(&main.dir, &["checkout", "-q", "staging"]);
+    let staging_before = sha(&main.dir, "staging");
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::LocalDirect,
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let commit = report.commit_sha.clone().expect("local_direct commits");
+    assert_eq!(sha(&main.dir, "staging"), commit, "staging advanced");
+    assert_ne!(commit, staging_before);
+    let message = git_out(&main.dir, &["log", "-1", "--format=%B", "staging"]);
+    assert!(message.contains("Subsystem-ID: hr-management"), "{message}");
+    assert!(message.contains(&src.c), "{message}");
+}
+
+#[test]
+fn worktree_wire_value_parses_and_next_commands_carry_diff_and_commit() {
+    use subsystem_integration_manager_lib::commands::promotion::build_worktree_next_commands;
+    use subsystem_integration_manager_lib::github::models::{
+        PromotionDelivery, PromotionDispatchResult, PromotionRequest,
+    };
+
+    assert_eq!(PromotionDelivery::Worktree.as_str(), "worktree");
+    let wire: PromotionRequest = serde_json::from_str(
+        r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true,"delivery":"worktree"}"#,
+    )
+    .expect("wire with worktree parses");
+    assert_eq!(wire.delivery, PromotionDelivery::Worktree);
+    let serialized = serde_json::to_string(&PromotionDelivery::Worktree).expect("serializes");
+    assert_eq!(serialized, "\"worktree\"");
+
+    let dir = if cfg!(windows) {
+        PathBuf::from(r"C:\repos\main-system")
+    } else {
+        PathBuf::from("/tmp/main-system")
+    };
+    let staged = vec![
+        "package.json".to_string(),
+        "src/modules/hr/c.txt".to_string(),
+    ];
+    let commands = build_worktree_next_commands(&dir, "my promotion message", &staged);
+    assert_eq!(commands.len(), 3, "{commands:?}");
+    assert!(
+        commands[0].starts_with("cd "),
+        "first command cds into the clone: {commands:?}"
+    );
+    assert!(
+        commands[0].contains(&dir.to_string_lossy().to_string()),
+        "{commands:?}"
+    );
+    assert_eq!(commands[1], "git diff --staged", "{commands:?}");
+    assert_eq!(
+        commands[2], "git commit -m \"my promotion message\" -- package.json src/modules/hr/c.txt",
+        "{commands:?}"
+    );
+
+    // Result shape: worktree carries staged commands and no commit or PR.
+    let worktree_json = serde_json::json!({
+        "accepted": true, "prUrl": null, "prNumber": null,
+        "branch": "staging", "commitSha": null,
+        "targetBranch": "staging", "message": "m", "requestedAt": "t",
+        "findings": [], "delivery": "worktree",
+        "nextCommands": commands,
+    });
+    let result: PromotionDispatchResult =
+        serde_json::from_value(worktree_json).expect("worktree result parses");
+    assert_eq!(result.delivery, PromotionDelivery::Worktree);
+    assert_eq!(result.branch, "staging");
+    assert!(result.commit_sha.is_none());
+    assert!(result.pr_url.is_none());
+    assert!(result.pr_number.is_none());
+    assert!(!result.next_commands.is_empty());
+}

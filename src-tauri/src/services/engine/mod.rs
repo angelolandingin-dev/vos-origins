@@ -60,6 +60,8 @@ pub struct EngineRequest {
     /// `local` builds the branch + commit in the target clone and stops
     /// (no push, no PR); `local_direct` commits the same delta straight onto
     /// the local target branch (no push, no PR — pushing stays manual);
+    /// `worktree` writes the same delta into the user's own checkout of the
+    /// target branch and stages it (no branch, no commit, no push, no PR);
     /// `push_pr` is today's push-then-PR behaviour.
     /// Defaults to `local_direct` when omitted on the wire.
     pub delivery: PromotionDelivery,
@@ -165,6 +167,11 @@ pub struct PromotionReport {
     pub verification: VerificationSummary,
     pub worktree: Option<PathBuf>,
     pub temp_dir: Option<PathBuf>,
+    /// `worktree` delivery only: every path the promotion wrote or deleted,
+    /// staged in the user's own checkout (`git add` / `git rm`). Empty for
+    /// every other delivery mode. The command layer builds the follow-up
+    /// `git commit` pathspec from this, so it must stay exactly the staged set.
+    pub staged_paths: Vec<String>,
 }
 
 impl PromotionReport {
@@ -186,6 +193,7 @@ impl PromotionReport {
             verification: VerificationSummary::default(),
             worktree: None,
             temp_dir: None,
+            staged_paths: Vec::new(),
         }
     }
 
@@ -348,7 +356,7 @@ fn run_inner(
 
     if matches!(
         request.delivery,
-        PromotionDelivery::Local | PromotionDelivery::LocalDirect
+        PromotionDelivery::Local | PromotionDelivery::LocalDirect | PromotionDelivery::Worktree
     ) && !git::is_git_repository(&options.target_repo_dir)
     {
         report.blockers.push(Blocker::new(
@@ -403,6 +411,58 @@ fn run_inner(
             ),
         ));
         return Err(Bail);
+    }
+
+    // `worktree` delivery stages into the user's own checkout, so the local
+    // ref must exist, it must be the currently checked-out branch (otherwise
+    // the files would belong to a different branch), and the tree must be
+    // clean (otherwise the promotion would mix with uncommitted work). Fail
+    // closed before any branch or worktree is created: nothing is touched.
+    if request.delivery == PromotionDelivery::Worktree
+        && git::local_tip(&options.target_repo_dir, &request.target_branch).is_none()
+    {
+        report.blockers.push(Blocker::new(
+            "TARGET_NOT_LOCAL",
+            format!(
+                "Target branch \"{}\" has no local ref to stage onto; check it out (or fetch it) in the local clone first, then re-promote.",
+                request.target_branch
+            ),
+        ));
+        return Err(Bail);
+    }
+    if request.delivery == PromotionDelivery::Worktree {
+        match git::current_branch(&options.target_repo_dir) {
+            Some(current) if current == request.target_branch => {}
+            other => {
+                let actual = other.unwrap_or_else(|| "a detached HEAD".to_string());
+                report.blockers.push(Blocker::new(
+                    "TARGET_NOT_CHECKED_OUT",
+                    format!(
+                        "Target branch \"{}\" is not checked out in '{}' (currently on {actual}); a worktree promotion writes into the working tree, so it would land on the wrong branch. Switch with `git checkout {}` in '{}', then re-promote. Nothing was changed.",
+                        request.target_branch,
+                        options.target_repo_dir.display(),
+                        request.target_branch,
+                        options.target_repo_dir.display(),
+                    ),
+                ));
+                return Err(Bail);
+            }
+        }
+        if !git::status_porcelain(&options.target_repo_dir)
+            .trim()
+            .is_empty()
+        {
+            report.blockers.push(Blocker::new(
+                "DIRTY_WORKTREE",
+                format!(
+                    "Your checkout of \"{}\" in '{}' has uncommitted changes; refusing to mix a promotion with them. Commit or stash them first (`git status` in '{}'), then re-promote. Nothing was changed.",
+                    request.target_branch,
+                    options.target_repo_dir.display(),
+                    options.target_repo_dir.display(),
+                ),
+            ));
+            return Err(Bail);
+        }
     }
 
     let duplicates = history::detect_branch_duplicates(
@@ -842,6 +902,60 @@ fn run_inner(
         ));
         return Err(Bail);
     }
+    // `worktree` delivery: the delta built above (identical copy application,
+    // dependency-delta merge, and lockfile regeneration) is written into the
+    // user's own checkout of the target branch and staged — exactly the paths
+    // the promotion wrote or deleted, nothing else. No branch is created,
+    // nothing is committed (so no provenance trailers are written), nothing
+    // is pushed, and no PR is opened. Status is derived from reachable
+    // history, so a worktree promotion leaves every commit status exactly as
+    // it was; the user reviews with `git diff --staged` and commits
+    // themselves. The temporary branch and worktree are always removed.
+    if request.delivery == PromotionDelivery::Worktree {
+        match stage_into_own_worktree(
+            &options.target_repo_dir,
+            &worktree_dir,
+            &target_tip,
+            &request.target_branch,
+            report,
+            &mode_ops,
+        ) {
+            Ok(staged) => {
+                report.staged_paths = staged;
+            }
+            Err(blocker) => {
+                report.blockers.push(blocker);
+                return Err(Bail);
+            }
+        }
+
+        // The changes are staged in the user's checkout: drop the temporary
+        // branch and worktree so no `integration/*` ref is left behind. The
+        // worktree goes first (a branch checked out in a linked worktree
+        // cannot be deleted), and `*worktree` is cleared so the outer cleanup
+        // does not redo it.
+        git::worktree_remove(&options.target_repo_dir, &worktree_dir);
+        let _ = std::fs::remove_dir_all(&worktree_dir);
+        *worktree = None;
+        if git::run(
+            &options.target_repo_dir,
+            &["branch", "--delete", "--force", &branch_name],
+        )
+        .map(|out| out.status != 0)
+        .unwrap_or(true)
+        {
+            report.warnings.push(Blocker::new(
+                "TEMP_BRANCH_LEFTOVER",
+                format!(
+                    "The promotion was staged on \"{}\" but the temporary branch '{branch_name}' could not be deleted; remove it manually (`git branch -D {branch_name}`).",
+                    request.target_branch,
+                ),
+            ));
+        }
+        report.integration_branch = None;
+        return Ok(());
+    }
+
     let message = provenance::build_provenance_message(&provenance::ProvenanceInput {
         subsystem_id: &subsystem.id,
         source_repo: &subsystem.repository,
@@ -1163,6 +1277,240 @@ fn resolve_local_ref(repo_dir: &Path, branch: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Manifest/lockfile paths the engine may rewrite outside the copied delta
+/// (dependency-delta merge, lockfile regeneration). Compared byte-for-byte
+/// between the built worktree and the pinned target tip so a `worktree`
+/// promotion stages a regenerated lockfile or rewritten manifest exactly
+/// when it changed — a half-applied manifest would be worse than no
+/// promotion at all.
+const WORKTREE_DRIFT_PATHS: [&str; 4] = [
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+];
+
+/// Copy the built delta from the temporary worktree into the user's own
+/// checkout of the target branch and stage exactly the written/deleted paths
+/// (`git add` / `git rm`). The preconditions (checked-out target, clean
+/// tree) are re-checked here because the tree may have moved while the
+/// promotion was being built. Returns the staged paths, sorted. Any failure
+/// rolls the working tree back to the pinned tip and reports a blocker:
+/// nothing is committed on any path.
+fn stage_into_own_worktree(
+    repo: &Path,
+    worktree_dir: &Path,
+    target_tip: &str,
+    target_branch: &str,
+    report: &PromotionReport,
+    mode_ops: &[apply::ModeOp],
+) -> Result<Vec<String>, Blocker> {
+    match git::current_branch(repo) {
+        Some(current) if current == target_branch => {}
+        other => {
+            let actual = other.unwrap_or_else(|| "a detached HEAD".to_string());
+            return Err(Blocker::new(
+                "TARGET_NOT_CHECKED_OUT",
+                format!(
+                    "Target branch \"{target_branch}\" stopped being the checked-out branch of '{}' while the promotion was being built (now on {actual}); nothing was staged. Switch back with `git checkout {target_branch}`, then re-promote.",
+                    repo.display(),
+                ),
+            ));
+        }
+    }
+    if !git::status_porcelain(repo).trim().is_empty() {
+        return Err(Blocker::new(
+            "DIRTY_WORKTREE",
+            format!(
+                "Your checkout of \"{target_branch}\" in '{}' gained uncommitted changes while the promotion was being built; refusing to mix a promotion with them. Commit or stash them first (`git status` in '{}'), then re-promote. Nothing was staged.",
+                repo.display(),
+                repo.display(),
+            ),
+        ));
+    }
+
+    let mut written: HashSet<String> = HashSet::new();
+    written.extend(report.changes.applied.iter().cloned());
+    written.extend(report.changes.updated.iter().cloned());
+    written.extend(report.changes.merged.iter().cloned());
+    written.extend(report.changes.conflict_taken.iter().cloned());
+    let mut deleted: HashSet<String> = report.changes.deleted.iter().cloned().collect();
+    for rel in WORKTREE_DRIFT_PATHS {
+        let built = std::fs::read(worktree_dir.join(rel)).ok();
+        let pinned = git::read_blob(repo, target_tip, rel);
+        match (built, pinned) {
+            (Some(bytes), Some(tip)) if bytes != tip => {
+                written.insert(rel.to_string());
+            }
+            (Some(_), None) => {
+                written.insert(rel.to_string());
+            }
+            (None, Some(_)) => {
+                deleted.insert(rel.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    for rel in written.iter() {
+        if let Err(err) = write_repo_file(repo, worktree_dir, rel) {
+            rollback_worktree_stage(repo, target_tip, &written, &deleted);
+            return Err(Blocker::new(
+                "ENGINE_ERROR",
+                format!(
+                    "Could not write \"{rel}\" into '{}': {err}. The promotion was aborted and the working tree was rolled back; nothing was staged and nothing was committed.",
+                    repo.display(),
+                ),
+            ));
+        }
+    }
+    for rel in deleted.iter() {
+        let abs = repo.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if abs.exists() && std::fs::remove_file(&abs).is_err() {
+            rollback_worktree_stage(repo, target_tip, &written, &deleted);
+            return Err(Blocker::new(
+                "ENGINE_ERROR",
+                format!(
+                    "Could not delete \"{rel}\" from '{}'. The promotion was aborted and the working tree was rolled back; nothing was staged and nothing was committed.",
+                    repo.display(),
+                ),
+            ));
+        }
+    }
+
+    // One `git add` for every written path (plain, never `-f`: a path the
+    // target ignores stays unstaged exactly as the commit flow's `add -A`
+    // would leave it) and one `git rm` for every deletion.
+    if !written.is_empty() {
+        let mut sorted: Vec<&str> = written.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        let mut args: Vec<&str> = vec!["add", "--"];
+        args.extend(sorted);
+        if let Err(err) = git::run_ok(repo, &args) {
+            rollback_worktree_stage(repo, target_tip, &written, &deleted);
+            return Err(Blocker::new(
+                "ENGINE_ERROR",
+                format!(
+                    "Could not stage the promoted files in '{}' ({}); the promotion was aborted and the working tree was rolled back. Nothing was committed.",
+                    repo.display(),
+                    git::sanitize(&err.to_string()),
+                ),
+            ));
+        }
+    }
+    if !deleted.is_empty() {
+        let mut sorted: Vec<&str> = deleted.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        let mut args: Vec<&str> = vec!["rm", "--"];
+        args.extend(sorted);
+        if let Err(err) = git::run_ok(repo, &args) {
+            rollback_worktree_stage(repo, target_tip, &written, &deleted);
+            return Err(Blocker::new(
+                "ENGINE_ERROR",
+                format!(
+                    "Could not stage the promoted deletions in '{}' ({}); the promotion was aborted and the working tree was rolled back. Nothing was committed.",
+                    repo.display(),
+                    git::sanitize(&err.to_string()),
+                ),
+            ));
+        }
+    }
+    for op in mode_ops {
+        if written.contains(&op.path) {
+            git::update_index_chmod(repo, &op.path, op.executable);
+        }
+    }
+
+    // The stage must contain exactly the promotion's paths: anything else
+    // means something raced the promotion into the index.
+    let expected: HashSet<String> = written.union(&deleted).cloned().collect();
+    let staged = match git::run(repo, &["diff", "--cached", "--name-only", "-z"]) {
+        Ok(out) if out.status == 0 => out
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).to_string())
+            .collect::<HashSet<_>>(),
+        _ => {
+            rollback_worktree_stage(repo, target_tip, &written, &deleted);
+            return Err(Blocker::new(
+                "ENGINE_ERROR",
+                format!(
+                    "Could not inspect the index in '{}'; the promotion was aborted and the working tree was rolled back. Nothing was committed.",
+                    repo.display(),
+                ),
+            ));
+        }
+    };
+    if staged != expected {
+        rollback_worktree_stage(repo, target_tip, &written, &deleted);
+        return Err(Blocker::new(
+            "ENGINE_ERROR",
+            format!(
+                "The index in '{}' does not match the promoted paths after staging; the promotion was aborted and the working tree was rolled back. Nothing was committed.",
+                repo.display(),
+            ),
+        ));
+    }
+
+    let mut staged_paths: Vec<String> = expected.into_iter().collect();
+    staged_paths.sort();
+    Ok(staged_paths)
+}
+
+fn write_repo_file(repo: &Path, worktree_dir: &Path, rel: &str) -> Result<(), String> {
+    apply::assert_real_path_within(repo, rel).map_err(|err| err.to_string())?;
+    let from = worktree_dir.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let bytes =
+        std::fs::read(&from).map_err(|err| format!("could not read the built file: {err}"))?;
+    let abs = repo.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+    if let Some(parent) = abs.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+    }
+    std::fs::write(&abs, &bytes)
+        .map_err(|err| format!("could not write {}: {err}", abs.display()))?;
+    Ok(())
+}
+
+/// Best-effort rollback for a failed `worktree` stage: unstage everything
+/// and restore every touched path from the pinned target tip (or delete it
+/// when the tip never carried it). The tree was verified clean before the
+/// stage, so every change present is the promotion's own.
+fn rollback_worktree_stage(
+    repo: &Path,
+    target_tip: &str,
+    written: &HashSet<String>,
+    deleted: &HashSet<String>,
+) {
+    let mut paths: Vec<&str> = written
+        .iter()
+        .chain(deleted.iter())
+        .map(String::as_str)
+        .collect();
+    paths.sort_unstable();
+    if !paths.is_empty() {
+        let mut args: Vec<&str> = vec!["reset", "-q", "HEAD", "--"];
+        args.extend(paths.iter().copied());
+        let _ = git::run(repo, &args);
+    }
+    for rel in written.iter().chain(deleted.iter()) {
+        match git::read_blob(repo, target_tip, rel) {
+            Some(bytes) => {
+                let abs = repo.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+                if let Some(parent) = abs.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&abs, &bytes);
+            }
+            None => {
+                let abs = repo.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+                let _ = std::fs::remove_file(&abs);
+            }
+        }
+    }
 }
 
 fn read_manifest(repo_dir: &Path, sha: &str) -> serde_json::Value {

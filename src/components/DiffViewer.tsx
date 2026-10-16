@@ -17,6 +17,10 @@ import {
 /**
  * Read-only bounded diff viewer (spec §3.2): lightweight renderer with windowed rows;
  * over-bound responses flag truncated; the full file stays one click away on GitHub.
+ *
+ * Fixed comparative measure: every row is exactly ROW_HEIGHT tall and both line-number
+ * gutters are a constant width, so the two compared states are read at one scale
+ * rather than re-zoomed per view.
  */
 
 const ROW_HEIGHT = 20;
@@ -81,11 +85,11 @@ function buildSideBySideRows(hunks: DiffHunk[]): Row[] {
 function lineClasses(kind: DiffLine['kind'] | 'empty'): string {
   switch (kind) {
     case 'added':
-      return 'bg-emerald-950/45';
+      return 'bg-status-applied-soft';
     case 'removed':
-      return 'bg-rose-950/45';
+      return 'bg-status-blocked-soft';
     case 'empty':
-      return 'bg-ink-900/40';
+      return 'bg-raised';
     default:
       return '';
   }
@@ -135,8 +139,8 @@ export function DiffViewer({
 
   return (
     <div className="flex min-h-0 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-ink-700/60 px-3 py-2">
-        <FileCode2 className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
+        <FileCode2 className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
         {files.length > 1 ? (
           <Select
             aria-label="Changed file to preview"
@@ -150,24 +154,31 @@ export function DiffViewer({
             }
           />
         ) : (
-          <span className="mono min-w-0 flex-1 truncate text-slate-200" title={diff.filePath}>
+          <span className="mono min-w-0 flex-1 truncate text-fg" title={diff.filePath}>
             {diff.filePath}
           </span>
         )}
 
-        <span className="chip bg-ink-800 text-slate-300">{diff.language}</span>
-        <span className="text-2xs text-emerald-400">+{diff.additions}</span>
-        <span className="text-2xs text-rose-400">-{diff.deletions}</span>
-        {diff.binary ? <span className="chip bg-ink-800 text-amber-300">binary</span> : null}
+        <span className="chip">{diff.language}</span>
+        <span className="mono text-right text-[11px] text-status-applied-ink tabular-nums">
+          +{diff.additions}
+        </span>
+        <span className="mono text-right text-[11px] text-status-blocked-ink tabular-nums">
+          -{diff.deletions}
+        </span>
+        {diff.binary ? <span className="chip text-status-unknown-ink">binary</span> : null}
 
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-2xs text-slate-500">{total} rows</span>
+          <span className="mono text-right text-[11px] text-disabled tabular-nums">
+            {total} rows
+          </span>
           <Button
             size="sm"
             variant="secondary"
             icon={mode === 'side' ? Columns2 : Rows3}
             onClick={() => setMode(mode === 'side' ? 'unified' : 'side')}
             title={mode === 'side' ? 'Switch to unified diff' : 'Switch to side-by-side diff'}
+            aria-label={mode === 'side' ? 'Switch to unified diff' : 'Switch to side-by-side diff'}
           >
             {mode === 'side' ? 'Side-by-side' : 'Unified'}
           </Button>
@@ -180,7 +191,7 @@ export function DiffViewer({
       </div>
 
       {diff.note ? (
-        <div className="px-3 pt-2">
+        <div className="px-2.5 pt-2">
           <InlineAlert tone="info" title="How this change is applied">
             {diff.note}
           </InlineAlert>
@@ -191,11 +202,10 @@ export function DiffViewer({
       <DiffBody key={`${diff.sha}|${diff.filePath}|${mode}`} rows={rows} filePath={diff.filePath} />
 
       {diff.truncated ? (
-        <div className="border-t border-amber-900/50 bg-amber-950/30 px-3 py-1.5">
-          <p className="flex items-center gap-2 text-2xs text-amber-200">
-            <TriangleAlert className="h-3.5 w-3.5" aria-hidden="true" />
-            This diff was bounded for responsiveness. Open the file on GitHub for the complete
-            patch.
+        <div className="border-t border-status-unknown/40 bg-status-unknown-soft px-2.5 py-1.5">
+          <p className="flex items-center gap-2 text-[11px] text-status-unknown-ink">
+            <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            Diff bounded for responsiveness. Open the file on GitHub for the complete patch.
           </p>
         </div>
       ) : null}
@@ -231,7 +241,7 @@ function DiffBody({ rows, filePath }: { rows: Row[]; filePath: string }) {
     <div
       ref={scrollRef}
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-      className="scroll-area min-h-0 flex-1 overflow-y-auto bg-ink-925"
+      className="scroll-area min-h-0 flex-1 overflow-y-auto bg-ground"
       tabIndex={0}
       role="region"
       aria-label={`Diff of ${filePath}`}
@@ -249,9 +259,9 @@ function DiffBody({ rows, filePath }: { rows: Row[]; filePath: string }) {
                 <div
                   key={key}
                   style={{ height: ROW_HEIGHT }}
-                  className="mono flex items-center gap-3 bg-brand-950/40 px-3 text-2xs text-brand-200"
+                  className="mono flex items-center gap-3 bg-accent-soft px-2.5 text-[11px] text-accent-ink"
                 >
-                  {row.header}
+                  <span className="truncate">{row.header}</span>
                 </div>
               );
             }
@@ -264,29 +274,29 @@ function DiffBody({ rows, filePath }: { rows: Row[]; filePath: string }) {
                   key={key}
                   style={{ height: ROW_HEIGHT }}
                   className={cx(
-                    'mono flex items-center gap-2 px-2 text-2xs leading-none',
+                    'mono flex items-center gap-2 px-2 text-[11px] leading-none',
                     lineClasses(line.kind),
                   )}
                 >
-                  <span className="w-10 shrink-0 select-none text-right text-slate-500">
+                  <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
                     {line.oldLine ?? ''}
                   </span>
-                  <span className="w-10 shrink-0 select-none text-right text-slate-500">
+                  <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
                     {line.newLine ?? ''}
                   </span>
                   <span
                     className={cx(
-                      'w-3 shrink-0 select-none text-center',
+                      'w-3 shrink-0 text-center select-none',
                       line.kind === 'added'
-                        ? 'text-emerald-400'
+                        ? 'text-status-applied'
                         : line.kind === 'removed'
-                          ? 'text-rose-400'
-                          : 'text-slate-500',
+                          ? 'text-status-blocked'
+                          : 'text-disabled',
                     )}
                   >
                     {sign}
                   </span>
-                  <span className="min-w-0 truncate text-slate-200" title={line.text}>
+                  <span className="min-w-0 truncate text-fg" title={line.text}>
                     {line.text || ' '}
                   </span>
                 </div>
@@ -297,7 +307,7 @@ function DiffBody({ rows, filePath }: { rows: Row[]; filePath: string }) {
               <div
                 key={key}
                 style={{ height: ROW_HEIGHT }}
-                className="mono grid grid-cols-2 text-2xs leading-none"
+                className="mono grid grid-cols-2 text-[11px] leading-none"
               >
                 {(['left', 'right'] as const).map((side) => {
                   const line = side === 'left' ? row.left : row.right;
@@ -317,25 +327,25 @@ function DiffBody({ rows, filePath }: { rows: Row[]; filePath: string }) {
                       className={cx(
                         'flex min-w-0 items-center gap-2 px-2',
                         lineClasses(line.kind),
-                        side === 'right' && 'border-l border-ink-700/60',
+                        side === 'right' && 'border-l border-line',
                       )}
                     >
-                      <span className="w-10 shrink-0 select-none text-right text-slate-500">
+                      <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
                         {lineNumber ?? ''}
                       </span>
                       <span
                         className={cx(
-                          'w-3 shrink-0 select-none text-center',
+                          'w-3 shrink-0 text-center select-none',
                           line.kind === 'added'
-                            ? 'text-emerald-400'
+                            ? 'text-status-applied'
                             : line.kind === 'removed'
-                              ? 'text-rose-400'
-                              : 'text-slate-600',
+                              ? 'text-status-blocked'
+                              : 'text-disabled',
                         )}
                       >
                         {sign}
                       </span>
-                      <span className="min-w-0 truncate text-slate-200" title={line.text}>
+                      <span className="min-w-0 truncate text-fg" title={line.text}>
                         {line.text || ' '}
                       </span>
                     </div>

@@ -74,33 +74,32 @@ export interface CommitTableProps {
   emptyMessage?: string;
 }
 
+/** Timeline dot: status colour lives on this 10px dot only — never on the row. */
 function dotClassFor(commit: CommitSummary): string {
   const kind = commit.status.kind;
   switch (kind) {
     case 'integrated':
-      return 'bg-emerald-400 ring-emerald-400/30';
+      return 'bg-status-integrated ring-status-integrated/30';
     case 'promotion_running':
-      return 'bg-orange-400 ring-orange-400/30';
     case 'promotion_queued':
-      return 'bg-amber-400 ring-amber-400/30';
+      return 'bg-status-unknown ring-status-unknown/30';
     case 'pr_open':
+      return 'bg-status-applied ring-status-applied/30';
     case 'in_review':
-      return 'bg-violet-400 ring-violet-400/30';
+      return 'bg-status-eligible ring-status-eligible/30';
     case 'applied':
-      return 'bg-teal-400 ring-teal-400/30';
+      return 'bg-status-applied ring-status-applied/30';
     case 'divergent':
-      return 'bg-amber-400 ring-amber-400/30';
+      return 'bg-status-divergent ring-status-divergent/30';
     case 'superseded':
-      return 'bg-slate-500 ring-slate-500/30';
     case 'reverted':
-      return 'bg-slate-400 ring-slate-400/30';
+    case 'unknown':
+      return 'bg-status-superseded ring-status-superseded/30';
     case 'blocked':
     case 'failed':
-      return 'bg-rose-400 ring-rose-400/30';
-    case 'unknown':
-      return 'bg-slate-500 ring-slate-500/30';
+      return 'bg-status-blocked ring-status-blocked/30';
     default:
-      return 'bg-emerald-500 ring-emerald-500/20';
+      return 'bg-status-eligible ring-status-eligible/30';
   }
 }
 
@@ -145,10 +144,10 @@ export function CommitTable({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-ink-700/60 px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
         <div className="relative min-w-[180px] flex-1">
           <Search
-            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"
+            className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-disabled"
             aria-hidden="true"
           />
           <input
@@ -175,7 +174,6 @@ export function CommitTable({
         <Button
           size="sm"
           variant="secondary"
-          className="h-[38px]"
           icon={sort === 'newest' ? ArrowDownUp : ArrowUpDown}
           onClick={() => onSortChange(sort === 'newest' ? 'oldest' : 'newest')}
           title={
@@ -192,8 +190,8 @@ export function CommitTable({
         <div className="ml-auto flex items-center gap-2">
           {selectedShas.length > 0 ? (
             <>
-              <span className="chip bg-brand-900/50 text-brand-100 ring-1 ring-inset ring-brand-700/70">
-                <SquareCheck className="h-3 w-3" aria-hidden="true" />
+              <span className="chip text-accent-ink tabular-nums">
+                <SquareCheck className="h-2.5 w-2.5" aria-hidden="true" />
                 {selectedShas.length} selected
               </span>
               <IconButton icon={X} label="Clear commit selection" onClick={onClearSelection} />
@@ -221,7 +219,7 @@ export function CommitTable({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="scroll-area min-h-0 flex-1">
         {loading && commits.length === 0 ? (
           <LoadingState label="Loading commits…" />
         ) : error ? (
@@ -258,7 +256,7 @@ export function CommitTable({
             </caption>
             <thead className="sticky top-0 z-10">
               <tr className="table-head">
-                <th scope="col" className="w-10 py-2 pl-3 text-left">
+                <th scope="col" className="w-10 py-2 pl-2.5 text-left">
                   <Checkbox
                     checked={allPageSelected}
                     inputRef={(element) => {
@@ -275,19 +273,19 @@ export function CommitTable({
                   />
                 </th>
                 <th scope="col" className="w-6 py-2" />
-                <th scope="col" className="w-24 py-2 pr-3 text-left">
+                <th scope="col" className="w-24 py-2 pr-2.5 text-right">
                   SHA
                 </th>
-                <th scope="col" className="py-2 pr-3 text-left">
+                <th scope="col" className="py-2 pr-2.5 text-left">
                   Message
                 </th>
-                <th scope="col" className="hidden w-40 py-2 pr-3 text-left xl:table-cell">
+                <th scope="col" className="hidden w-40 py-2 pr-2.5 text-left xl:table-cell">
                   Author
                 </th>
-                <th scope="col" className="hidden w-28 py-2 pr-3 text-left xl:table-cell">
+                <th scope="col" className="hidden w-28 py-2 pr-2.5 text-right xl:table-cell">
                   Authored
                 </th>
-                <th scope="col" className="w-44 py-2 pr-3 text-right">
+                <th scope="col" className="w-44 py-2 pr-2.5 text-right">
                   Status
                 </th>
               </tr>
@@ -300,12 +298,11 @@ export function CommitTable({
                   <tr
                     key={commit.sha}
                     className={cx(
-                      'row-hover border-b border-ink-800/70',
-                      focused && 'bg-ink-800/70',
-                      selected && !focused && 'bg-brand-950/25',
+                      'row-hover h-[50px] border-b border-line',
+                      (focused || selected) && 'bg-selection',
                     )}
                   >
-                    <td className="align-top py-2.5 pl-3">
+                    <td className="py-2 pl-2.5 align-top">
                       <Checkbox
                         checked={selected}
                         onChange={() => {
@@ -318,48 +315,48 @@ export function CommitTable({
                     <td className="relative w-6 align-top">
                       <span
                         aria-hidden="true"
-                        className="absolute bottom-0 left-1/2 top-0 w-px -translate-x-1/2 bg-ink-700/80"
+                        className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 bg-line"
                       />
                       <span
                         aria-hidden="true"
                         className={cx(
-                          'absolute left-1/2 top-4 h-2.5 w-2.5 -translate-x-1/2 rounded-full ring-2',
+                          'absolute top-4 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full ring-2',
                           dotClassFor(commit),
                         )}
                       />
                     </td>
-                    <td className="align-top py-2.5 pr-3">
+                    <td className="py-2 pr-2.5 align-top">
                       <button
                         type="button"
                         onClick={() => onFocusSha(commit.sha)}
                         title={`${commit.sha}\n${statusAppearance(commit.status.kind).meaning}`}
-                        className="mono rounded-sm text-brand-300 hover:text-brand-200 hover:underline"
+                        className="mono block w-full rounded-[3px] text-right text-accent-ink hover:underline"
                       >
                         {commit.shortSha}
                       </button>
                     </td>
-                    <td className="align-top py-2.5 pr-3">
+                    <td className="max-w-[52ch] py-2 pr-2.5 align-top">
                       <button
                         type="button"
                         onClick={() => onFocusSha(commit.sha)}
-                        className="block max-w-[52ch] truncate text-left text-sm text-slate-100 hover:text-white"
+                        className="block w-full truncate text-left text-xs text-fg hover:text-fg"
                         title={commit.subject}
                       >
                         {commit.subject}
                       </button>
-                      <p className="mt-0.5 truncate text-2xs text-slate-400">
+                      <p className="mt-0.5 truncate text-[11px] text-muted">
                         {commit.authorLogin ?? commit.authorName} · {commit.relativeTime}
-                        {commit.isMerge ? ' · merge commit (first-parent delta)' : ''}
+                        {commit.isMerge ? ' · merge commit' : ''}
                         {commit.touchesManifest ? ' · manifest change' : ''}
                       </p>
                     </td>
-                    <td className="hidden align-top py-2.5 pr-3 text-xs text-slate-300 xl:table-cell">
-                      <span className="truncate">{commit.authorName}</span>
+                    <td className="hidden max-w-40 py-2 pr-2.5 align-top text-xs text-muted xl:table-cell">
+                      <span className="block truncate">{commit.authorName}</span>
                     </td>
-                    <td className="mono hidden align-top py-2.5 pr-3 text-slate-400 xl:table-cell">
+                    <td className="mono hidden py-2 pr-2.5 text-right text-muted tabular-nums xl:table-cell">
                       {formatDate(commit.authoredAt)}
                     </td>
-                    <td className="align-top py-2.5 pr-3">
+                    <td className="py-2 pr-2.5 align-top">
                       <div className="flex items-center justify-end gap-1.5">
                         {selected ? <StatusBadge kind="selected" /> : null}
                         <CommitStatusBadge status={commit.status} />
@@ -373,28 +370,26 @@ export function CommitTable({
         )}
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-700/60 px-3 py-2">
-        <p className="text-2xs text-slate-400">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-2.5 py-2">
+        <p className="truncate text-[11px] text-muted">
           {total === 0
             ? 'No commits'
             : `Showing ${rangeStart}–${rangeEnd} of ${total} on ${page?.sourceBranch ?? 'source'}`}
-          <span className="ml-1 text-slate-500">· status for target {targetBranch}</span>
+          <span className="ml-1 text-disabled">· status for target {targetBranch}</span>
         </p>
         <div className="flex items-center gap-2">
-          <label className="flex items-center gap-1.5 text-2xs text-slate-400">
+          <label className="flex items-center gap-1.5 text-[11px] text-muted">
             Rows
-            <select
-              className="rounded-md border border-ink-600/80 bg-ink-900/80 px-2 py-1 text-2xs text-slate-200"
-              value={pageSize}
+            <Select
+              className="w-[76px]"
+              value={String(pageSize)}
               onChange={(event) => onPageSizeChange(Number(event.target.value))}
               aria-label="Rows per page"
-            >
-              {[10, 25, 50, 100].map((size) => (
-                <option key={size} value={size}>
-                  {size}
-                </option>
-              ))}
-            </select>
+              options={[10, 25, 50, 100].map((size) => ({
+                value: String(size),
+                label: String(size),
+              }))}
+            />
           </label>
           <IconButton
             icon={ChevronLeft}
@@ -402,7 +397,7 @@ export function CommitTable({
             disabled={pageNumber <= 1}
             onClick={() => onPageChange(Math.max(1, pageNumber - 1))}
           />
-          <span className="mono text-2xs text-slate-400">
+          <span className="mono text-right text-muted tabular-nums">
             {pageNumber} / {totalPages}
           </span>
           <IconButton

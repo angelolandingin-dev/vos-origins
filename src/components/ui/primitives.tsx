@@ -63,15 +63,15 @@ export function Button({
       type="button"
       {...rest}
       disabled={disabled || loading}
-      className={cx(variantClass, size === 'sm' && 'px-2.5 py-1.5 text-xs', className)}
+      className={cx(variantClass, size === 'sm' && 'h-[21px] px-2 text-[11px]', className)}
     >
       {loading ? (
-        <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+        <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
       ) : Icon ? (
-        <Icon className="h-4 w-4" aria-hidden="true" />
+        <Icon className="h-3.5 w-3.5" aria-hidden="true" />
       ) : null}
       {children}
-      {Trailing ? <Trailing className="h-4 w-4 opacity-70" aria-hidden="true" /> : null}
+      {Trailing ? <Trailing className="h-3.5 w-3.5 opacity-70" aria-hidden="true" /> : null}
     </button>
   );
 }
@@ -94,11 +94,11 @@ export function IconButton({
       title={label}
       aria-label={label}
       className={cx(
-        'inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-300 transition-colors',
+        'inline-flex h-[25px] w-[25px] items-center justify-center rounded-md text-muted transition-colors',
         tone === 'danger'
-          ? 'hover:bg-rose-900/50 hover:text-rose-200'
-          : 'hover:bg-ink-700 hover:text-white',
-        'disabled:cursor-not-allowed disabled:opacity-40',
+          ? 'hover:bg-status-blocked-soft hover:text-status-blocked-ink'
+          : 'hover:bg-hover hover:text-fg',
+        'disabled:cursor-not-allowed disabled:opacity-60',
         className,
       )}
     >
@@ -108,9 +108,7 @@ export function IconButton({
 }
 
 export function Spinner({ className = 'h-4 w-4' }: { className?: string }) {
-  return (
-    <LoaderCircle className={cx('animate-spin text-brand-400', className)} aria-hidden="true" />
-  );
+  return <LoaderCircle className={cx('animate-spin text-accent', className)} aria-hidden="true" />;
 }
 
 export function Select({
@@ -135,7 +133,7 @@ export function Select({
         ))}
       </select>
       <ChevronDown
-        className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+        className="pointer-events-none absolute top-1/2 right-2 h-3.5 w-3.5 -translate-y-1/2 text-muted"
         aria-hidden="true"
       />
     </span>
@@ -155,11 +153,7 @@ export function Checkbox({
       aria-label={label}
       title={label}
       {...rest}
-      className={cx(
-        'h-4 w-4 shrink-0 cursor-pointer rounded-sm border-ink-500 bg-ink-900 text-brand-600',
-        'focus:ring-2 focus:ring-brand-500 focus:ring-offset-1 focus:ring-offset-ink-870',
-        className,
-      )}
+      className={cx('h-3.5 w-3.5 shrink-0 cursor-pointer accent-accent', className)}
     />
   );
 }
@@ -178,16 +172,16 @@ export function Field({
   required?: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1">
       <label
         htmlFor={htmlFor}
-        className="text-xs font-semibold uppercase tracking-wide text-slate-400"
+        className="text-[11px] font-semibold tracking-wide text-muted uppercase"
       >
         {label}
-        {required ? <span className="ml-1 text-rose-400">*</span> : null}
+        {required ? <span className="ml-1 text-status-blocked-ink">*</span> : null}
       </label>
       {children}
-      {hint ? <p className="text-2xs leading-relaxed text-slate-500">{hint}</p> : null}
+      {hint ? <p className="text-[11px] leading-relaxed text-muted">{hint}</p> : null}
     </div>
   );
 }
@@ -216,10 +210,10 @@ export function Panel({
       {title || actions ? (
         <header className={cx('panel-header', headerClassName)}>
           <div className="min-w-0">
-            {title ? <h2 className="panel-title truncate">{title}</h2> : null}
-            {subtitle ? <p className="muted mt-0.5 truncate">{subtitle}</p> : null}
+            {title ? <h2 className="panel-title">{title}</h2> : null}
+            {subtitle ? <p className="muted mt-px truncate">{subtitle}</p> : null}
           </div>
-          {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+          {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
         </header>
       ) : null}
       <div className={cx('min-h-0 flex-1', bodyClassName)}>{children}</div>
@@ -254,7 +248,7 @@ export function Tabs({
       aria-label={ariaLabel}
       aria-orientation="horizontal"
       className={cx(
-        'flex items-center gap-1 overflow-x-auto border-b border-ink-700/60 px-2',
+        'flex h-[29px] items-center gap-0.5 overflow-x-auto border-b border-line px-2',
         className,
       )}
     >
@@ -268,23 +262,13 @@ export function Tabs({
           disabled={item.disabled}
           title={item.title ?? item.label}
           onClick={() => onChange(item.id)}
-          className={cx(
-            'tab',
-            value === item.id && 'tab-active',
-            item.disabled && 'cursor-not-allowed opacity-40',
-          )}
+          className={cx('tab', value === item.id && 'tab-active')}
         >
-          {item.label}
+          <span className="truncate">{item.label}</span>
           {typeof item.count === 'number' ? (
-            <span className="ml-1.5 rounded-full bg-ink-700/80 px-1.5 py-0.5 text-2xs text-slate-300">
+            <span className="rounded-[20px] bg-raised px-[5px] py-[2px] text-badge leading-none font-semibold text-muted tabular-nums">
               {item.count}
             </span>
-          ) : null}
-          {value === item.id ? (
-            <span
-              aria-hidden="true"
-              className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-brand-500"
-            />
           ) : null}
         </button>
       ))}
@@ -297,7 +281,7 @@ export function LoadingState({ label = 'Loading…' }: { label?: string }) {
     <div
       role="status"
       aria-live="polite"
-      className="flex items-center justify-center gap-3 p-8 text-sm text-slate-400"
+      className="flex items-center justify-center gap-2 p-8 text-xs text-muted"
     >
       <Spinner />
       {label}
@@ -322,10 +306,10 @@ export function EmptyState({
     <div
       className={cx('flex flex-col items-center justify-center gap-2 p-8 text-center', className)}
     >
-      {Icon ? <Icon className="h-6 w-6 text-slate-500" aria-hidden="true" /> : null}
-      <p className="text-sm font-medium text-slate-200">{title}</p>
+      {Icon ? <Icon className="h-8 w-8 text-disabled" aria-hidden="true" /> : null}
+      <p className="text-xs font-semibold text-fg">{title}</p>
       {message ? (
-        <p className="max-w-md text-xs leading-relaxed text-slate-400">{message}</p>
+        <p className="max-w-md text-[11px] leading-relaxed text-muted">{message}</p>
       ) : null}
       {action ? <div className="mt-2">{action}</div> : null}
     </div>
@@ -347,24 +331,24 @@ export function ErrorState({
   return (
     <div
       className={cx(
-        'flex flex-col items-center justify-center gap-3 text-center',
+        'flex flex-col items-center justify-center gap-2.5 text-center',
         compact ? 'p-4' : 'p-8',
         className,
       )}
       role="alert"
     >
-      <CircleAlert className="h-6 w-6 text-rose-400" aria-hidden="true" />
+      <CircleAlert className="h-6 w-6 text-status-blocked" aria-hidden="true" />
       <div className="space-y-1">
-        <p className="text-sm font-semibold text-rose-200">{error.message}</p>
-        <p className="mono text-slate-500">code: {error.code}</p>
+        <p className="text-xs font-semibold text-status-blocked-ink">{error.message}</p>
+        <p className="mono text-disabled">code: {error.code}</p>
       </div>
       {error.remedy ? (
-        <p className="max-w-lg text-xs leading-relaxed text-slate-300">{error.remedy}</p>
+        <p className="max-w-lg text-[11px] leading-relaxed text-muted">{error.remedy}</p>
       ) : null}
       {error.details ? (
         <details className="w-full max-w-lg text-left">
-          <summary className="cursor-pointer text-2xs text-slate-400">Technical detail</summary>
-          <pre className="mono mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-ink-700 bg-ink-900 p-2 text-2xs text-slate-400">
+          <summary className="cursor-pointer text-[11px] text-muted">Technical detail</summary>
+          <pre className="mono mt-2 max-h-40 overflow-auto rounded-md border border-line bg-raised p-2 whitespace-pre-wrap text-muted">
             {error.details}
           </pre>
         </details>
@@ -393,24 +377,24 @@ export function InlineAlert({
 }) {
   const tones = {
     info: {
-      wrap: 'border-brand-700/60 bg-brand-950/40 text-brand-100',
+      wrap: 'border-status-eligible/40 bg-status-eligible-soft text-status-eligible-ink',
       icon: Info,
-      iconClass: 'text-brand-300',
+      iconClass: 'text-status-eligible',
     },
     success: {
-      wrap: 'border-emerald-800/70 bg-emerald-950/40 text-emerald-100',
+      wrap: 'border-status-applied/40 bg-status-applied-soft text-status-applied-ink',
       icon: CircleCheck,
-      iconClass: 'text-emerald-300',
+      iconClass: 'text-status-applied',
     },
     warning: {
-      wrap: 'border-amber-800/70 bg-amber-950/40 text-amber-100',
+      wrap: 'border-status-unknown/40 bg-status-unknown-soft text-status-unknown-ink',
       icon: TriangleAlert,
-      iconClass: 'text-amber-300',
+      iconClass: 'text-status-unknown',
     },
     danger: {
-      wrap: 'border-rose-900/70 bg-rose-950/40 text-rose-100',
+      wrap: 'border-status-blocked/40 bg-status-blocked-soft text-status-blocked-ink',
       icon: CircleAlert,
-      iconClass: 'text-rose-300',
+      iconClass: 'text-status-blocked',
     },
   } as const;
   const tone_ = tones[tone];
@@ -419,23 +403,23 @@ export function InlineAlert({
   return (
     <div
       role={tone === 'danger' ? 'alert' : 'status'}
-      className={cx('flex gap-3 rounded-lg border px-3 py-2.5 text-xs', tone_.wrap, className)}
+      className={cx('flex gap-2.5 rounded-md border px-2.5 py-2 text-xs', tone_.wrap, className)}
     >
-      <Icon className={cx('mt-0.5 h-4 w-4 shrink-0', tone_.iconClass)} aria-hidden="true" />
+      <Icon className={cx('mt-px h-4 w-4 shrink-0', tone_.iconClass)} aria-hidden="true" />
       <div className="min-w-0 flex-1 space-y-1">
         <p className="font-semibold">{title}</p>
-        {children ? <div className="leading-relaxed text-slate-300">{children}</div> : null}
+        {children ? <div className="leading-relaxed">{children}</div> : null}
       </div>
-      {actions ? <div className="flex shrink-0 items-start gap-2">{actions}</div> : null}
+      {actions ? <div className="flex shrink-0 items-start gap-1.5">{actions}</div> : null}
     </div>
   );
 }
 
 export function KeyValue({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex items-start justify-between gap-3 py-1.5">
-      <span className="text-xs text-slate-400">{label}</span>
-      <span className="min-w-0 max-w-[65%] text-right text-xs text-slate-200">{children}</span>
+    <div className="flex items-start justify-between gap-2.5 py-1">
+      <span className="text-xs text-muted">{label}</span>
+      <span className="min-w-0 max-w-[65%] text-right text-xs text-fg">{children}</span>
     </div>
   );
 }
@@ -484,11 +468,15 @@ export function Modal({
 
   if (!open) return null;
 
-  const widths = { sm: 'sm:max-w-md', md: 'sm:max-w-2xl', lg: 'sm:max-w-4xl' };
+  const widths = {
+    sm: 'sm:max-w-[400px]',
+    md: 'sm:max-w-[520px]',
+    lg: 'sm:max-w-[600px]',
+  };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-ink-950/80 backdrop-blur-xs sm:items-center sm:p-6"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim sm:items-center sm:p-6"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -501,17 +489,20 @@ export function Modal({
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
         className={cx(
-          'flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-2xl border border-ink-700 bg-ink-870 shadow-popover animate-fade-in sm:rounded-xl',
+          'flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-md border border-line bg-overlay shadow-dialog animate-fade-in sm:rounded-md',
           widths[size],
         )}
       >
-        <header className="flex items-start justify-between gap-4 border-b border-ink-700/70 px-5 py-4">
+        <header className="flex h-[50px] shrink-0 items-center justify-between gap-3 border-b border-line px-5">
           <div className="min-w-0">
-            <h2 id={titleId} className="text-base font-semibold text-white">
+            <h2 id={titleId} className="truncate text-sm font-semibold text-fg">
               {title}
             </h2>
             {description ? (
-              <div id={descriptionId} className="mt-1 text-xs leading-relaxed text-slate-400">
+              <div
+                id={descriptionId}
+                className="mt-0.5 truncate text-[11px] leading-relaxed text-muted"
+              >
                 {description}
               </div>
             ) : null}
@@ -520,7 +511,7 @@ export function Modal({
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
         {footer ? (
-          <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-ink-700/70 px-5 py-4">
+          <footer className="flex flex-wrap items-center justify-end gap-1.5 border-t border-line px-5 py-3">
             {footer}
           </footer>
         ) : null}

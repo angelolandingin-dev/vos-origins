@@ -3,7 +3,10 @@
 //! Delivery is local-first: `local_direct` (default) commits the delta straight
 //! onto the local target branch (no push, no PR — pushing stays manual);
 //! `local` builds a branch + commit in the user's clone (no push, no PR);
-//! `push_pr` is the explicit opt-in that pushes and opens a PR.
+//! `worktree` writes the delta into the user's own checkout of the target
+//! branch and stages it (no branch, no commit, no push, no PR — the user
+//! commits themselves); `push_pr` is the explicit opt-in that pushes and
+//! opens a PR.
 
 use std::path::{Path, PathBuf};
 
@@ -86,12 +89,12 @@ pub async fn dispatch_promotion(
 
     let delivery = request.delivery;
 
-    // Target checkout resolution. `local*` prefers the user's own clone:
+    // Target checkout resolution. `local*`/`worktree` prefers the user's own clone:
     // registry `localMainRepositoryPath` → `VOS_TARGET_REPO_DIR` → the
     // tool-managed checkout cache. `push_pr` keeps today's behaviour
     // (`VOS_TARGET_REPO_DIR` else a disposable temp clone).
     let (target_repo_dir, cloned_dir, used_managed_fallback) = match delivery {
-        PromotionDelivery::Local | PromotionDelivery::LocalDirect => {
+        PromotionDelivery::Local | PromotionDelivery::LocalDirect | PromotionDelivery::Worktree => {
             let (dir, fallback) = resolve_local_target(&registry, &token)?;
             (dir, None, fallback)
         }
@@ -245,6 +248,47 @@ pub async fn dispatch_promotion(
             requested_at: now_rfc3339(),
             findings: engine_findings_local(&report, used_managed_fallback),
             delivery: PromotionDelivery::Local,
+            next_commands,
+        });
+    }
+
+    // `worktree`: the delta is staged in the user's own checkout of the
+    // target branch — no branch, no commit (so no provenance trailers), no
+    // push, no PR. Statuses are derived from reachable history, so a
+    // worktree promotion leaves every commit status exactly as it was. The
+    // message says so in plain words and never implies an integration.
+    if delivery == PromotionDelivery::Worktree {
+        let next_commands = build_worktree_next_commands(
+            &local_dir_for_commands,
+            &request.message,
+            &report.staged_paths,
+        );
+        let where_note = if used_managed_fallback {
+            format!(
+                " in the tool-managed checkout '{}' (your local clone was not configured, so the managed checkout under the checkouts cache was used — this is not your personal clone)",
+                local_dir_for_commands.display()
+            )
+        } else {
+            format!(
+                " in your local clone '{}'",
+                local_dir_for_commands.display()
+            )
+        };
+        let staged_count = report.staged_paths.len();
+        return Ok(PromotionDispatchResult {
+            accepted: true,
+            pr_url: None,
+            pr_number: None,
+            branch: target_for_message.clone(),
+            commit_sha: None,
+            target_branch: request.target_branch.clone(),
+            message: format!(
+                "The selected delta was applied to your working tree on '{target}'{where_note} and staged ({staged_count} path(s)): review with `git diff --staged`, then commit yourself with the listed commit command. Nothing was committed, nothing was pushed, and no PR was opened — commit statuses are unchanged because status is derived from reachable history.",
+                target = target_for_message,
+            ),
+            requested_at: now_rfc3339(),
+            findings: engine_findings_worktree(&report, used_managed_fallback),
+            delivery: PromotionDelivery::Worktree,
             next_commands,
         });
     }
@@ -524,6 +568,35 @@ async fn resolve_push_pr_target(
     }
 }
 
+/// Follow-up steps for a `worktree` promotion (copyable in the UI): the
+/// delta is already staged, so the user reviews the index and commits with
+/// the promotion message as the commit subject, keeping the provenance
+/// wording if they want it.
+pub fn build_worktree_next_commands(
+    local_path: &Path,
+    promotion_message: &str,
+    staged_paths: &[String],
+) -> Vec<String> {
+    let subject = promotion_message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let subject = subject.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut commands = vec![
+        format!("cd {}", local_path.display()),
+        "git diff --staged".to_string(),
+    ];
+    if staged_paths.is_empty() {
+        commands.push(format!("git commit -m \"{subject}\""));
+    } else {
+        commands.push(format!(
+            "git commit -m \"{subject}\" -- {}",
+            staged_paths.join(" ")
+        ));
+    }
+    commands
+}
+
 /// Literal push step for a `local_direct` promotion (copyable in the UI):
 /// the commit is already on the local target branch, so only the push is
 /// manual.
@@ -655,6 +728,36 @@ fn engine_findings_local_direct(
     findings
 }
 
+fn engine_findings_worktree(
+    report: &PromotionReport,
+    used_managed_fallback: bool,
+) -> Vec<ValidationFinding> {
+    let mut findings = Vec::new();
+    findings.push(ValidationFinding::info(
+        "worktree_only",
+        format!(
+            "Staged {} path(s) in the working tree; nothing was committed, nothing was pushed, and no PR was opened. Commit statuses are unchanged — review with `git diff --staged`, then commit yourself.",
+            report.staged_paths.len()
+        ),
+    ));
+    if used_managed_fallback {
+        findings.push(ValidationFinding::warning(
+            "managed_checkout_fallback",
+            "No local clone was configured, so the tool-managed checkout under the checkouts cache was used instead of your personal clone.",
+            "Set the local clone in Settings (localMainRepositoryPath) or VOS_TARGET_REPO_DIR to promote inside your own clone.",
+        ));
+    }
+    findings.push(ValidationFinding::info(
+        "selection_scope",
+        format!(
+            "Applied only the first-parent delta of {} selected SHA(s). Unselected commits were never imported.",
+            report.verification.order.len()
+        ),
+    ));
+    append_shared_findings(report, &mut findings);
+    findings
+}
+
 fn engine_findings(report: &PromotionReport) -> Vec<ValidationFinding> {
     let mut findings = Vec::new();
     findings.push(ValidationFinding::info(
@@ -758,7 +861,7 @@ fn map_blocker(report: &PromotionReport) -> AppError {
     let (code, remedy) = match blocker.code.as_str() {
         "SUBSYSTEM_NOT_REGISTERED" | "SUBSYSTEM_DISABLED" | "SUBSYSTEM_INVALID" | "REGISTRY_INVALID" => (
             ErrorCode::InvalidRegistry,
-            "Register or enable the subsystem in %APPDATA%\\subsystem-integration-manager\\registry.json.",
+            "Register or enable the subsystem in %APPDATA%\\vos-origin\\registry.json.",
         ),
         "TARGET_INVALID" | "TARGET_NOT_ALLOWED" | "TARGET_NOT_FOUND" | "TARGET_NOT_LOCAL" => (
             ErrorCode::BranchNotPermitted,
@@ -774,7 +877,11 @@ fn map_blocker(report: &PromotionReport) -> AppError {
         ),
         "DIRTY_WORKTREE" => (
             ErrorCode::InvalidRequest,
-            "Commit or stash your working-tree changes in the local clone first (`git status` to inspect them), then re-promote. The promotion never fast-forwards a dirty checkout.",
+            "Commit or stash your working-tree changes in the local clone first (`git status` to inspect them), then re-promote. The promotion never mixes with uncommitted work.",
+        ),
+        "TARGET_NOT_CHECKED_OUT" => (
+            ErrorCode::InvalidRequest,
+            "Check out the target branch in the local clone (`git checkout <branch>`), then re-promote. A worktree promotion writes into the working tree, so the target branch must be the checked-out one.",
         ),
         "BRANCH_ALREADY_EXISTS" => (
             ErrorCode::DuplicateIntegration,

@@ -5,7 +5,6 @@ import {
   GitBranch,
   GitPullRequestArrow,
   Package,
-  ShieldAlert,
   TriangleAlert,
   X,
 } from 'lucide-react';
@@ -21,14 +20,23 @@ import type {
   SubsystemSummary,
   TargetBranchList,
 } from '../api/types';
-import { CommitStatusBadge, StatusBadge } from './StatusBadge';
-import { cx } from './ui/cx';
-import { Button, Checkbox, Field, InlineAlert, Modal, Select } from './ui/primitives';
+import { CommitStatusBadge } from './StatusBadge';
+import {
+  Button,
+  Checkbox,
+  Field,
+  IconButton,
+  InlineAlert,
+  KeyValue,
+  Modal,
+  Select,
+} from './ui/primitives';
 
 /**
- * Promotion dialog (spec §5.1). Local-first: `local` creates a branch + commit
- * in the user's clone (no push, no PR); `push_pr` is the explicit opt-in that
- * opens an integration PR against main-system/<branch>.
+ * Promotion dialog (spec §5.1). Local-first: `local_direct` (default) commits
+ * onto the local target branch; `worktree` stages into the working tree (no
+ * commit, no push); `local` creates a branch + commit in the user's clone (no
+ * push, no PR); `push_pr` is the explicit opt-in that opens an integration PR.
  */
 
 export interface PromotionDialogProps {
@@ -122,13 +130,16 @@ function PromotionDialogContent({
   const cumulative = mode === 'cumulative';
   const multiManifest = commits.filter((commit) => commit.touchesManifest).length > 1;
   const isDirect = delivery === 'local_direct';
+  const isWorktree = delivery === 'worktree';
   const isLocal = delivery === 'local';
   const isPushPr = delivery === 'push_pr';
   const deliveryHint = isDirect
     ? `The commit lands on your local ${targetBranch}; pushing is yours to do.`
-    : isLocal
-      ? 'Creates a branch + commit in your clone (you push it yourself).'
-      : 'Pushes the integration branch and opens a PR (explicit opt-in).';
+    : isWorktree
+      ? `Stages the files into your working tree on ${targetBranch} — no commit, no push.`
+      : isLocal
+        ? 'Creates a branch + commit in your clone (you push it yourself).'
+        : 'Pushes the integration branch and opens a PR (explicit opt-in).';
 
   const canDispatch =
     !dispatching &&
@@ -154,11 +165,7 @@ function PromotionDialogContent({
       onClose={onClose}
       size="lg"
       title="Promote commits to a main-system branch"
-      description={
-        subsystem
-          ? `Source: ${subsystem.name} (${subsystem.repository}) · source branch ${subsystem.sourceBranch}`
-          : 'Select a subsystem first.'
-      }
+      description={subsystem ? subsystem.name : 'Select a subsystem first.'}
       footer={
         result?.accepted ? (
           <>
@@ -187,9 +194,11 @@ function PromotionDialogContent({
                 ? 'Dispatching…'
                 : isDirect
                   ? `Commit to ${targetBranch} locally`
-                  : isLocal
-                    ? 'Create local branch + commit'
-                    : 'Create integration PR request'}
+                  : isWorktree
+                    ? 'Stage into working tree'
+                    : isLocal
+                      ? 'Create local branch + commit'
+                      : 'Create integration PR request'}
             </Button>
           </>
         )
@@ -202,47 +211,61 @@ function PromotionDialogContent({
             title={
               result.delivery === 'local_direct'
                 ? `Committed to ${result.targetBranch} locally — push when ready`
-                : result.delivery === 'local'
-                  ? 'Local branch + commit created'
-                  : result.prUrl
-                    ? `Integration PR #${result.prNumber ?? '?'} opened`
-                    : 'Promotion request accepted'
+                : result.delivery === 'worktree'
+                  ? `Staged into working tree on ${result.targetBranch} — no commit, no push`
+                  : result.delivery === 'local'
+                    ? 'Local branch + commit created'
+                    : result.prUrl
+                      ? `Integration PR #${result.prNumber ?? '?'} opened`
+                      : 'Promotion request accepted'
             }
           >
             <p>{result.message}</p>
           </InlineAlert>
 
-          <dl className="grid gap-2 sm:grid-cols-2">
-            <div className="rounded-lg border border-ink-700/60 bg-ink-850/60 p-3">
-              <dt className="text-2xs uppercase tracking-wide text-slate-500">
-                {result.delivery === 'local_direct' ? 'Target branch' : 'Integration branch'}
-              </dt>
-              <dd className="mono mt-1 text-xs text-slate-200">{result.branch}</dd>
-            </div>
-            <div className="rounded-lg border border-ink-700/60 bg-ink-850/60 p-3">
-              <dt className="text-2xs uppercase tracking-wide text-slate-500">Requested at</dt>
-              <dd className="mono mt-1 text-xs text-slate-200">{result.requestedAt}</dd>
-            </div>
+          <dl className="divide-y divide-line border-y border-line px-1">
+            <KeyValue
+              label={
+                result.delivery === 'local_direct' || result.delivery === 'worktree'
+                  ? 'Target branch'
+                  : 'Integration branch'
+              }
+            >
+              <span className="mono text-right">{result.branch}</span>
+            </KeyValue>
+            <KeyValue label="Requested at">
+              <span className="mono text-right">{result.requestedAt}</span>
+            </KeyValue>
           </dl>
 
-          {(result.delivery === 'local' || result.delivery === 'local_direct') &&
+          {result.delivery === 'worktree' ? (
+            <p className="text-[11px] leading-relaxed text-muted">
+              Nothing was committed or pushed, and integration status is unchanged.
+            </p>
+          ) : null}
+
+          {(result.delivery === 'local' ||
+            result.delivery === 'local_direct' ||
+            result.delivery === 'worktree') &&
           result.nextCommands.length > 0 ? (
-            <section className="space-y-2 rounded-lg border border-ink-700/60 bg-ink-850/50 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            <section className="space-y-2">
+              <div className="flex h-[29px] items-center justify-between gap-2">
+                <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
                   Next commands (run in your clone)
                 </h3>
                 <Button variant="secondary" size="sm" onClick={copyNextCommands}>
                   {copied ? 'Copied' : 'Copy'}
                 </Button>
               </div>
-              <pre className="mono overflow-x-auto whitespace-pre-wrap rounded-md bg-ink-900/70 p-2 text-2xs leading-relaxed text-slate-200">
+              <pre className="mono overflow-x-auto rounded-md border border-line bg-raised p-2 text-[11px] leading-relaxed whitespace-pre-wrap">
                 {result.nextCommands.join('\n')}
               </pre>
-              <p className="text-2xs text-slate-500">
+              <p className="text-[11px] leading-relaxed text-muted">
                 {result.delivery === 'local_direct'
-                  ? 'Nothing was pushed and no PR was opened — the commit is on your local branch; push when ready.'
-                  : 'Nothing was pushed and no PR was opened — you push the branch yourself.'}
+                  ? 'Not pushed — the commit is on your local branch.'
+                  : result.delivery === 'worktree'
+                    ? 'Staged only — the commit is yours to make.'
+                    : 'Not pushed — you push the branch yourself.'}
               </p>
             </section>
           ) : null}
@@ -283,7 +306,7 @@ function PromotionDialogContent({
             <InlineAlert tone="danger" title={error.message}>
               {error.remedy ? <p>{error.remedy}</p> : null}
               {error.details ? (
-                <p className="mono mt-1 whitespace-pre-wrap text-2xs text-rose-200/80">
+                <p className="mono mt-1 text-[11px] whitespace-pre-wrap text-status-blocked-ink">
                   {error.details}
                 </p>
               ) : null}
@@ -291,47 +314,42 @@ function PromotionDialogContent({
           ) : null}
 
           <section className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-              Source commits ({sourceShas.length})
-            </h3>
+            <div className="flex h-[29px] items-center justify-between gap-2">
+              <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                Source commits
+              </h3>
+              <span className="mono text-right text-muted">{sourceShas.length}</span>
+            </div>
             {sourceShas.length === 0 ? (
               <InlineAlert tone="warning" title="No commits selected">
-                Tick one or more eligible commits in the commit list first. Only these exact SHAs
-                are promoted.
+                Tick one or more eligible commits in the commit list first.
               </InlineAlert>
             ) : (
-              <ul className="divide-y divide-ink-700/60 overflow-hidden rounded-lg border border-ink-700/60">
+              <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
                 {sourceShas.map((sha) => {
                   const commit = commits.find((candidate) => candidate.sha === sha);
                   return (
-                    <li key={sha} className="flex items-center gap-3 bg-ink-850/50 px-3 py-2">
-                      <span className="mono shrink-0 text-xs text-brand-300" title={sha}>
+                    <li key={sha} className="flex h-[29px] items-center gap-2 px-2.5">
+                      <span className="mono shrink-0 text-[11px] text-accent-ink" title={sha}>
                         {sha.slice(0, 7)}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
+                      <span className="min-w-0 flex-1 truncate text-xs text-fg">
                         {commitsLoading && !commit
                           ? 'Loading…'
                           : (commit?.subject ?? 'Unknown commit')}
                       </span>
                       {commit ? <CommitStatusBadge status={commit.status} /> : null}
-                      <button
-                        type="button"
+                      <IconButton
+                        icon={X}
+                        label={`Remove ${sha.slice(0, 7)} from this promotion`}
                         onClick={() => onRemoveSha(sha)}
-                        aria-label={`Remove ${sha.slice(0, 7)} from this promotion`}
-                        title="Remove from this promotion"
-                        className="rounded-sm p-1 text-slate-400 hover:bg-ink-700 hover:text-white"
-                      >
-                        <X className="h-3.5 w-3.5" aria-hidden="true" />
-                      </button>
+                        className="h-[21px] w-[21px]"
+                      />
                     </li>
                   );
                 })}
               </ul>
             )}
-            <p className="text-2xs leading-relaxed text-slate-500">
-              Full 40-character SHAs are sent to the engine. Commits are applied in the order
-              listed; unselected earlier or later source commits are never imported.
-            </p>
           </section>
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -342,16 +360,14 @@ function PromotionDialogContent({
                 onChange={(event) => onDeliveryChange(event.target.value as PromotionDelivery)}
                 options={[
                   { value: 'local_direct', label: `Commit to local ${targetBranch} (recommended)` },
+                  { value: 'worktree', label: 'Add to working tree (no commit)' },
                   { value: 'local', label: 'Local integration branch' },
                   { value: 'push_pr', label: 'Push + PR' },
                 ]}
               />
             </Field>
 
-            <Field
-              label="Mode"
-              hint="Individual applies each selected commit's first-parent delta. Cumulative is not part of the MVP and requires an explicit baseline."
-            >
+            <Field label="Mode">
               <Select
                 aria-label="Promotion mode"
                 value={mode}
@@ -363,13 +379,9 @@ function PromotionDialogContent({
               />
             </Field>
 
-            <Field
-              label="Commit message"
-              required
-              hint="Becomes the promotion commit's message. The source commits are recorded underneath as provenance trailers."
-            >
+            <Field label="Commit message" required>
               <textarea
-                className="input mt-1"
+                className="input h-auto min-h-[50px] py-1.5"
                 aria-label="Commit message"
                 rows={2}
                 required
@@ -379,11 +391,7 @@ function PromotionDialogContent({
               />
             </Field>
 
-            <Field
-              label="Target main-system branch"
-              required
-              hint="Only existing branches allowed by .integration/config.json are selectable."
-            >
+            <Field label="Target main-system branch" required hint="Only policy-allowed branches.">
               <Select
                 aria-label="Target main-system branch"
                 value={targetBranch}
@@ -401,11 +409,7 @@ function PromotionDialogContent({
           </div>
 
           {cumulative ? (
-            <Field
-              label="Cumulative baseline SHA"
-              required
-              hint="The exactly verified baseline. The workflow diffs baseline..endpoint, which intentionally includes the intervening source commits."
-            >
+            <Field label="Cumulative baseline SHA" required>
               <input
                 className="input mono"
                 value={baseSha}
@@ -417,59 +421,52 @@ function PromotionDialogContent({
           ) : null}
 
           {selectedBranch ? (
-            <div className="grid gap-2 sm:grid-cols-3">
-              <div className="rounded-lg border border-ink-700/60 bg-ink-850/60 p-3">
-                <p className="text-2xs uppercase tracking-wide text-slate-500">Branch tip</p>
-                <p className="mono mt-1 text-xs text-slate-200">
-                  {selectedBranch.headSha.slice(0, 7)}
-                </p>
-              </div>
-              <div className="rounded-lg border border-ink-700/60 bg-ink-850/60 p-3">
-                <p className="text-2xs uppercase tracking-wide text-slate-500">Protection</p>
-                <p className="mt-1 text-xs text-slate-200">
-                  {selectedBranch.protected ? 'Protected — PR required' : 'Unprotected'}
-                </p>
-              </div>
-              <div className="rounded-lg border border-ink-700/60 bg-ink-850/60 p-3">
-                <p className="text-2xs uppercase tracking-wide text-slate-500">
-                  Open integration PRs
-                </p>
-                <p className="mt-1 text-xs text-slate-200">{selectedBranch.openPrCount}</p>
-              </div>
-            </div>
+            <dl className="divide-y divide-line border-y border-line px-1">
+              <KeyValue label="Branch tip">
+                <span className="mono text-right">{selectedBranch.headSha.slice(0, 7)}</span>
+              </KeyValue>
+              <KeyValue label="Protection">
+                {selectedBranch.protected ? 'Protected — PR required' : 'Unprotected'}
+              </KeyValue>
+              <KeyValue label="Open integration PRs">
+                <span className="mono text-right">{selectedBranch.openPrCount}</span>
+              </KeyValue>
+            </dl>
           ) : null}
 
           <section className="space-y-2">
-            <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
-              <Package className="h-3.5 w-3.5" aria-hidden="true" />
+            <h3 className="flex h-[29px] items-center gap-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">
+              <Package className="h-3.5 w-3.5 text-muted" aria-hidden="true" />
               Dependency impact
             </h3>
             {dependenciesLoading ? (
-              <p className="text-2xs text-slate-500">Loading dependency deltas…</p>
+              <p className="text-[11px] text-muted">Loading dependency changes…</p>
             ) : dependencies.length === 0 ? (
-              <p className="text-2xs text-slate-500">
-                No manifest changes are part of the selected delta. Nothing is added to the target
-                lockfile.
-              </p>
+              <p className="text-[11px] text-muted">No manifest changes in this selection.</p>
             ) : (
-              <ul className="space-y-1.5">
+              <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
                 {dependencies.map((dependency) => (
                   <li
                     key={`${dependency.section}-${dependency.name}`}
-                    className={cx(
-                      'flex items-center gap-2 rounded-lg border px-3 py-2 text-2xs',
-                      dependency.conflict
-                        ? 'border-rose-900/70 bg-rose-950/30 text-rose-200'
-                        : 'border-ink-700/60 bg-ink-850/60 text-slate-300',
-                    )}
+                    className="flex h-[29px] items-center gap-2 px-2.5 text-[11px]"
                   >
-                    <span className="mono text-slate-100">{dependency.name}</span>
-                    <span className="chip bg-ink-800 text-slate-300">{dependency.section}</span>
-                    <span className="text-slate-500">{dependency.fromRange ?? '(absent)'}</span>
-                    <span aria-hidden="true">→</span>
-                    <span>{dependency.toRange ?? '(removed)'}</span>
-                    <span className="ml-auto uppercase tracking-wide text-slate-500">
-                      {dependency.change}
+                    {dependency.conflict ? (
+                      <TriangleAlert
+                        className="h-3 w-3 shrink-0 text-status-blocked"
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                    <span className="mono truncate text-fg">{dependency.name}</span>
+                    <span className="chip shrink-0">{dependency.section}</span>
+                    <span className="mono truncate text-muted">
+                      {dependency.fromRange ?? '(absent)'} → {dependency.toRange ?? '(removed)'}
+                    </span>
+                    <span className="ml-auto shrink-0 tracking-wide text-muted uppercase">
+                      {dependency.conflict ? (
+                        <span className="text-status-blocked-ink">conflict</span>
+                      ) : (
+                        dependency.change
+                      )}
                     </span>
                   </li>
                 ))}
@@ -481,24 +478,22 @@ function PromotionDialogContent({
                 tone="warning"
                 title="More than one selected commit changes package.json"
               >
-                Manifests are merged as an explicit delta and the target lockfile is regenerated.
-                Review the combined result in the integration PR before merging.
+                Review the merged manifest in the promotion commit before pushing.
               </InlineAlert>
             ) : null}
 
             {conflicting.length > 0 ? (
               <InlineAlert tone="danger" title="Incompatible dependency range in this selection">
-                The promotion fails closed instead of force-installing. Resolve the shared range in
-                the main-system manifest, or drop the conflicting commit from the selection.
+                The promotion fails closed. Resolve the range or drop the commit.
               </InlineAlert>
             ) : null}
           </section>
 
           {preflightLoading ? (
-            <p className="text-2xs text-slate-500">Checking mergeability…</p>
+            <p className="text-[11px] text-muted">Checking mergeability…</p>
           ) : preflight && preflight.files.length > 0 ? (
             <section className="space-y-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
                 Mergeability preflight
               </h3>
               <InlineAlert
@@ -507,92 +502,70 @@ function PromotionDialogContent({
               >
                 {preflight.conflict > 0 ? (
                   <>
-                    <p>Promoting now will fail on these files until they are resolved.</p>
-                    <ul className="mono space-y-0.5 break-all text-2xs">
+                    <p>Resolve or drop the conflicting commit, then re-promote.</p>
+                    <ul className="mono space-y-0.5 text-[11px] break-all">
                       {preflight.conflicts.map((path) => (
                         <li key={path}>{path}</li>
                       ))}
                     </ul>
-                    <p>
-                      Resolve the divergence in the main system, or drop the conflicting commit from
-                      the selection, then re-promote. Dependency manifests merge and lockfiles
-                      regenerate instead of conflicting.
-                    </p>
                   </>
                 ) : (
-                  <p>
-                    Every selected delta applies without a merge conflict. Dependency manifests
-                    merge and lockfiles regenerate.
-                  </p>
+                  <p>Ready to promote.</p>
                 )}
               </InlineAlert>
             </section>
           ) : null}
 
-          <InlineAlert tone="info" title="Only the ticked commits move">
-            A commit can depend on code or packages added by an unselected commit. Such dependencies
-            stay behind unless you add them explicitly. Main-system tests alone are not proof of
-            correctness.
-          </InlineAlert>
-
-          <section className="space-y-2 rounded-lg border border-brand-700/50 bg-brand-950/30 p-3">
-            <p className="flex items-start gap-2 text-xs leading-relaxed text-brand-100">
-              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-brand-300" aria-hidden="true" />
+          <section className="space-y-2 rounded-md border border-line bg-surface p-3">
+            <p className="truncate text-xs text-fg">
               {isDirect ? (
+                <span>Commits onto {targetBranch} locally — no push, no PR.</span>
+              ) : isWorktree ? (
                 <span>
-                  Confirming this commits the delta{' '}
-                  <strong>straight onto your local {targetBranch}</strong>; pushing is yours to do (
-                  <strong>no push, no PR</strong>). The tool builds the commit from the target tip
-                  in a temporary worktree and fast-forwards your local branch — uncommitted work is
-                  never touched (a dirty checkout refuses instead, and a moved target tip fails
-                  closed).
+                  Stages files into your working tree on {targetBranch} — no commit, no push.
                 </span>
               ) : isLocal ? (
-                <span>
-                  Confirming this creates a <strong>local branch + commit in your clone</strong>;
-                  you push it yourself (<strong>no push, no PR</strong>). The tool builds the
-                  integration branch from the target tip in a temporary worktree (your working tree,
-                  index and current branch are left alone) and keeps the branch for you to push.
-                </span>
+                <span>Creates a local branch + commit — no push, no PR.</span>
               ) : (
-                <span>
-                  Confirming this creates an{' '}
-                  <strong>integration PR against main-system/{targetBranch}</strong>. It is
-                  <strong> not</strong> a direct push to a protected branch and <strong>not</strong>{' '}
-                  a production deploy. The tool builds the integration branch from the target tip
-                  and re-validates the registry, ancestry and branch policy before it pushes.
-                </span>
+                <span>Pushes the integration branch and opens a PR against {targetBranch}.</span>
               )}
             </p>
-            <p className="text-2xs leading-relaxed text-brand-100/80">
-              Files the subsystem adds over an existing main-system file are applied as updates when
-              the subsystem's copy is newer; a newer main-system copy blocks the promotion.
-            </p>
-            <label className="flex items-start gap-2 text-xs text-slate-200">
+            <label className="flex items-start gap-2 text-xs text-fg">
               <Checkbox
                 checked={acknowledged}
                 onChange={(event) => setAcknowledged(event.target.checked)}
                 label={
                   isDirect
                     ? 'Acknowledge that this commits directly onto my local target branch (no push, no PR)'
-                    : isLocal
-                      ? 'Acknowledge that this creates a local branch + commit (no push, no PR)'
-                      : 'Acknowledge that this creates an integration PR against the selected main-system branch'
+                    : isWorktree
+                      ? 'Acknowledge that this stages files into my working tree (no commit, no push)'
+                      : isLocal
+                        ? 'Acknowledge that this creates a local branch + commit (no push, no PR)'
+                        : 'Acknowledge that this creates an integration PR against the selected main-system branch'
                 }
                 className="mt-0.5"
               />
               {isDirect ? (
                 <span>
-                  I understand this commits the delta onto my local{' '}
-                  <span className="mono text-slate-100">
+                  I understand this commits the selected files onto my local{' '}
+                  <span className="mono">
                     {targetBranches?.mainRepository ?? 'main-system'}/{targetBranch}
                   </span>
                   , with no push and no PR — I push it myself.
                 </span>
+              ) : isWorktree ? (
+                <span>
+                  I understand this copies the selected files into my working tree on{' '}
+                  <span className="mono">
+                    {targetBranches?.mainRepository ?? 'main-system'}/{targetBranch}
+                  </span>
+                  and stages them, with no commit and no push — {targetBranch} must be checked out
+                  and my tree clean.
+                </span>
               ) : isLocal ? (
                 <span>
                   I understand this creates a local branch + commit in my clone for{' '}
-                  <span className="mono text-slate-100">
+                  <span className="mono">
                     {targetBranches?.mainRepository ?? 'main-system'}/{targetBranch}
                   </span>
                   , with no push and no PR — I push it myself.
@@ -600,44 +573,20 @@ function PromotionDialogContent({
               ) : (
                 <span>
                   I understand this opens a reviewed integration PR against{' '}
-                  <span className="mono text-slate-100">
+                  <span className="mono">
                     {targetBranches?.mainRepository ?? 'main-system'}/{targetBranch}
                   </span>
                   , not a push or deploy.
                 </span>
               )}
             </label>
-            {!acknowledged ? (
-              <p className="flex items-center gap-1.5 text-2xs text-amber-200">
-                <TriangleAlert className="h-3.5 w-3.5" aria-hidden="true" />
-                The confirmation must be accepted before the request can be sent.
-              </p>
-            ) : (
-              <p className="flex items-center gap-1.5 text-2xs text-emerald-200">
+            {acknowledged ? (
+              <p className="flex items-center gap-1.5 text-[11px] text-status-applied-ink">
                 <Check className="h-3.5 w-3.5" aria-hidden="true" />
                 Confirmation recorded for this request.
               </p>
-            )}
+            ) : null}
           </section>
-
-          <p className="flex items-center gap-1.5 text-2xs text-slate-500">
-            <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
-            {isDirect
-              ? `The commit lands on your local ${targetBranch}; pushing is yours to do.`
-              : isLocal
-                ? `The integration branch is created from the target branch tip (${targetBranch}) in your local clone; you push it yourself.`
-                : `The integration branch is created from the target branch tip and the PR is opened with base (${targetBranch}).`}
-          </p>
-
-          {commits.some((commit) => commit.status.kind === 'selected') ? (
-            <div className="flex items-center gap-2">
-              <StatusBadge kind="selected" />
-              <span className="text-2xs text-slate-400">
-                A ticked commit is only a local selection — statuses come from Git history and
-                GitHub.
-              </span>
-            </div>
-          ) : null}
         </div>
       )}
     </Modal>

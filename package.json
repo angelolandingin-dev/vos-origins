@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Subsystem Integration Manager - Tauri v2 desktop app for commit-selective, branch-scoped subsystem promotion (app-driven, no files added to target repos).",
+  "description": "VOS Origin - desktop app for commit-selective, branch-scoped subsystem promotion (app-driven, no files added to target repos).",
   "license": "UNLICENSED",
   "scripts": {
     "dev": "vite",

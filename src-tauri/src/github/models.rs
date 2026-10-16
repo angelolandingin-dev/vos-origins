@@ -562,6 +562,9 @@ impl PromotionMode {
 
 /// Delivery mode for a promotion (wire `delivery`, camelCase field).
 /// Omitted on the wire defaults to [`PromotionDelivery::LocalDirect`].
+/// `worktree` applies the selected delta into the user's own target-clone
+/// working tree on the target branch and stages it: no branch is created,
+/// nothing is committed, nothing is pushed, and no PR is opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PromotionDelivery {
@@ -569,6 +572,7 @@ pub enum PromotionDelivery {
     #[default]
     LocalDirect,
     PushPr,
+    Worktree,
 }
 
 impl PromotionDelivery {
@@ -577,6 +581,7 @@ impl PromotionDelivery {
             PromotionDelivery::Local => "local",
             PromotionDelivery::LocalDirect => "local_direct",
             PromotionDelivery::PushPr => "push_pr",
+            PromotionDelivery::Worktree => "worktree",
         }
     }
 }
@@ -611,7 +616,7 @@ pub struct PromotionRequest {
     pub target_branch: String,
     #[serde(default)]
     pub confirmation_acknowledged: bool,
-    /// `"local" | "local_direct" | "push_pr"`; omitted ⇒ `local_direct`.
+    /// `"local" | "local_direct" | "push_pr" | "worktree"`; omitted ⇒ `local_direct`.
     #[serde(default)]
     pub delivery: PromotionDelivery,
     /// `"fail" | "take_subsystem"`; omitted ⇒ `fail`.

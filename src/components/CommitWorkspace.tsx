@@ -51,18 +51,13 @@ function runChip(run: WorkflowRun) {
     return <StatusBadge kind="failed" label={`Run #${run.runNumber} failed`} />;
   if (run.conclusion === 'success')
     return (
-      <span
-        className="chip bg-ink-800 text-emerald-300 ring-1 ring-inset ring-emerald-800/70"
-        title="A successful workflow is not an integration. The status becomes Integrated only when a provenance-bearing merge commit is reachable from the target branch."
-      >
+      <span className="chip text-status-applied-ink" title="Workflow succeeded">
+        <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-status-applied" />
         Run #{run.runNumber} succeeded
       </span>
     );
   return (
-    <span
-      className="chip bg-ink-800 text-slate-300"
-      title={`Conclusion: ${run.conclusion ?? run.status}`}
-    >
+    <span className="chip" title={`Conclusion: ${run.conclusion ?? run.status}`}>
       Run #{run.runNumber} {run.conclusion ?? run.status}
     </span>
   );
@@ -253,7 +248,7 @@ function CommitWorkspacePanel({
           <EmptyState
             icon={Boxes}
             title="No subsystem is selected"
-            message="Choose a registered subsystem card to browse its protected source branch."
+            message="Choose a registered subsystem to browse its protected source branch."
           />
         )}
       </div>
@@ -279,32 +274,31 @@ function CommitWorkspacePanel({
   );
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 gap-3">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+    <div className="relative flex min-h-0 min-w-0 flex-1 gap-2.5">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5">
         <Panel
           className="min-h-0 flex-1"
           bodyClassName="flex min-h-0 flex-1 flex-col"
-          headerClassName="px-4 py-3"
           title={
             <span className="flex items-center gap-2">
-              <span className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-600/90 text-white">
+              <span className="flex h-4 w-4 items-center justify-center text-muted">
                 <Boxes className="h-4 w-4" aria-hidden="true" />
               </span>
-              {subsystem.name}
+              <span className="truncate">{subsystem.name}</span>
             </span>
           }
           subtitle={<span className="mono">{subsystem.repository}</span>}
           actions={
             <>
               <span className="hidden items-center gap-2 lg:flex">
-                <GitBranch className="h-4 w-4 text-slate-400" aria-hidden="true" />
+                <GitBranch className="h-4 w-4 text-disabled" aria-hidden="true" />
                 <Select
                   aria-label="Subsystem source branch"
                   className="w-[150px]"
                   value={subsystem.sourceBranch}
                   onChange={() => undefined}
                   options={[{ value: subsystem.sourceBranch, label: subsystem.sourceBranch }]}
-                  title="The source branch is fixed by the registry entry. Changing it here would not change the main-system target branch."
+                  title="The source branch is fixed by the registry entry."
                 />
               </span>
               <Button
@@ -371,28 +365,37 @@ function CommitWorkspacePanel({
           ) : null}
 
           {sourceTab === 'changes' ? (
-            <div className="scroll-area min-h-0 flex-1 p-4">
+            <div className="scroll-area min-h-0 flex-1 p-2.5">
               {details.loading && !details.data ? (
                 <LoadingState label="Loading changed files…" />
               ) : details.data?.files.length ? (
-                <ul className="space-y-1.5">
+                <ul className="space-y-1">
                   {details.data.files.map((file) => (
                     <li key={file.path}>
                       <button
                         type="button"
                         onClick={() => showDiff(details.data!.sha, file.path)}
-                        className="flex w-full items-center gap-3 rounded-lg border border-ink-700/60 bg-ink-850/50 px-3 py-2 text-left hover:border-ink-600 hover:bg-ink-800/70"
+                        className="flex h-[29px] w-full items-center gap-2.5 rounded-md border border-line bg-surface px-2.5 text-left hover:bg-hover"
                       >
-                        <FileText className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
-                        <span className="mono min-w-0 flex-1 truncate text-slate-200">
+                        <FileText className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
+                        <span className="mono min-w-0 flex-1 truncate text-fg tabular-nums">
                           {file.path}
                         </span>
-                        <span className="chip bg-ink-800 text-slate-300">{file.change}</span>
-                        <span className="text-2xs text-emerald-400">+{file.additions}</span>
-                        <span className="text-2xs text-rose-400">-{file.deletions}</span>
+                        <span className="chip">{file.change}</span>
+                        <span className="mono w-12 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
+                          +{file.additions}
+                        </span>
+                        <span className="mono w-12 shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
+                          -{file.deletions}
+                        </span>
                       </button>
                       {file.policyNote ? (
-                        <p className="mono mt-1 pl-7 text-2xs text-amber-200">{file.policyNote}</p>
+                        <p
+                          className="mono mt-0.5 truncate pl-7 text-[11px] text-status-unknown-ink"
+                          title={file.policyNote}
+                        >
+                          {file.policyNote}
+                        </p>
                       ) : null}
                     </li>
                   ))}
@@ -408,32 +411,34 @@ function CommitWorkspacePanel({
           ) : null}
 
           {sourceTab === 'dependencies' ? (
-            <div className="scroll-area min-h-0 flex-1 space-y-3 p-4">
+            <div className="scroll-area min-h-0 flex-1 space-y-3 p-2.5">
               {details.data?.dependencies.length ? (
                 <ul className="space-y-2">
                   {details.data.dependencies.map((dependency) => (
                     <li
                       key={`${dependency.section}-${dependency.name}`}
                       className={cx(
-                        'rounded-lg border p-3 text-xs',
+                        'rounded-md border border-line p-2.5 text-xs',
                         dependency.conflict
-                          ? 'border-rose-900/70 bg-rose-950/30 text-rose-200'
-                          : 'border-ink-700/60 bg-ink-850/50 text-slate-300',
+                          ? 'bg-status-blocked-soft text-status-blocked-ink'
+                          : 'bg-surface text-muted',
                       )}
                     >
                       <div className="flex items-center gap-2">
-                        <Package className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
-                        <span className="mono text-slate-100">{dependency.name}</span>
-                        <span className="chip bg-ink-800 text-slate-300">{dependency.section}</span>
-                        <span className="ml-auto uppercase tracking-wide text-slate-400">
+                        <Package className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
+                        <span className="mono truncate text-fg">{dependency.name}</span>
+                        <span className="chip">{dependency.section}</span>
+                        <span className="ml-auto tracking-wide text-disabled uppercase">
                           {dependency.change}
                         </span>
                       </div>
-                      <p className="mono mt-1.5">
+                      <p className="mono mt-1.5 truncate tabular-nums">
                         {dependency.fromRange ?? '(absent)'} → {dependency.toRange ?? '(removed)'}
                       </p>
                       {dependency.note ? (
-                        <p className="mt-1 text-slate-400">{dependency.note}</p>
+                        <p className="mt-1 truncate text-muted" title={dependency.note}>
+                          {dependency.note}
+                        </p>
                       ) : null}
                     </li>
                   ))}
@@ -442,19 +447,14 @@ function CommitWorkspacePanel({
                 <EmptyState
                   icon={Package}
                   title="No manifest changes in this commit"
-                  message="A commit that adds a package must be promoted together with the commits that use it; the tool never imports unselected commits automatically."
+                  message="Promote a package commit together with the commits that use it."
                 />
               )}
-              <InlineAlert tone="info" title="Dependency handling rules">
-                The selected commit's manifest delta is merged into the target manifest and the
-                target lockfile is regenerated. The subsystem lockfile is never copied and
-                incompatible ranges fail closed.
-              </InlineAlert>
             </div>
           ) : null}
 
           {sourceTab === 'runs' ? (
-            <div className="scroll-area min-h-0 flex-1 p-4">
+            <div className="scroll-area min-h-0 flex-1 p-2.5">
               {runs.loading && !runs.data ? (
                 <LoadingState label="Loading workflow runs…" />
               ) : runs.error ? (
@@ -470,16 +470,14 @@ function CommitWorkspacePanel({
                   {(runs.data?.runs ?? []).map((run) => (
                     <li
                       key={run.id}
-                      className="flex flex-wrap items-center gap-2 rounded-lg border border-ink-700/60 bg-ink-850/50 px-3 py-2"
+                      className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5"
                     >
                       {runChip(run)}
-                      <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
+                      <span className="min-w-0 flex-1 truncate text-xs text-fg">
                         {run.displayTitle}
                       </span>
-                      <span className="chip bg-ink-800 text-slate-300">
-                        target {run.targetBranch}
-                      </span>
-                      <span className="mono text-2xs text-slate-500">
+                      <span className="chip">target {run.targetBranch}</span>
+                      <span className="mono text-right text-[11px] text-disabled tabular-nums">
                         {formatDateTime(run.updatedAt)}
                       </span>
                       <IconButton
@@ -495,8 +493,8 @@ function CommitWorkspacePanel({
           ) : null}
 
           {sourceTab === 'settings' ? (
-            <div className="scroll-area min-h-0 flex-1 space-y-3 p-4">
-              <dl className="rounded-lg border border-ink-700/60 bg-ink-850/50 px-3 py-1">
+            <div className="scroll-area min-h-0 flex-1 space-y-3 p-2.5">
+              <dl className="rounded-md border border-line bg-raised px-3 py-1">
                 <KeyValue label="Registry id">
                   <span className="mono">{subsystem.id}</span>
                 </KeyValue>
@@ -513,9 +511,9 @@ function CommitWorkspacePanel({
                 <KeyValue label="Enabled">{subsystem.enabled ? 'yes' : 'no'}</KeyValue>
               </dl>
 
-              <div className="rounded-lg border border-ink-700/60 bg-ink-850/50 p-3">
-                <p className="flex items-center gap-2 text-xs font-semibold text-slate-200">
-                  <SettingsIcon className="h-4 w-4 text-slate-400" aria-hidden="true" />
+              <div className="rounded-md border border-line bg-raised p-2.5">
+                <p className="flex items-center gap-2 text-xs font-semibold text-fg">
+                  <SettingsIcon className="h-4 w-4 text-disabled" aria-hidden="true" />
                   Integration policy
                 </p>
                 <dl className="mt-1">
@@ -530,21 +528,8 @@ function CommitWorkspacePanel({
                 </dl>
               </div>
 
-              {subsystem.registrationPrUrl && subsystem.registrationPrNumber ? (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon={GitPullRequestArrow}
-                  onClick={() => app.openExternal(subsystem.registrationPrUrl ?? '')}
-                >
-                  Registration PR #{subsystem.registrationPrNumber}
-                </Button>
-              ) : null}
-
-              <InlineAlert tone="warning" title="Disabling is a reviewed registry change">
-                Unregistering sets <span className="mono">enabled: false</span> in{' '}
-                <span className="mono">.integration/subsystems/{subsystem.id}.json</span> through a
-                registration PR. The registry is never edited directly from the desktop app.
+              <InlineAlert tone="warning" title="Disabling is a registry change">
+                Turn it off under Settings → Main system registry.
               </InlineAlert>
             </div>
           ) : null}
@@ -585,12 +570,12 @@ function CommitWorkspacePanel({
           ) : null}
 
           {bottomTab === 'logs' ? (
-            <div className="scroll-area min-h-0 flex-1 p-3">
+            <div className="scroll-area min-h-0 flex-1 p-2.5">
               {commitRuns.length === 0 ? (
                 <EmptyState
                   icon={History}
                   title="No workflow run for this commit"
-                  message="Logs are available for runs this tool started. Dispatch a promotion to create one."
+                  message="Dispatch a promotion to create one."
                   action={
                     <Button size="sm" icon={RefreshCw} onClick={runs.reload}>
                       Refresh runs
@@ -600,23 +585,20 @@ function CommitWorkspacePanel({
               ) : (
                 <ul className="space-y-2">
                   {commitRuns.map((run) => (
-                    <li
-                      key={run.id}
-                      className="rounded-lg border border-ink-700/60 bg-ink-850/50 p-3"
-                    >
+                    <li key={run.id} className="rounded-md border border-line bg-surface p-2.5">
                       <div className="flex flex-wrap items-center gap-2">
                         {runChip(run)}
-                        <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
+                        <span className="min-w-0 flex-1 truncate text-xs text-fg">
                           {run.displayTitle}
                         </span>
-                        <span className="mono text-2xs text-slate-500">{run.headBranch}</span>
+                        <span className="mono text-disabled">{run.headBranch}</span>
                         <IconButton
                           icon={ExternalLink}
                           label="Open run on GitHub"
                           onClick={() => app.openExternal(run.htmlUrl)}
                         />
                       </div>
-                      <p className="mt-1.5 text-2xs text-slate-400">
+                      <p className="mt-1.5 truncate text-[11px] text-muted">
                         Requested by {run.actor} · target {run.targetBranch} · mode {run.mode} ·{' '}
                         {formatDateTime(run.createdAt)}
                       </p>
@@ -628,13 +610,13 @@ function CommitWorkspacePanel({
           ) : null}
 
           {bottomTab === 'prs' ? (
-            <div className="scroll-area min-h-0 flex-1 p-3">
+            <div className="scroll-area min-h-0 flex-1 p-2.5">
               {details.data?.relatedPullRequests.length ? (
                 <ul className="space-y-2">
                   {details.data.relatedPullRequests.map((pr) => (
                     <li
                       key={`${pr.repository}-${pr.number}`}
-                      className="flex flex-wrap items-center gap-2 rounded-lg border border-ink-700/60 bg-ink-850/50 px-3 py-2"
+                      className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5"
                     >
                       <StatusBadge
                         kind={
@@ -646,11 +628,9 @@ function CommitWorkspacePanel({
                         }
                         label={`PR #${pr.number} ${pr.state}`}
                       />
-                      <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
-                        {pr.title}
-                      </span>
-                      <span className="mono text-2xs text-slate-500">{pr.repository}</span>
-                      <span className="chip bg-ink-800 text-slate-300">base {pr.baseBranch}</span>
+                      <span className="min-w-0 flex-1 truncate text-xs text-fg">{pr.title}</span>
+                      <span className="mono text-disabled">{pr.repository}</span>
+                      <span className="chip">base {pr.baseBranch}</span>
                       <IconButton
                         icon={ExternalLink}
                         label="Open pull request"
@@ -660,17 +640,15 @@ function CommitWorkspacePanel({
                   ))}
                   {details.data.status.evidence?.pullRequestNumber &&
                   app.auth.data?.mainRepository ? (
-                    <li className="flex flex-wrap items-center gap-2 rounded-lg border border-ink-700/60 bg-ink-850/50 px-3 py-2">
+                    <li className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5">
                       <StatusBadge
                         kind="integrated"
                         label={`Integration PR #${details.data.status.evidence.pullRequestNumber}`}
                       />
-                      <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
+                      <span className="min-w-0 flex-1 truncate text-xs text-fg">
                         Integration record for this SHA
                       </span>
-                      <span className="mono text-2xs text-slate-500">
-                        {app.auth.data.mainRepository}
-                      </span>
+                      <span className="mono text-disabled">{app.auth.data.mainRepository}</span>
                       <IconButton
                         icon={ExternalLink}
                         label="Open integration PR"
@@ -687,7 +665,7 @@ function CommitWorkspacePanel({
                 <EmptyState
                   icon={GitPullRequestArrow}
                   title="No related pull requests"
-                  message="Source pull requests for this commit and any integration PR for the current target branch appear here."
+                  message="Source and integration PRs for this commit appear here."
                 />
               )}
             </div>
@@ -710,10 +688,10 @@ function CommitWorkspacePanel({
           <button
             type="button"
             aria-label="Hide commit details"
-            className="fixed inset-0 z-30 bg-ink-950/60"
+            className="fixed inset-0 z-30 bg-scrim"
             onClick={() => onDetailsVisibleChange(false)}
           />
-          <aside className="fixed bottom-0 right-0 top-16 z-40 flex w-[380px] max-w-full flex-col border-l border-ink-700 bg-ink-870 shadow-popover">
+          <aside className="fixed top-16 right-0 bottom-0 z-40 flex w-[380px] max-w-full flex-col border-l border-line bg-surface">
             {detailsPanel}
           </aside>
         </>

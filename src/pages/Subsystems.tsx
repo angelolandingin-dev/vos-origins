@@ -9,8 +9,11 @@ import type {
 } from '../api/types';
 import { useApp } from '../app/context';
 import { CommitWorkspace } from '../components/CommitWorkspace';
-import { SubsystemCard, SubsystemChip, SubsystemWarning } from '../components/SubsystemCard';
-import { cx } from '../components/ui/cx';
+import {
+  SubsystemCard,
+  SubsystemSegmentedControl,
+  SubsystemWarning,
+} from '../components/SubsystemCard';
 import { useMediaQuery } from '../components/ui/useMediaQuery';
 import {
   Button,
@@ -22,7 +25,7 @@ import {
   Modal,
 } from '../components/ui/primitives';
 
-/** Subsystems screen (spec §§3.2/3.3). Registration goes through a registration PR, never a direct registry write. */
+/** Subsystems screen (spec §§3.2/3.3). The registry lives in the tool; a promotion is local-first. */
 
 const DEFAULT_POLICY: SubsystemPolicy = {
   applicationFiles: 'selected-commit-delta',
@@ -31,6 +34,12 @@ const DEFAULT_POLICY: SubsystemPolicy = {
   sharedConfiguration: 'review-explicitly',
   githubWorkflows: 'main-owned',
   secretFiles: 'never-import',
+};
+
+/** User-facing wording for the policy defaults below; the wire values above stay byte-identical. */
+const POLICY_DISPLAY: Record<string, string> = {
+  'selected-commit-delta': 'copies the selected files',
+  'merge-dependency-delta': 'merges the manifest changes',
 };
 
 function RegistrationDialog({
@@ -74,7 +83,7 @@ function RegistrationDialog({
       open={open}
       onClose={onClose}
       title="Register Subsystem"
-      description="Collects the registry entry that a reviewed registration PR adds to .integration/subsystems/<id>.json on the registry branch."
+      description="Adds an entry to the tool registry (Settings → Main system registry)."
       footer={
         result ? (
           <Button variant="primary" onClick={onClose}>
@@ -92,7 +101,7 @@ function RegistrationDialog({
               onClick={submit}
               disabled={!form.id || !form.name}
             >
-              {submitting ? 'Validating…' : 'Prepare registration PR'}
+              {submitting ? 'Validating…' : 'Register subsystem'}
             </Button>
           </>
         )
@@ -100,12 +109,9 @@ function RegistrationDialog({
     >
       {result ? (
         <div className="space-y-3">
-          <InlineAlert
-            tone="success"
-            title={`Registration PR #${result.pullRequestNumber} prepared`}
-          >
+          <InlineAlert tone="success" title={`Registration #${result.pullRequestNumber} prepared`}>
             <p>{result.message}</p>
-            {result.branch ? <p className="mono mt-1 text-2xs">{result.branch}</p> : null}
+            {result.branch ? <p className="mono mt-1 text-[11px]">{result.branch}</p> : null}
           </InlineAlert>
           <ul className="space-y-2">
             {result.findings.map((finding) => (
@@ -132,7 +138,7 @@ function RegistrationDialog({
             <InlineAlert tone="danger" title={error.message}>
               {error.remedy ? <p>{error.remedy}</p> : null}
               {error.details ? (
-                <pre className="mono mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-rose-900/60 bg-rose-950/30 p-2 text-2xs">
+                <pre className="mono mt-2 max-h-40 overflow-auto rounded-md border border-status-blocked/40 bg-status-blocked-soft p-2 text-[11px] whitespace-pre-wrap">
                   {error.details}
                 </pre>
               ) : null}
@@ -140,11 +146,7 @@ function RegistrationDialog({
           ) : null}
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field
-              label="Subsystem id"
-              required
-              hint="Lowercase slug. Becomes the registry file name and the stable identity in commit trailers."
-            >
+            <Field label="Subsystem id" required hint="Lowercase slug; used in commit trailers.">
               <input
                 className="input mono"
                 value={form.id}
@@ -201,19 +203,24 @@ function RegistrationDialog({
             />
           </Field>
 
-          <div className="rounded-lg border border-ink-700/60 bg-ink-850/50 p-3">
-            <p className="text-xs font-semibold text-slate-200">Integration policy defaults</p>
-            <ul className="mt-1.5 space-y-1 text-2xs text-slate-400">
-              <li>Application files: {DEFAULT_POLICY.applicationFiles}</li>
-              <li>package.json: {DEFAULT_POLICY.packageJson}</li>
+          <div className="rounded-md border border-line bg-raised p-3">
+            <p className="text-xs font-semibold text-fg">Integration policy defaults</p>
+            <ul className="mt-1.5 space-y-1 text-[11px] text-muted">
+              <li>
+                Application files:{' '}
+                {POLICY_DISPLAY[DEFAULT_POLICY.applicationFiles] ?? DEFAULT_POLICY.applicationFiles}
+              </li>
+              <li>
+                package.json:{' '}
+                {POLICY_DISPLAY[DEFAULT_POLICY.packageJson] ?? DEFAULT_POLICY.packageJson}
+              </li>
               <li>Lockfiles: {DEFAULT_POLICY.lockfiles}</li>
               <li>Shared configuration: {DEFAULT_POLICY.sharedConfiguration}</li>
               <li>GitHub workflows: {DEFAULT_POLICY.githubWorkflows}</li>
               <li>Secret files: {DEFAULT_POLICY.secretFiles}</li>
             </ul>
-            <p className="mt-2 text-2xs text-slate-500">
-              Overrides belong in the reviewed registration PR. Duplicate ids or repositories are
-              rejected.
+            <p className="mt-2 text-[11px] text-disabled">
+              Duplicate ids or repositories are rejected.
             </p>
           </div>
         </div>
@@ -241,18 +248,15 @@ export function Subsystems() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-start justify-between gap-3 px-5 pb-3 pt-4">
+      <header className="flex flex-wrap items-start justify-between gap-3 px-5 pt-4 pb-3">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight text-white">Subsystems</h1>
-          <p className="mt-0.5 text-xs text-slate-400">
-            Manage and integrate independent subsystems
-          </p>
+          <h1 className="text-[14px] font-semibold text-fg">Subsystems</h1>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-[220px] flex-1">
             <Search
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"
+              className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-disabled"
               aria-hidden="true"
             />
             <input
@@ -298,18 +302,15 @@ export function Subsystems() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 gap-3 px-3 pb-3">
+      <div className="flex min-h-0 flex-1 gap-2.5 px-3 pb-3">
         {narrow ? (
-          <div className="flex min-h-0 flex-1 flex-col gap-3">
-            <div className="scroll-area flex shrink-0 gap-2 overflow-x-auto pb-1">
-              {visible.map((subsystem) => (
-                <SubsystemChip
-                  key={subsystem.id}
-                  subsystem={subsystem}
-                  selected={subsystem.id === app.selectedSubsystemId}
-                  onSelect={() => app.selectSubsystem(subsystem.id)}
-                />
-              ))}
+          <div className="flex min-h-0 flex-1 flex-col gap-2.5">
+            <div className="scroll-area flex shrink-0 overflow-x-auto pb-1">
+              <SubsystemSegmentedControl
+                subsystems={visible}
+                selectedId={app.selectedSubsystemId}
+                onSelect={(id) => app.selectSubsystem(id)}
+              />
             </div>
             <CommitWorkspace />
           </div>
@@ -329,7 +330,7 @@ export function Subsystems() {
                   <EmptyState
                     icon={Boxes}
                     title="No subsystem matches"
-                    message="Clear the search, or register a new subsystem through a registration PR."
+                    message="Clear the search, or register a new subsystem."
                     action={
                       <Button
                         size="sm"
@@ -357,14 +358,9 @@ export function Subsystems() {
                 <SubsystemWarning message={app.selectedSubsystem.connectivityMessage} />
               ) : null}
 
-              <p
-                className={cx(
-                  'rounded-lg border border-ink-700/60 bg-ink-870 p-2.5 text-2xs leading-relaxed text-slate-500',
-                )}
-              >
-                The subsystem registry lives in the tool, not in any repository — manage it under{' '}
-                <span className="mono">Settings → Main system registry</span>. A promotion adds no
-                files to the main system or subsystem repositories.
+              <p className="rounded-md border border-line bg-surface p-2.5 text-[11px] leading-relaxed text-muted">
+                The subsystem registry lives in the tool — manage it under{' '}
+                <span className="mono">Settings → Main system registry</span>.
               </p>
             </aside>
 
@@ -381,8 +377,7 @@ export function Subsystems() {
           app.pushNotice({
             tone: 'success',
             title: 'Registration request prepared',
-            message:
-              'The subsystem becomes selectable after the registration PR is merged and the registry is refreshed.',
+            message: 'The subsystem becomes selectable after the registry is refreshed.',
           });
         }}
       />

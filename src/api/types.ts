@@ -30,8 +30,8 @@ export type FileIntegrationPolicy =
 
 export type PromotionMode = 'individual' | 'cumulative';
 
-/** Local-first delivery: `local_direct` (default) commits straight onto the local target branch (no push, no PR — pushing stays manual); `local` builds a branch + commit in the user's clone; `push_pr` is the explicit opt-in. */
-export type PromotionDelivery = 'local' | 'local_direct' | 'push_pr';
+/** Local-first delivery: `local_direct` (default) commits straight onto the local target branch (no push, no PR — pushing stays manual); `worktree` stages the files into your working tree on the checked-out target branch (no commit, no push, no PR); `local` builds a branch + commit in the user's clone; `push_pr` is the explicit opt-in. */
+export type PromotionDelivery = 'local' | 'local_direct' | 'push_pr' | 'worktree';
 
 /** Conflict policy: `fail` refuses every unmergeable path; `take_subsystem` resolves it with the subsystem's version and reports every replaced path. */
 export type PromotionOnConflict = 'fail' | 'take_subsystem';
@@ -336,7 +336,7 @@ export interface PromotionPreflight {
   conflicts: string[];
 }
 
-/** In-tool promotion result (§9.2): `local_direct` commits onto the local target branch; `local` stops at a branch + commit in the user's clone; `push_pr` pushes the branch + opens a PR. */
+/** In-tool promotion result (§9.2): `local_direct` commits onto the local target branch; `worktree` stages into the working tree on the checked-out target branch (no commit, no push, no PR — status unchanged); `local` stops at a branch + commit in the user's clone; `push_pr` pushes the branch + opens a PR. */
 export interface PromotionDispatchResult {
   accepted: boolean;
   prUrl: string | null;
@@ -349,7 +349,7 @@ export interface PromotionDispatchResult {
   requestedAt: string;
   findings: ValidationFinding[];
   delivery: PromotionDelivery;
-  /** Literal next steps for `local_direct` / `local` delivery (empty for `push_pr`). */
+  /** Literal next steps for `local_direct` / `local` / `worktree` delivery (empty for `push_pr`). */
   nextCommands: string[];
 }
 

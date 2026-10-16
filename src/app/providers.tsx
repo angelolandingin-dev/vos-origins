@@ -224,6 +224,13 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
             title: 'Local branch + commit created',
             message: `${result.branch} · target ${targetBranch}. No push, no PR — run the listed next commands to push it yourself.`,
           });
+        } else if (result.delivery === 'worktree') {
+          pushNotice({
+            tone: 'success',
+            title: `Staged into working tree on ${targetBranch} — no commit, no push`,
+            message:
+              'Nothing was committed or pushed, and integration status is unchanged. The commit is yours to make.',
+          });
         } else {
           pushNotice({
             tone: 'success',

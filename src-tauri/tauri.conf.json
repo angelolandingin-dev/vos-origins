@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Subsystem Integration Manager",
+  "productName": "VOS Origin",
   "version": "0.1.0",
-  "identifier": "com.vos.subsystem-integration-manager",
+  "identifier": "com.vos.origin",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Subsystem Integration Manager",
+        "title": "VOS Origin",
         "width": 1440,
         "height": 920,
         "minWidth": 880,

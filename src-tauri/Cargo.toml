@@ -1,7 +1,7 @@
 [package]
 name = "subsystem-integration-manager"
 version = "0.1.0"
-description = "Subsystem Integration Manager - Tauri v2 control plane for commit-selective, branch-scoped subsystem promotion"
+description = "Promotes approved subsystem commits into a main-system branch."
 authors = ["VOS Integration"]
 edition = "2021"
 rust-version = "1.77.2"

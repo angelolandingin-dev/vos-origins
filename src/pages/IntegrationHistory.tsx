@@ -62,17 +62,9 @@ export function IntegrationHistory() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-start justify-between gap-3 px-5 pb-3 pt-4">
-        <div>
-          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight text-white">
-            <History className="h-5 w-5 text-brand-400" aria-hidden="true" />
-            Integration History
-          </h1>
-          <p className="mt-0.5 text-xs text-slate-400">
-            Promotion events derived from commits reachable from the selected main-system branch
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+      <header className="flex min-h-[50px] flex-wrap items-center gap-3 border-b border-line px-5 py-2">
+        <h1 className="text-[14px] font-semibold text-fg">Integration History</h1>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <Select
             aria-label="Target main-system branch"
             className="w-[200px]"
@@ -109,25 +101,21 @@ export function IntegrationHistory() {
         </div>
       </header>
 
-      <div className="scroll-area min-h-0 flex-1 space-y-3 px-3 pb-3">
-        <InlineAlert tone="info" title="How status is derived">
-          Integration state comes from the main-system Git history reachable from{' '}
-          <span className="mono">{app.targetBranch}</span>
-          {selectedBranch ? (
-            <>
-              {' '}
-              (tip <span className="mono">{selectedBranch.headSha.slice(0, 7)}</span>)
-            </>
-          ) : null}
-          . A branch can inherit records through a main-system branch merge; those rows are labelled
-          with the branch they came from. There is no integrated-commits.json ledger and no shadow
-          database.
+      <div className="scroll-area min-h-0 flex-1 space-y-3 p-3">
+        <InlineAlert
+          tone="info"
+          title="Status comes from reachable Git history — no ledger, no shadow database"
+        >
+          <span className="mono">
+            {app.targetBranch}
+            {selectedBranch ? ` · tip ${selectedBranch.headSha.slice(0, 7)}` : ''}
+          </span>
         </InlineAlert>
 
         <Panel
           title={`Promotion events on ${app.targetBranch}`}
           subtitle={history.data ? `${history.data.total} event(s)` : undefined}
-          bodyClassName="scroll-area max-h-[420px]"
+          bodyClassName="scroll-area max-h-[420px] overflow-x-auto"
         >
           {history.loading && (history.data?.entries.length ?? 0) === 0 ? (
             <LoadingState label="Loading integration history…" />
@@ -137,7 +125,7 @@ export function IntegrationHistory() {
             <EmptyState
               icon={History}
               title="No integration events for this branch"
-              message="Promotions appear here after an integration PR is merged on this target branch. Promoting to a different branch does not create a record here."
+              message="Promotions appear here after an integration PR is merged."
             />
           ) : (
             <table className="w-full border-separate border-spacing-0 text-xs">
@@ -165,25 +153,25 @@ export function IntegrationHistory() {
               </thead>
               <tbody>
                 {(history.data?.entries ?? []).map((entry) => (
-                  <tr key={entry.id} className="row-hover border-b border-ink-800/70 align-top">
+                  <tr key={entry.id} className="row-hover border-b border-line align-top">
                     <td className="py-2.5 pl-4">
                       <StatusBadge kind={KIND[entry.kind].kind} label={KIND[entry.kind].label} />
                       {entry.inheritedFromBranch ? (
-                        <span className="mt-1 block text-2xs text-amber-200">
+                        <span className="mt-1 block text-[11px] text-status-unknown-ink">
                           inherited from {entry.inheritedFromBranch}
                         </span>
                       ) : null}
                     </td>
-                    <td className="py-2.5 pr-3 text-slate-200">{entry.subsystemId}</td>
+                    <td className="truncate py-2.5 pr-3 text-fg">{entry.subsystemId}</td>
                     <td
-                      className="mono py-2.5 pr-3 text-slate-300"
+                      className="mono truncate py-2.5 pr-3 text-muted tabular-nums"
                       title={entry.sourceShas.join('\n')}
                     >
                       {entry.sourceShas.map((sha) => sha.slice(0, 7)).join(', ') || '—'}
                     </td>
                     <td className="py-2.5 pr-3">
                       {entry.mainCommitSha ? (
-                        <span className="mono block text-slate-300">
+                        <span className="mono block text-muted tabular-nums">
                           {entry.mainCommitSha.slice(0, 7)}
                         </span>
                       ) : null}
@@ -195,19 +183,21 @@ export function IntegrationHistory() {
                               `https://github.com/${app.auth.data?.mainRepository ?? ''}/pull/${entry.pullRequestNumber}`,
                             )
                           }
-                          className="mt-0.5 inline-flex items-center gap-1 text-brand-300 hover:underline"
+                          className="mt-0.5 inline-flex items-center gap-1 text-accent-ink hover:underline"
                         >
                           PR #{entry.pullRequestNumber}
                           <ExternalLink className="h-3 w-3" aria-hidden="true" />
                         </button>
                       ) : (
-                        <span className="text-slate-500">—</span>
+                        <span className="text-disabled">—</span>
                       )}
                     </td>
-                    <td className="max-w-[38ch] py-2.5 pr-3 text-slate-400">{entry.detail}</td>
-                    <td className="whitespace-nowrap py-2.5 pr-4 text-right text-slate-400">
+                    <td className="max-w-[38ch] truncate py-2.5 pr-3 text-muted">{entry.detail}</td>
+                    <td className="mono py-2.5 pr-4 text-right whitespace-nowrap text-muted tabular-nums">
                       {formatDateTime(entry.occurredAt)}
-                      <span className="block text-2xs text-slate-500">{entry.actor}</span>
+                      <span className="block truncate text-[11px] text-disabled">
+                        {entry.actor}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -228,27 +218,25 @@ export function IntegrationHistory() {
             <EmptyState
               icon={ShieldCheck}
               title="No integration PRs for this branch"
-              message="Integration PRs are created by the promotion workflow with base equal to the selected target branch."
+              message="Integration PRs created by this tool appear here."
             />
           ) : (
-            <ul className="divide-y divide-ink-800/70">
+            <ul className="divide-y divide-line">
               {(prs.data ?? []).map((pr) => (
                 <li key={pr.number} className="space-y-1.5 px-4 py-3">
                   <div className="flex flex-wrap items-center gap-2">
                     {prStateBadge(pr)}
-                    <span className="text-xs font-medium text-slate-100">#{pr.number}</span>
-                    <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
-                      {pr.title}
-                    </span>
-                    <span className="chip bg-ink-800 text-slate-300">{pr.subsystemId}</span>
-                    <span className="mono text-2xs text-slate-500">base {pr.baseBranch}</span>
+                    <span className="mono text-right text-fg tabular-nums">#{pr.number}</span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-fg">{pr.title}</span>
+                    <span className="chip">{pr.subsystemId}</span>
+                    <span className="mono truncate text-disabled">base {pr.baseBranch}</span>
                     <IconButton
                       icon={ExternalLink}
                       label={`Open PR #${pr.number}`}
                       onClick={() => app.openExternal(pr.htmlUrl)}
                     />
                   </div>
-                  <p className="mono text-2xs text-slate-500">
+                  <p className="mono truncate text-disabled tabular-nums">
                     {pr.headBranch} · source{' '}
                     {pr.sourceShas.map((sha) => sha.slice(0, 7)).join(', ')} · {pr.author} ·{' '}
                     {formatDateTime(pr.updatedAt)}
@@ -259,11 +247,11 @@ export function IntegrationHistory() {
                   {!pr.provenanceOk ? (
                     <p
                       className={cx(
-                        'flex items-start gap-2 rounded-lg border border-amber-900/60 bg-amber-950/30 px-2.5 py-2 text-2xs text-amber-200',
+                        'flex items-start gap-2 rounded-md border border-status-unknown/40 bg-status-unknown-soft px-2.5 py-2 text-[11px] text-status-unknown-ink',
                       )}
                     >
                       <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                      <span>
+                      <span className="truncate">
                         <span className="font-semibold">Provenance integrity:</span>{' '}
                         {pr.provenanceNote}
                       </span>

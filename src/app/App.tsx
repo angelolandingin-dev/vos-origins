@@ -23,8 +23,7 @@ export default function App() {
     pushNotice({
       tone: 'info',
       title: 'Fixture data mode',
-      message:
-        'Registry, commit, workflow and PR records are clearly-marked fictitious samples. Statuses are still computed by the real branch-scoped algorithm from provenance events, open PRs and runs. GitHub CLI detection is live.',
+      message: 'Sample records. GitHub CLI detection is live.',
     });
   }, [authStatus?.dataSource, pushNotice]);
 
@@ -32,8 +31,7 @@ export default function App() {
     app.pushNotice({
       tone: 'info',
       title: 'Switch GitHub account in your terminal',
-      message:
-        'The GitHub CLI owns credentials, so the desktop app never handles them. Run `gh auth logout` then `gh auth login` (or `gh auth switch`), then use Re-check GitHub CLI status.',
+      message: 'Run `gh auth switch`, then Re-check GitHub CLI status.',
     });
   };
 

@@ -2,49 +2,79 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Semantic token system (Phase A foundation).
+ * Sourced from GitHub Desktop + Primer values — see the redesign brief.
+ * Components consume ONLY these roles (bg-surface, text-muted, border-line,
+ * text-status-integrated, bg-status-eligible-soft, …). No raw colour
+ * utilities in components.
+ *
+ * Theming: plain CSS vars carry light/dark values. `.dark` forces dark,
+ * `.light` forces light, otherwise `prefers-color-scheme` decides.
+ * `@theme` maps the roles to Tailwind v4 utilities via those vars.
+ */
+
 @theme {
-  --color-ink-400: #44598a;
-  --color-ink-500: #33486f;
-  --color-ink-600: #27395c;
-  --color-ink-700: #1e3050;
-  --color-ink-750: #182741;
-  --color-ink-800: #131f33;
-  --color-ink-850: #0f1a2b;
-  --color-ink-870: #0c1424;
-  --color-ink-900: #0a111d;
-  --color-ink-925: #080e19;
-  --color-ink-950: #070b13;
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-panel: var(--surface);
+  --color-raised: var(--raised);
+  --color-overlay: var(--overlay);
+  --color-scrim: var(--scrim);
 
-  --color-brand-200: #bfdbfe;
-  --color-brand-300: #93c5fd;
-  --color-brand-400: #60a5fa;
-  --color-brand-500: #3b82f6;
-  --color-brand-600: #2563eb;
-  --color-brand-700: #1d4ed8;
-  --color-brand-800: #1e40af;
-  --color-brand-900: #1e3a8a;
+  --color-line: var(--line);
+  --color-border: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-border-strong: var(--line-strong);
 
-  --color-status-eligible: #34d399;
-  --color-status-selected: #60a5fa;
-  --color-status-queued: #fbbf24;
-  --color-status-running: #fb923c;
-  --color-status-prOpen: #c4b5fd;
-  --color-status-inReview: #f0abfc;
-  --color-status-integrated: #4ade80;
-  --color-status-reverted: #cbd5e1;
-  --color-status-blocked: #fda4af;
-  --color-status-failed: #f87171;
-  --color-status-unknown: #94a3b8;
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-selection: var(--selection);
 
-  --font-sans: ui-sans-serif, system-ui, Segoe UI, Inter, Roboto, Helvetica Neue, Arial, sans-serif;
-  --font-mono: ui-monospace, Cascadia Code, JetBrains Mono, Consolas, SFMono-Regular, monospace;
+  --color-text: var(--text);
+  --color-fg: var(--text);
+  --color-muted: var(--muted);
+  --color-text-muted: var(--muted);
+  --color-disabled: var(--disabled);
+  --color-text-disabled: var(--disabled);
 
-  --text-2xs: 0.6875rem;
-  --text-2xs--line-height: 1rem;
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-muted: var(--accent-muted);
+  --color-focus: var(--accent);
+  --color-focus-ring: var(--focus-ring);
 
-  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px -24px rgba(0, 0, 0, 0.9);
-  --shadow-popover: 0 24px 60px -18px rgba(0, 0, 0, 0.85);
-  --shadow-focus-brand: 0 0 0 2px rgba(37, 99, 235, 0.85);
+  --color-status-eligible: var(--status-eligible);
+  --color-status-eligible-soft: var(--status-eligible-soft);
+  --color-status-eligible-ink: var(--status-eligible-ink);
+  --color-status-applied: var(--status-applied);
+  --color-status-applied-soft: var(--status-applied-soft);
+  --color-status-applied-ink: var(--status-applied-ink);
+  --color-status-superseded: var(--status-superseded);
+  --color-status-superseded-soft: var(--status-superseded-soft);
+  --color-status-superseded-ink: var(--status-superseded-ink);
+  --color-status-divergent: var(--status-divergent);
+  --color-status-divergent-soft: var(--status-divergent-soft);
+  --color-status-divergent-ink: var(--status-divergent-ink);
+  --color-status-integrated: var(--status-integrated);
+  --color-status-integrated-soft: var(--status-integrated-soft);
+  --color-status-integrated-ink: var(--status-integrated-ink);
+  --color-status-blocked: var(--status-blocked);
+  --color-status-blocked-soft: var(--status-blocked-soft);
+  --color-status-blocked-ink: var(--status-blocked-ink);
+  --color-status-unknown: var(--status-unknown);
+  --color-status-unknown-soft: var(--status-unknown-soft);
+  --color-status-unknown-ink: var(--status-unknown-ink);
+
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
+
+  --text-badge: 0.5625rem;
+  --text-badge--line-height: 1;
+  --shadow-dialog: var(--dialog-shadow);
 
   --animate-fade-in: fade-in 140ms ease-out;
   --animate-pulse-dot: pulse-dot 1800ms ease-in-out infinite;
@@ -70,13 +100,173 @@
   }
 }
 
+/* Light theme (default). */
+:root {
+  color-scheme: light;
+
+  --ground: #ffffff;
+  --surface: #ffffff;
+  --raised: #f6f8fa;
+  --overlay: #ffffff;
+  --scrim: rgba(0, 0, 0, 0.4);
+
+  --line: #e1e4e8;
+  --line-strong: #8b939b;
+
+  --hover: #f6f8fa;
+  --active: #e9ecef;
+  --selection: #ebeef1;
+
+  --text: #24292e;
+  --muted: #6a737d;
+  --disabled: #959da5;
+
+  --accent: #0366d6;
+  --accent-hover: #0258b9;
+  --accent-fg: #ffffff;
+  --accent-ink: #0366d6;
+  --accent-soft: #f1f8ff;
+  --accent-muted: #dbedff;
+  --focus-ring: rgba(3, 102, 214, 0.25);
+
+  --dialog-shadow: 0 2px 7px rgba(71, 83, 95, 0.19);
+
+  --status-eligible: #0366d6;
+  --status-eligible-soft: #f1f8ff;
+  --status-eligible-ink: #0366d6;
+  --status-applied: #1a7f37;
+  --status-applied-soft: #dcffe4;
+  --status-applied-ink: #165c26;
+  --status-superseded: #6a737d;
+  --status-superseded-soft: #f6f8fa;
+  --status-superseded-ink: #5b636c;
+  --status-divergent: #c24e00;
+  --status-divergent-soft: #ffebda;
+  --status-divergent-ink: #a04000;
+  --status-integrated: #6f42c1;
+  --status-integrated-soft: #eddeff;
+  --status-integrated-ink: #5a32a3;
+  --status-blocked: #d73a49;
+  --status-blocked-soft: #ffdce0;
+  --status-blocked-ink: #9e1c23;
+  --status-unknown: #dbab09;
+  --status-unknown-soft: #fff5b1;
+  --status-unknown-ink: #b08800;
+}
+
+/* Forced dark theme. */
+:root.dark {
+  color-scheme: dark;
+
+  --ground: #24292e;
+  --surface: #1d2125;
+  --raised: #2b3036;
+  --overlay: #24292e;
+  --scrim: rgba(0, 0, 0, 0.5);
+
+  --line: #141414;
+  --line-strong: #727b85;
+
+  --hover: #2f363d;
+  --active: #383f47;
+  --selection: #444d56;
+
+  --text: #f6f8fa;
+  --muted: #959da5;
+  --disabled: #6e7681;
+
+  --accent: #0366d6;
+  --accent-hover: #1f6feb;
+  --accent-fg: #ffffff;
+  --accent-ink: #79b8ff;
+  --accent-soft: #05264c;
+  --accent-muted: #0c2d6b;
+  --focus-ring: rgba(3, 102, 214, 0.25);
+
+  --dialog-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+
+  --status-eligible: #0366d6;
+  --status-eligible-soft: #05264c;
+  --status-eligible-ink: #79b8ff;
+  --status-applied: #28a745;
+  --status-applied-soft: #0e2a1d;
+  --status-applied-ink: #56d364;
+  --status-superseded: #959da5;
+  --status-superseded-soft: #2b3036;
+  --status-superseded-ink: #959da5;
+  --status-divergent: #f66a0a;
+  --status-divergent-soft: #2f1c0a;
+  --status-divergent-ink: #ffa657;
+  --status-integrated: #6f42c1;
+  --status-integrated-soft: #231745;
+  --status-integrated-ink: #bc8cff;
+  --status-blocked: #d73a49;
+  --status-blocked-soft: #3c1618;
+  --status-blocked-ink: #ff7b72;
+  --status-unknown: #dbab09;
+  --status-unknown-soft: #2f2400;
+  --status-unknown-ink: #e3b341;
+}
+
+/* System-following dark theme (only when the user has not chosen explicitly). */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light):not(.dark) {
+    color-scheme: dark;
+
+    --ground: #24292e;
+    --surface: #1d2125;
+    --raised: #2b3036;
+    --overlay: #24292e;
+    --scrim: rgba(0, 0, 0, 0.5);
+
+    --line: #141414;
+    --line-strong: #727b85;
+
+    --hover: #2f363d;
+    --active: #383f47;
+    --selection: #444d56;
+
+    --text: #f6f8fa;
+    --muted: #959da5;
+    --disabled: #6e7681;
+
+    --accent: #0366d6;
+    --accent-hover: #1f6feb;
+    --accent-fg: #ffffff;
+    --accent-ink: #79b8ff;
+    --accent-soft: #05264c;
+    --accent-muted: #0c2d6b;
+    --focus-ring: rgba(3, 102, 214, 0.25);
+
+    --dialog-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+
+    --status-eligible: #0366d6;
+    --status-eligible-soft: #05264c;
+    --status-eligible-ink: #79b8ff;
+    --status-applied: #28a745;
+    --status-applied-soft: #0e2a1d;
+    --status-applied-ink: #56d364;
+    --status-superseded: #959da5;
+    --status-superseded-soft: #2b3036;
+    --status-superseded-ink: #959da5;
+    --status-divergent: #f66a0a;
+    --status-divergent-soft: #2f1c0a;
+    --status-divergent-ink: #ffa657;
+    --status-integrated: #6f42c1;
+    --status-integrated-soft: #231745;
+    --status-integrated-ink: #bc8cff;
+    --status-blocked: #d73a49;
+    --status-blocked-soft: #3c1618;
+    --status-blocked-ink: #ff7b72;
+    --status-unknown: #dbab09;
+    --status-unknown-soft: #2f2400;
+    --status-unknown-ink: #e3b341;
+  }
+}
+
 /*
   The default border color has changed to `currentcolor` in Tailwind CSS v4,
-  so we've added these compatibility styles to make sure everything still
-  looks the same as it did with Tailwind CSS v3.
-
-  If we ever want to remove these styles, we need to add an explicit border
-  color utility to any element that depends on these defaults.
+  so we pin it to the 1px divider token instead.
 */
 @layer base {
   *,
@@ -84,92 +274,112 @@
   ::before,
   ::backdrop,
   ::file-selector-button {
-    border-color: var(--color-gray-200, currentcolor);
+    border-color: var(--line);
   }
 }
 
+/* ---- Shared control + surface language (25px controls, 6px radii) ---- */
+
 @utility panel {
-  @apply rounded-xl border border-ink-700/70 bg-ink-870 shadow-panel;
+  @apply rounded-md border border-line bg-surface;
 }
 
 @utility panel-header {
-  @apply flex items-center justify-between gap-3 border-b border-ink-700/60 px-4 py-3;
+  @apply flex min-h-[29px] items-center justify-between gap-2 border-b border-line px-2.5 py-1.5;
 }
 
 @utility panel-title {
-  @apply text-sm font-semibold tracking-tight text-slate-100;
+  @apply truncate text-xs font-semibold tracking-tight text-fg;
 }
 
 @utility muted {
-  @apply text-xs text-slate-400;
+  @apply text-[11px] leading-normal text-muted;
 }
 
 @utility mono {
   @apply font-mono text-xs tracking-tight;
 }
 
+/* Focus contract: accent border + 1px focus ring. */
+@utility control-focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
 @utility btn {
-  @apply inline-flex select-none items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium
-      transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  @apply inline-flex h-[25px] shrink-0 items-center justify-center gap-1.5 rounded-md px-2.5 text-xs
+    font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-60;
 }
 
 @utility btn-primary {
-  @apply btn bg-brand-600 text-white hover:bg-brand-500 active:bg-brand-700;
+  @apply btn bg-accent text-accent-fg hover:bg-accent-hover active:bg-accent-hover;
 }
 
 @utility btn-secondary {
-  @apply btn border border-ink-600/80 bg-ink-800/70 text-slate-200 hover:border-ink-500 hover:bg-ink-750;
+  @apply btn border border-line-strong bg-surface text-fg hover:bg-hover active:bg-active;
 }
 
 @utility btn-ghost {
-  @apply btn text-slate-300 hover:bg-ink-800/70 hover:text-slate-100;
+  @apply btn text-muted hover:bg-hover hover:text-fg active:bg-active;
 }
 
 @utility btn-danger {
-  @apply btn border border-rose-900/70 bg-rose-950/40 text-rose-200 hover:bg-rose-900/40;
+  @apply btn border border-status-blocked/60 text-status-blocked-ink hover:bg-status-blocked-soft
+    active:bg-status-blocked-soft;
 }
 
 @utility input {
-  @apply w-full rounded-lg border border-ink-600/80 bg-ink-900/80 px-3 py-2 text-sm text-slate-100
-      placeholder:text-slate-500 hover:border-ink-500 focus:border-brand-500 focus:outline-hidden;
+  @apply h-[25px] w-full rounded-md border border-line-strong bg-surface px-2 text-xs text-fg
+    placeholder:text-disabled focus:control-focus;
 }
 
 @utility select {
-  @apply input cursor-pointer appearance-none pr-9;
+  @apply input cursor-pointer appearance-none pr-7;
 }
 
 @utility chip {
-  @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-medium;
+  @apply inline-flex items-center gap-1 text-[11px] whitespace-nowrap text-muted;
 }
 
 @utility kbd {
-  @apply rounded-sm border border-ink-600 bg-ink-800 px-1.5 py-0.5 font-mono text-2xs text-slate-400;
+  @apply rounded-[3px] border border-line-strong bg-raised px-1 py-px font-mono text-badge
+    text-muted;
 }
 
 @utility nav-item {
-  @apply relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium
-      text-slate-300 transition-colors hover:bg-ink-800/60 hover:text-slate-100;
+  @apply relative flex h-[29px] w-full items-center gap-2 rounded-md px-2.5 text-xs font-medium
+    text-muted transition-colors hover:bg-hover hover:text-fg focus-visible:control-focus;
 }
 
 @utility nav-item-active {
-  @apply bg-ink-800 text-white;
+  @apply bg-selection text-fg;
 }
 
 @utility tab {
-  @apply relative shrink-0 border-b-2 border-transparent px-3 py-2 text-sm font-medium text-slate-400
-      transition-colors hover:text-slate-200;
+  @apply relative flex h-[29px] shrink-0 items-center gap-1.5 border-b-2 border-transparent px-2.5
+    text-xs font-medium whitespace-nowrap text-muted transition-colors hover:text-fg
+    disabled:cursor-not-allowed disabled:opacity-60;
 }
 
 @utility tab-active {
-  @apply border-brand-500 text-white;
+  @apply border-accent text-fg;
 }
 
 @utility table-head {
-  @apply bg-ink-900/80 text-2xs font-semibold uppercase tracking-wider text-slate-400;
+  @apply bg-raised text-badge font-semibold tracking-wider text-muted uppercase;
 }
 
 @utility row-hover {
-  @apply transition-colors hover:bg-ink-800/60;
+  @apply transition-colors hover:bg-hover;
+}
+
+@utility row-selected {
+  @apply bg-selection;
+}
+
+@utility row-selected-focused {
+  @apply bg-accent text-accent-fg;
 }
 
 @utility scroll-area {
@@ -181,10 +391,6 @@
 }
 
 @layer base {
-  :root {
-    color-scheme: dark;
-  }
-
   html,
   body,
   #root {
@@ -192,22 +398,26 @@
   }
 
   body {
-    @apply bg-ink-950 font-sans text-slate-200 antialiased;
+    @apply bg-ground font-sans text-fg antialiased;
+    font-size: 12px;
+    line-height: 1.5;
     overflow: hidden;
   }
 
   /* Visible, consistent keyboard focus indicator everywhere. */
   :focus-visible {
-    @apply outline-hidden ring-2 ring-brand-500 ring-offset-1 ring-offset-ink-950;
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 
   ::selection {
-    @apply bg-brand-600/50;
+    background: var(--accent);
+    color: #ffffff;
   }
 
   * {
     scrollbar-width: thin;
-    scrollbar-color: #1e3050 transparent;
+    scrollbar-color: var(--line-strong) transparent;
   }
 
   ::-webkit-scrollbar {
@@ -220,14 +430,14 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background-color: #1e3050;
+    background-color: var(--line-strong);
     border-radius: 9999px;
-    border: 2px solid transparent;
+    border: 3px solid transparent;
     background-clip: content-box;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background-color: #27395c;
+    background-color: var(--muted);
   }
 
   [data-tauri-drag-region] {

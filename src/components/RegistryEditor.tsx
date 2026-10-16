@@ -44,7 +44,7 @@ export function RegistryEditor() {
     <Panel
       className="xl:col-span-2"
       title="Main system registry"
-      subtitle="Owned by the tool — nothing is written into the main system or subsystem repositories"
+      subtitle="Owned by the tool — nothing is written into any repository"
       actions={
         <Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => snapshot.reload()}>
           Reload
@@ -95,7 +95,6 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
         app.pushNotice({
           tone: 'success',
           title: 'Registry saved',
-          message: 'The tool-local registry override has been updated.',
         });
         onSaved();
       })
@@ -105,11 +104,8 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
 
   return (
     <div className="space-y-4">
-      <InlineAlert tone="info" title="Saved to the tool, not the repository">
+      <InlineAlert tone="info" title="Tool-local registry — nothing is written into any repository">
         <span className="mono">{snapshot.overridePath}</span>
-        {snapshot.overrideExists
-          ? ' — the saved override is in use.'
-          : ' — not created yet; the bundled defaults are in use until you save.'}
       </InlineAlert>
 
       <div className="grid gap-3 md:grid-cols-2">
@@ -161,12 +157,9 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
             }
           />
         </label>
-        <div className="rounded-lg border border-ink-700/60 bg-ink-850/50 px-3 py-2">
-          <p className="text-xs font-semibold text-slate-100">Promotion: local-first</p>
-          <p className="mt-1 text-2xs text-slate-400">
-            Local delivery creates a branch + commit in your clone (you push it yourself). Push + PR
-            is an explicit opt-in per promotion.
-          </p>
+        <div className="rounded-md border border-line bg-raised px-3 py-2">
+          <p className="text-xs font-semibold text-fg">Promotion: local-first</p>
+          <p className="mt-1 text-[11px] text-muted">Push + PR is opt-in per promotion.</p>
         </div>
         <label className="block md:col-span-2">
           <span className="muted">
@@ -185,16 +178,15 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
               }))
             }
           />
-          <span className="mt-1 block text-2xs text-slate-500">
-            Used for local delivery: the integration branch + provenance commit are created here
-            (never pushed). Falls back to VOS_TARGET_REPO_DIR, then the tool-managed checkout cache.
+          <span className="mt-1 block truncate text-[11px] text-muted">
+            Empty = VOS_TARGET_REPO_DIR, then the managed checkout.
           </span>
         </label>
       </div>
 
       <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        <div className="flex h-[29px] items-center justify-between">
+          <p className="text-[11px] font-semibold tracking-wide text-muted uppercase">
             Subsystems ({config.subsystems.length})
           </p>
           <Button
@@ -213,13 +205,11 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
         </div>
 
         {config.subsystems.length === 0 ? (
-          <p className="muted">
-            No subsystems registered yet. Add one so its commits can be browsed and promoted.
-          </p>
+          <p className="muted">No subsystems registered yet.</p>
         ) : (
           <ul className="space-y-2">
             {config.subsystems.map((entry, index) => (
-              <li key={index} className="rounded-lg border border-ink-700/60 bg-ink-850/40 p-3">
+              <li key={index} className="rounded-md border border-line bg-raised p-3">
                 <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
                   <label className="block">
                     <span className="muted">Id</span>
@@ -272,10 +262,10 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
                 </div>
 
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <label className="flex h-[25px] items-center gap-2 text-xs text-fg">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 rounded border-ink-600 bg-ink-900"
+                      className="h-4 w-4 rounded border-line-strong bg-surface accent-accent"
                       checked={entry.enabled}
                       onChange={(event) => patchSubsystem(index, { enabled: event.target.checked })}
                     />
@@ -311,9 +301,7 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
         <Button variant="primary" icon={Save} onClick={save} disabled={saving}>
           {saving ? 'Saving…' : 'Save registry'}
         </Button>
-        <span className="muted">
-          Validated on save: repository slugs, safe branch names, unique subsystem ids.
-        </span>
+        <span className="muted">Validated on save.</span>
       </div>
     </div>
   );

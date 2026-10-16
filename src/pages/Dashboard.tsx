@@ -1,14 +1,11 @@
 import { useMemo } from 'react';
 import {
-  ArrowRight,
-  Boxes,
   ExternalLink,
   GitBranch,
   GitPullRequestArrow,
   History,
   Plus,
   RefreshCw,
-  Settings as SettingsIcon,
   Workflow,
 } from 'lucide-react';
 
@@ -16,7 +13,6 @@ import { api } from '../api/invoke';
 import type { CommitStatusKind, IntegrationHistoryKind } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
 import { StatusBadge } from '../components/StatusBadge';
-import { cx } from '../components/ui/cx';
 import { formatDateTime } from '../components/ui/format';
 import {
   Button,
@@ -101,16 +97,10 @@ export function Dashboard() {
   const branches = (app.targetBranches.data?.branches ?? []).filter((branch) => branch.allowed);
 
   return (
-    <div className="scroll-area h-full min-h-0 space-y-4 p-5">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-white">Dashboard</h1>
-          <p className="mt-0.5 text-xs text-slate-400">
-            Integration state across registered subsystems for target branch{' '}
-            <span className="mono text-slate-300">{app.targetBranch}</span>
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex min-h-[50px] flex-wrap items-center gap-3 border-b border-line px-5 py-2">
+        <h1 className="text-[14px] font-semibold text-fg">Dashboard</h1>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <Select
             aria-label="Main-system target branch for dashboard counts"
             className="w-[190px]"
@@ -134,50 +124,19 @@ export function Dashboard() {
         </div>
       </header>
 
-      <section
-        aria-label="Counts by status"
-        className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"
-      >
-        {COUNTED.filter((entry) => entry.group !== 'attention').map((entry) => (
-          <div key={entry.key} className="rounded-xl border border-ink-700/70 bg-ink-870 p-3">
-            <StatusBadge kind={entry.key} size="md" />
-            <p className="mt-2 text-2xl font-semibold text-white">
-              {counts.loading ? '—' : (totals[entry.key] ?? 0)}
-            </p>
-            <p className="text-2xs text-slate-500">indexed commits on {app.targetBranch}</p>
-          </div>
-        ))}
-      </section>
+      <div className="flex h-[29px] shrink-0 items-center gap-2 border-b border-line px-5">
+        <GitBranch className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+        <span className="mono truncate text-muted">target: {app.targetBranch}</span>
+        <span className="muted truncate">branch-scoped counts · indexed commits only</span>
+      </div>
 
-      <section aria-label="Needs attention" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {COUNTED.filter((entry) => entry.group === 'attention').map((entry) => (
-          <div key={entry.key} className="rounded-xl border border-ink-700/70 bg-ink-870 p-3">
-            <StatusBadge kind={entry.key} />
-            <p className="mt-2 text-xl font-semibold text-white">
-              {counts.loading ? '—' : (totals[entry.key] ?? 0)}
-            </p>
-          </div>
-        ))}
-      </section>
-
-      <div className="grid gap-4 xl:grid-cols-3">
+      <div className="scroll-area min-h-0 flex-1 space-y-4 p-5">
         <Panel
-          className="xl:col-span-2"
-          title="Registered subsystems"
-          subtitle={`Status counts for ${app.targetBranch} · indexed commits only`}
-          actions={
-            <Button
-              size="sm"
-              variant="secondary"
-              icon={Plus}
-              onClick={() => app.navigate('subsystems')}
-            >
-              Register
-            </Button>
-          }
-          bodyClassName="scroll-area max-h-[340px]"
+          title="Status overview"
+          className="w-fit min-w-[280px]"
+          bodyClassName="overflow-x-auto"
         >
-          {counts.loading ? (
+          {counts.loading && (counts.data?.length ?? 0) === 0 ? (
             <LoadingState label="Counting statuses…" />
           ) : counts.error ? (
             <ErrorState error={counts.error} onRetry={counts.reload} compact />
@@ -186,67 +145,24 @@ export function Dashboard() {
               <thead>
                 <tr className="table-head">
                   <th scope="col" className="py-2 pl-4 text-left">
-                    Subsystem
-                  </th>
-                  <th scope="col" className="py-2 pr-3 text-left">
-                    Source branch
-                  </th>
-                  <th scope="col" className="py-2 pr-3 text-right">
-                    Indexed
-                  </th>
-                  <th scope="col" className="py-2 pr-3 text-right">
-                    Integrated
-                  </th>
-                  <th scope="col" className="py-2 pr-3 text-right">
-                    PR open
+                    Status
                   </th>
                   <th scope="col" className="py-2 pr-4 text-right">
-                    Eligible
+                    Commits
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {(counts.data ?? []).map((entry) => (
-                  <tr key={entry.subsystem.id} className="row-hover border-b border-ink-800/70">
-                    <td className="py-2 pl-4">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          app.selectSubsystem(entry.subsystem.id);
-                          app.navigate('subsystems');
-                        }}
-                        className="text-left text-slate-100 hover:text-white hover:underline"
-                      >
-                        {entry.subsystem.name}
-                        <span className="mono block text-2xs text-slate-500">
-                          {entry.subsystem.repository}
-                        </span>
-                      </button>
+                {(counts.loading
+                  ? COUNTED
+                  : COUNTED.filter((entry) => (totals[entry.key] ?? 0) > 0)
+                ).map((entry) => (
+                  <tr key={entry.key} className="row-hover border-b border-line">
+                    <td className="h-[29px] py-0 pl-4">
+                      <StatusBadge kind={entry.key} label={entry.label} />
                     </td>
-                    <td className="mono py-2 pr-3 text-slate-400">
-                      {entry.subsystem.sourceBranch}
-                    </td>
-                    <td className="py-2 pr-3 text-right text-slate-300">{entry.indexed}</td>
-                    <td className="py-2 pr-3 text-right">
-                      <span
-                        className={cx(
-                          (entry.tally.integrated ?? 0) > 0 ? 'text-emerald-300' : 'text-slate-500',
-                        )}
-                      >
-                        {entry.tally.integrated ?? 0}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-3 text-right">
-                      <span
-                        className={cx(
-                          (entry.tally.pr_open ?? 0) > 0 ? 'text-violet-300' : 'text-slate-500',
-                        )}
-                      >
-                        {(entry.tally.pr_open ?? 0) + (entry.tally.in_review ?? 0)}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-4 text-right text-slate-300">
-                      {entry.tally.eligible ?? 0}
+                    <td className="mono py-0 pr-4 text-right text-fg tabular-nums">
+                      {counts.loading ? '—' : (totals[entry.key] ?? 0)}
                     </td>
                   </tr>
                 ))}
@@ -255,164 +171,201 @@ export function Dashboard() {
           )}
         </Panel>
 
-        <Panel
-          title="Shortcuts"
-          subtitle="Every claim in this tool is backed by Git history or GitHub state"
-        >
-          <div className="space-y-2 p-3">
-            <Button
-              variant="secondary"
-              className="w-full justify-start"
-              icon={Boxes}
-              onClick={() => app.navigate('subsystems')}
-            >
-              Subsystems and commit workspace
-              <ArrowRight className="ml-auto h-4 w-4 opacity-70" aria-hidden="true" />
-            </Button>
-            <Button
-              variant="secondary"
-              className="w-full justify-start"
-              icon={GitBranch}
-              onClick={() => app.navigate('commit-browser')}
-            >
-              Browse commits and select SHAs
-              <ArrowRight className="ml-auto h-4 w-4 opacity-70" aria-hidden="true" />
-            </Button>
-            <Button
-              variant="secondary"
-              className="w-full justify-start"
-              icon={Workflow}
-              onClick={() => app.navigate('workflow-runs')}
-            >
-              Workflow runs and logs
-              <ArrowRight className="ml-auto h-4 w-4 opacity-70" aria-hidden="true" />
-            </Button>
-            <Button
-              variant="secondary"
-              className="w-full justify-start"
-              icon={History}
-              onClick={() => app.navigate('integration-history')}
-            >
-              Integration history per branch
-              <ArrowRight className="ml-auto h-4 w-4 opacity-70" aria-hidden="true" />
-            </Button>
-            <Button
-              variant="secondary"
-              className="w-full justify-start"
-              icon={SettingsIcon}
-              onClick={() => app.navigate('settings')}
-            >
-              Settings and diagnostics
-              <ArrowRight className="ml-auto h-4 w-4 opacity-70" aria-hidden="true" />
-            </Button>
-          </div>
-        </Panel>
+        <div className="grid gap-4 xl:grid-cols-3">
+          <Panel
+            className="xl:col-span-2"
+            title="Registered subsystems"
+            actions={
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={Plus}
+                onClick={() => app.navigate('subsystems')}
+              >
+                Register
+              </Button>
+            }
+            bodyClassName="scroll-area max-h-[340px] overflow-x-auto"
+          >
+            {counts.loading ? (
+              <LoadingState label="Counting statuses…" />
+            ) : counts.error ? (
+              <ErrorState error={counts.error} onRetry={counts.reload} compact />
+            ) : (
+              <table className="w-full border-separate border-spacing-0 text-xs">
+                <thead>
+                  <tr className="table-head">
+                    <th scope="col" className="py-2 pl-4 text-left">
+                      Subsystem
+                    </th>
+                    <th scope="col" className="py-2 pr-3 text-left">
+                      Source branch
+                    </th>
+                    <th scope="col" className="py-2 pr-3 text-right">
+                      Indexed
+                    </th>
+                    <th scope="col" className="py-2 pr-3 text-right">
+                      Integrated
+                    </th>
+                    <th scope="col" className="py-2 pr-3 text-right">
+                      PR open
+                    </th>
+                    <th scope="col" className="py-2 pr-4 text-right">
+                      Eligible
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(counts.data ?? []).map((entry) => (
+                    <tr key={entry.subsystem.id} className="row-hover border-b border-line">
+                      <td className="h-[29px] py-0 pl-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            app.selectSubsystem(entry.subsystem.id);
+                            app.navigate('subsystems');
+                          }}
+                          className="block min-w-0 text-left text-fg hover:underline"
+                        >
+                          <span className="block truncate">{entry.subsystem.name}</span>
+                          <span className="mono block truncate text-disabled">
+                            {entry.subsystem.repository}
+                          </span>
+                        </button>
+                      </td>
+                      <td className="mono truncate py-0 pr-3 text-muted">
+                        {entry.subsystem.sourceBranch}
+                      </td>
+                      <td className="mono py-0 pr-3 text-right text-fg tabular-nums">
+                        {entry.indexed}
+                      </td>
+                      <td className="mono py-0 pr-3 text-right text-fg tabular-nums">
+                        {entry.tally.integrated ?? 0}
+                      </td>
+                      <td className="mono py-0 pr-3 text-right text-fg tabular-nums">
+                        {(entry.tally.pr_open ?? 0) + (entry.tally.in_review ?? 0)}
+                      </td>
+                      <td className="mono py-0 pr-4 text-right text-fg tabular-nums">
+                        {entry.tally.eligible ?? 0}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Panel>
 
-        <Panel
-          className="xl:col-span-2"
-          title="Recent promotion runs"
-          subtitle="Runs started by this tool"
-          actions={
-            <Button size="sm" variant="secondary" onClick={() => app.navigate('workflow-runs')}>
-              All runs
-            </Button>
-          }
-        >
-          {runs.loading ? (
-            <LoadingState label="Loading runs…" />
-          ) : (runs.data?.runs.length ?? 0) === 0 ? (
-            <EmptyState
-              icon={Workflow}
-              title="No promotion runs yet"
-              message="Dispatch a promotion to create the first run."
-            />
-          ) : (
-            <ul className="divide-y divide-ink-800/70">
-              {(runs.data?.runs ?? []).map((run) => (
-                <li key={run.id} className="flex flex-wrap items-center gap-2 px-4 py-2.5">
-                  <StatusBadge
-                    kind={
-                      run.status === 'in_progress'
-                        ? 'promotion_running'
-                        : run.status === 'queued'
-                          ? 'promotion_queued'
-                          : run.conclusion === 'success'
-                            ? 'pr_open'
-                            : run.conclusion === 'failure'
-                              ? 'failed'
-                              : 'unknown'
-                    }
-                    label={`#${run.runNumber} ${run.status === 'completed' ? (run.conclusion ?? 'done') : run.status}`}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
-                    {run.displayTitle}
-                  </span>
-                  <span className="chip bg-ink-800 text-slate-300">{run.subsystemId}</span>
-                  <span className="mono text-2xs text-slate-500">{run.targetBranch}</span>
-                  <span className="text-2xs text-slate-500">{formatDateTime(run.updatedAt)}</span>
-                  <button
-                    type="button"
-                    onClick={() => app.openExternal(run.htmlUrl)}
-                    className="rounded-sm p-1 text-slate-400 hover:bg-ink-700 hover:text-white"
-                    aria-label={`Open run ${run.runNumber} on GitHub`}
-                    title="Open the run on GitHub"
+          <Panel
+            className="xl:col-span-2"
+            title="Recent promotion runs"
+            subtitle="Runs started by this tool"
+            actions={
+              <Button size="sm" variant="secondary" onClick={() => app.navigate('workflow-runs')}>
+                All runs
+              </Button>
+            }
+          >
+            {runs.loading ? (
+              <LoadingState label="Loading runs…" />
+            ) : (runs.data?.runs.length ?? 0) === 0 ? (
+              <EmptyState
+                icon={Workflow}
+                title="No promotion runs yet"
+                message="Dispatch a promotion to create the first run."
+              />
+            ) : (
+              <ul className="divide-y divide-line">
+                {(runs.data?.runs ?? []).map((run) => (
+                  <li
+                    key={run.id}
+                    className="flex h-[50px] flex-wrap items-center gap-2 overflow-hidden px-4"
                   >
-                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Panel>
-
-        <Panel
-          title="Latest target activity"
-          subtitle={`Integration events reachable from ${app.targetBranch}`}
-          actions={
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => app.navigate('integration-history')}
-            >
-              History
-            </Button>
-          }
-          bodyClassName="scroll-area max-h-[340px]"
-        >
-          {history.loading ? (
-            <LoadingState label="Loading history…" />
-          ) : (history.data?.entries.length ?? 0) === 0 ? (
-            <EmptyState
-              icon={History}
-              title="No integration events"
-              message="No promotion has been recorded for this target branch yet."
-            />
-          ) : (
-            <ul className="divide-y divide-ink-800/70">
-              {(history.data?.entries ?? []).map((entry) => (
-                <li key={entry.id} className="space-y-1 px-4 py-2.5">
-                  <div className="flex items-center gap-2">
                     <StatusBadge
-                      kind={HISTORY_LABEL[entry.kind].kind}
-                      label={HISTORY_LABEL[entry.kind].label}
+                      kind={
+                        run.status === 'in_progress'
+                          ? 'promotion_running'
+                          : run.status === 'queued'
+                            ? 'promotion_queued'
+                            : run.conclusion === 'success'
+                              ? 'pr_open'
+                              : run.conclusion === 'failure'
+                                ? 'failed'
+                                : 'unknown'
+                      }
+                      label={`#${run.runNumber} ${run.status === 'completed' ? (run.conclusion ?? 'done') : run.status}`}
                     />
-                    <span className="chip bg-ink-800 text-slate-300">{entry.subsystemId}</span>
-                    {entry.inheritedFromBranch ? (
-                      <span className="chip bg-amber-950/60 text-amber-200">
-                        inherited from {entry.inheritedFromBranch}
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="text-2xs leading-relaxed text-slate-400">{entry.detail}</p>
-                  <p className="mono text-2xs text-slate-500">
-                    {entry.sourceShas.map((sha) => sha.slice(0, 7)).join(', ')} ·{' '}
-                    {formatDateTime(entry.occurredAt)} · {entry.actor}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Panel>
+                    <span className="min-w-0 flex-1 truncate text-xs text-fg">
+                      {run.displayTitle}
+                    </span>
+                    <span className="chip">{run.subsystemId}</span>
+                    <span className="mono truncate text-disabled">{run.targetBranch}</span>
+                    <span className="truncate text-[11px] text-muted">
+                      {formatDateTime(run.updatedAt)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => app.openExternal(run.htmlUrl)}
+                      className="rounded-md p-1 text-muted hover:bg-hover hover:text-fg"
+                      aria-label={`Open run ${run.runNumber} on GitHub`}
+                      title="Open the run on GitHub"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Panel>
+
+          <Panel
+            title="Latest target activity"
+            subtitle={`Integration events reachable from ${app.targetBranch}`}
+            actions={
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => app.navigate('integration-history')}
+              >
+                History
+              </Button>
+            }
+            bodyClassName="scroll-area max-h-[340px]"
+          >
+            {history.loading ? (
+              <LoadingState label="Loading history…" />
+            ) : (history.data?.entries.length ?? 0) === 0 ? (
+              <EmptyState
+                icon={History}
+                title="No integration events"
+                message="No promotion has been recorded for this target branch yet."
+              />
+            ) : (
+              <ul className="divide-y divide-line">
+                {(history.data?.entries ?? []).map((entry) => (
+                  <li key={entry.id} className="space-y-1 px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <StatusBadge
+                        kind={HISTORY_LABEL[entry.kind].kind}
+                        label={HISTORY_LABEL[entry.kind].label}
+                      />
+                      <span className="chip">{entry.subsystemId}</span>
+                      {entry.inheritedFromBranch ? (
+                        <span className="chip text-status-unknown-ink">
+                          inherited from {entry.inheritedFromBranch}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="truncate text-[11px] text-muted">{entry.detail}</p>
+                    <p className="mono truncate text-disabled">
+                      {entry.sourceShas.map((sha) => sha.slice(0, 7)).join(', ')} ·{' '}
+                      {formatDateTime(entry.occurredAt)} · {entry.actor}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Panel>
+        </div>
       </div>
     </div>
   );
