@@ -10,13 +10,20 @@ use crate::AppState;
 
 #[tauri::command]
 pub async fn get_cache_stats(state: State<'_, AppState>) -> AppResult<CacheStats> {
-    Ok(state.cache.stats())
+    let mut stats = state.cache.stats();
+    if !crate::services::live_read::use_fixtures() {
+        stats.data_source = crate::github::models::DataSource::Live;
+    }
+    Ok(stats)
 }
 
 #[tauri::command]
 pub async fn clear_cache(state: State<'_, AppState>) -> AppResult<CacheStats> {
     let removed = state.cache.clear();
     let mut stats = state.cache.stats();
+    if !crate::services::live_read::use_fixtures() {
+        stats.data_source = crate::github::models::DataSource::Live;
+    }
     stats.note = format!(
         "Cleared {removed} cached response(s). Git history and GitHub remain the authority.",
     );

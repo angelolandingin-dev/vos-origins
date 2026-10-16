@@ -1,4 +1,4 @@
-//! Registry commands.
+//! Registry commands: live (registry-backed) by default, fixtures on opt-in.
 
 use tauri::State;
 
@@ -7,23 +7,45 @@ use crate::fixtures;
 use crate::github::models::{
     RegistrationResult, SubsystemRegistrationRequest, SubsystemSummary, TargetBranchList,
 };
+use crate::services::live_read;
 use crate::services::registration;
 use crate::AppState;
 
 use super::{read_world, write_world};
 
+fn live_token() -> AppResult<String> {
+    crate::github::gh_cli::auth_token().ok_or_else(|| {
+        AppError::new(
+            ErrorCode::Unauthenticated,
+            "No GitHub token is available (checked GH_TOKEN, GITHUB_TOKEN and `gh auth token`).",
+        )
+        .with_remedy("Run `gh auth login --hostname github.com` or set GH_TOKEN, then retry.")
+    })
+}
+
 #[tauri::command]
 pub async fn list_subsystems(state: State<'_, AppState>) -> AppResult<Vec<SubsystemSummary>> {
-    read_world(&state, |world| Ok(state.adapter.list_subsystems(world)))
+    if live_read::use_fixtures() {
+        return read_world(&state, |world| Ok(state.adapter.list_subsystems(world)));
+    }
+    let registry = live_read::load_live_registry()?;
+    Ok(live_read::subsystem_summaries(&registry))
 }
 
 #[tauri::command]
 pub async fn list_target_branches(state: State<'_, AppState>) -> AppResult<TargetBranchList> {
-    read_world(&state, |world| {
-        state
-            .adapter
-            .target_branches(world, fixtures::DEFAULT_TARGET_BRANCH)
-    })
+    if live_read::use_fixtures() {
+        return read_world(&state, |world| {
+            state
+                .adapter
+                .target_branches(world, fixtures::DEFAULT_TARGET_BRANCH)
+        });
+    }
+    let registry = live_read::load_live_registry()?;
+    let token = live_token()?;
+    let github = crate::services::engine::github_ops::RealGitHubOps::new(token);
+    // Selected defaults to the fixture default when it exists and is allowed.
+    live_read::target_branches_live(&registry, &github, Some(fixtures::DEFAULT_TARGET_BRANCH))
 }
 
 /// Duplicates are `duplicate_registration`; other failures are `invalid_registry`.

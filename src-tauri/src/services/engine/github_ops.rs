@@ -25,6 +25,17 @@ pub struct PullRequestInfo {
     pub body: String,
     pub draft: bool,
     pub stubbed: bool,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub merged_at: Option<String>,
+    pub author: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BranchInfo {
+    pub name: String,
+    pub sha: String,
+    pub protected: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +75,8 @@ pub trait GitHubOps: Send + Sync {
         request: &CreatePrRequest,
     ) -> Result<PullRequestInfo, String>;
     fn resolve_target_tip(&self, repo_slug: &str, branch: &str) -> Result<Option<String>, String>;
+    fn list_branches(&self, repo_slug: &str) -> Result<Vec<BranchInfo>, String>;
+    fn repo_default_branch(&self, repo_slug: &str) -> Result<Option<String>, String>;
 }
 
 /// Open-PR list path: `base`-only filter so an empty `head` ref can never
@@ -105,6 +118,8 @@ pub struct StubCall {
 pub struct StubGitHubOps {
     push_target: Option<String>,
     open_prs: Vec<PullRequestInfo>,
+    branches: Vec<BranchInfo>,
+    default_branch: Option<String>,
     counter: AtomicU64,
     calls: Mutex<Vec<StubCall>>,
 }
@@ -114,6 +129,8 @@ impl StubGitHubOps {
         Self {
             push_target: None,
             open_prs: Vec::new(),
+            branches: Vec::new(),
+            default_branch: None,
             counter: AtomicU64::new(100),
             calls: Mutex::new(Vec::new()),
         }
@@ -126,6 +143,16 @@ impl StubGitHubOps {
 
     pub fn with_open_prs(mut self, prs: Vec<PullRequestInfo>) -> Self {
         self.open_prs = prs;
+        self
+    }
+
+    pub fn with_branches(mut self, branches: Vec<BranchInfo>) -> Self {
+        self.branches = branches;
+        self
+    }
+
+    pub fn with_default_branch(mut self, branch: impl Into<String>) -> Self {
+        self.default_branch = Some(branch.into());
         self
     }
 
@@ -232,12 +259,26 @@ impl GitHubOps for StubGitHubOps {
             body: request.body.clone(),
             draft: request.draft,
             stubbed: true,
+            created_at: None,
+            updated_at: None,
+            merged_at: None,
+            author: None,
         })
     }
 
     fn resolve_target_tip(&self, _repo_slug: &str, branch: &str) -> Result<Option<String>, String> {
         self.record("resolveTargetTip", branch);
         Ok(None)
+    }
+
+    fn list_branches(&self, _repo_slug: &str) -> Result<Vec<BranchInfo>, String> {
+        self.record("listBranches", "all");
+        Ok(self.branches.clone())
+    }
+
+    fn repo_default_branch(&self, _repo_slug: &str) -> Result<Option<String>, String> {
+        self.record("repoDefaultBranch", "default");
+        Ok(self.default_branch.clone())
     }
 }
 
@@ -319,7 +360,30 @@ impl RealGitHubOps {
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
             stubbed: false,
+            created_at: get(&["created_at"]),
+            updated_at: get(&["updated_at"]),
+            merged_at: get(&["merged_at"]),
+            author: get(&["user", "login"]),
         }
+    }
+
+    fn parse_branch(value: &serde_json::Value) -> Option<BranchInfo> {
+        let name = value.get("name")?.as_str()?.to_string();
+        let sha = value
+            .get("commit")
+            .and_then(|c| c.get("sha"))
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let protected = value
+            .get("protected")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Some(BranchInfo {
+            name,
+            sha,
+            protected,
+        })
     }
 }
 
@@ -410,6 +474,43 @@ impl GitHubOps for RealGitHubOps {
                     .get("commit")
                     .and_then(|c| c.get("sha"))
                     .and_then(|s| s.as_str())
+                    .map(|s| s.to_string()))
+            }
+            Err(err) if err.contains("404") => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn list_branches(&self, repo_slug: &str) -> Result<Vec<BranchInfo>, String> {
+        let mut all = Vec::new();
+        for page in 1..=100 {
+            let path = format!("/repos/{repo_slug}/branches?per_page=100&page={page}");
+            let raw = self.run_gh(&["api", "--method", "GET", &path], None)?;
+            let parsed: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|err| format!("gh api branches: {err}"))?;
+            let items = parsed.as_array().cloned().unwrap_or_default();
+            let count = items.len();
+            for item in &items {
+                if let Some(info) = Self::parse_branch(item) {
+                    all.push(info);
+                }
+            }
+            if count < 100 {
+                break;
+            }
+        }
+        Ok(all)
+    }
+
+    fn repo_default_branch(&self, repo_slug: &str) -> Result<Option<String>, String> {
+        let path = format!("/repos/{repo_slug}");
+        match self.run_gh(&["api", "--method", "GET", &path], None) {
+            Ok(raw) => {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&raw).map_err(|err| format!("gh api repo: {err}"))?;
+                Ok(parsed
+                    .get("default_branch")
+                    .and_then(|v| v.as_str())
                     .map(|s| s.to_string()))
             }
             Err(err) if err.contains("404") => Ok(None),

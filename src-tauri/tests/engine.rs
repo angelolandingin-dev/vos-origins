@@ -1798,6 +1798,18 @@ impl GitHubOps for FailingPrOps {
     ) -> Result<Option<String>, String> {
         Ok(None)
     }
+    fn list_branches(
+        &self,
+        _repo_slug: &str,
+    ) -> Result<
+        Vec<subsystem_integration_manager_lib::services::engine::github_ops::BranchInfo>,
+        String,
+    > {
+        Ok(Vec::new())
+    }
+    fn repo_default_branch(&self, _repo_slug: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
 }
 
 #[test]
