@@ -118,6 +118,8 @@ pub async fn dispatch_promotion(
         delivery,
         on_conflict: request.on_conflict,
         message: request.message.clone(),
+        allow_gaps: request.allow_gaps,
+        excluded_paths: request.excluded_paths.clone(),
     };
     let is_push_pr = delivery == PromotionDelivery::PushPr;
     let local_dir_for_commands = target_repo_dir.clone();
@@ -393,6 +395,11 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
     let base_sha = request.base_sha.clone();
     let target_branch = request.target_branch.clone();
     let on_conflict = request.on_conflict;
+    // Pin the same snapshot the apply would use (addendum C): globalFiles,
+    // allowGaps and excludedPaths travel with this call, never re-read.
+    let allow_gaps = request.allow_gaps;
+    let excluded_paths = request.excluded_paths.clone();
+    let global_files = subsystem.global_files.clone().unwrap_or_default();
     let report = tauri::async_runtime::spawn_blocking(move || {
         let scratch_root = std::env::temp_dir().join("vos-integration");
         let _ = std::fs::create_dir_all(&scratch_root);
@@ -403,6 +410,9 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
             base_sha: base_sha.as_deref(),
             target_branch: &target_branch,
             on_conflict,
+            allow_gaps,
+            excluded_paths: &excluded_paths,
+            global_files: &global_files,
         };
         crate::services::engine::preflight::compute_preflight(
             &source_repo_dir,
@@ -812,6 +822,58 @@ fn append_shared_findings(report: &PromotionReport, findings: &mut Vec<Validatio
             ),
         ));
     }
+    if !report.changes.replaced.is_empty() {
+        findings.push(ValidationFinding::info(
+            "replaced",
+            format!("Replaced: {}", report.changes.replaced.join(", ")),
+        ));
+    }
+    if !report.changes.deleted.is_empty() {
+        findings.push(ValidationFinding::info(
+            "deleted",
+            format!("Deleted: {}", report.changes.deleted.join(", ")),
+        ));
+    }
+    if !report.changes.unchanged.is_empty() {
+        findings.push(ValidationFinding::info(
+            "unchanged",
+            format!(
+                "Unchanged (target already matched source): {}",
+                report.changes.unchanged.join(", ")
+            ),
+        ));
+    }
+    if !report.changes.flagged.is_empty() {
+        findings.push(ValidationFinding::warning(
+            "flagged_overlap",
+            format!(
+                "Cross-subsystem overlap — replaced {} path(s) whose target copy had independently diverged from the commit's base: {}. Review before merging.",
+                report.changes.flagged.len(),
+                report.changes.flagged.join(", ")
+            ),
+            "These paths overwrote independent target work that happened to match source history. Review the diff before merging.",
+        ));
+    }
+    if !report.changes.excluded.is_empty() {
+        findings.push(ValidationFinding::info(
+            "excluded",
+            format!(
+                "Excluded via excludedPaths (skipped, not promoted): {}",
+                report.changes.excluded.join(", ")
+            ),
+        ));
+    }
+    if !report.changes.ignored_skipped.is_empty() {
+        findings.push(ValidationFinding::warning(
+            "worktree_ignored",
+            format!(
+                "{} path(s) are ignored by the target repository and were not staged: {}",
+                report.changes.ignored_skipped.len(),
+                report.changes.ignored_skipped.join(", ")
+            ),
+            "Remove the ignore rule or force-add manually if the file must be tracked; the tool never forces with `-f`.",
+        ));
+    }
     if !report.changes.main_owned_skipped.is_empty() {
         findings.push(ValidationFinding::warning(
             "main_owned_skipped",
@@ -923,6 +985,26 @@ fn map_blocker(report: &PromotionReport) -> AppError {
         "SHARED_CONFIG_REQUIRES_REVIEW" => (
             ErrorCode::InvalidRequest,
             "Shared/global config changed. This requires explicit review before it can be promoted.",
+        ),
+        "NON_CONTIGUOUS_PATH_OVERLAP" => (
+            ErrorCode::InvalidRequest,
+            "Select the skipped commit(s) too, exclude the affected path(s) via excludedPaths, or re-run with allowGaps:true (records Promotion-Gaps + Promotion-Override trailers).",
+        ),
+        "TARGET_DIVERGED" => (
+            ErrorCode::PatchConflict,
+            "Adapt the file upstream in the subsystem and re-promote, or exclude the path via excludedPaths and re-promote.",
+        ),
+        "GLOBAL_FILE_PROTECTED" => (
+            ErrorCode::InvalidRequest,
+            "Adapt the protected app-shell file in the subsystem first, then re-promote (or exclude it via excludedPaths if the shell copy is canonical).",
+        ),
+        "TARGET_CHECKED_OUT_ELSEWHERE" => (
+            ErrorCode::InvalidRequest,
+            "Finish or remove the linked worktree holding the target branch (`git worktree list`), or check out the target here, then re-promote.",
+        ),
+        "STAGED_MISMATCH" => (
+            ErrorCode::Internal,
+            "Something raced the promotion into the index. Retry on a clean tree; the working tree was rolled back.",
         ),
         "PUSH_FAILED" => (
             ErrorCode::Unauthenticated,

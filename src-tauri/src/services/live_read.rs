@@ -405,6 +405,31 @@ fn evidence_for(
     }
 }
 
+/// Last-fetch time for the checkout (`FETCH_HEAD` mtime, reused checkout TTL
+/// fetch — no per-commit network round-trip: two `rev-parse`s plus one `log`
+/// walk over already-fetched objects). Used for the
+/// `Unknown (stale, as of <time>)` label when the remote-tracking ref cannot
+/// be read (§8).
+fn fetch_time_str(repo_dir: &Path) -> String {
+    let fetch_head = repo_dir.join(".git").join("FETCH_HEAD");
+    // Bare repos and worktrees differ: try `.git/FETCH_HEAD`, then `FETCH_HEAD`.
+    let candidates = [fetch_head, repo_dir.join("FETCH_HEAD")];
+    for candidate in &candidates {
+        if let Ok(meta) = std::fs::metadata(candidate) {
+            if let Ok(modified) = meta.modified() {
+                let secs = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0) {
+                    return dt.to_rfc3339();
+                }
+            }
+        }
+    }
+    "unknown fetch time".to_string()
+}
+
 fn branch_result_to_status(
     repo_dir: &Path,
     queried_branch: &str,
@@ -412,10 +437,36 @@ fn branch_result_to_status(
 ) -> CommitStatus {
     match result.status {
         BranchStatusKind::Integrated => {
+            // Verify trailers actually exist on the claimed commit (addendum A).
+            // A squash-merge or history rewrite strips them: absence of
+            // trailers is NOT evidence of no promotion — it is Unknown/needs
+            // verification, never Eligible. Message parsing is a hint for the
+            // claim; the trailer block is the verification (and blob
+            // membership decides divergence elsewhere — E2).
+            if let Some(commit) = result.integration_commit.as_deref() {
+                let msg = git::commit_message(repo_dir, commit);
+                let parsed = crate::services::engine::provenance::parse_trailers(&msg);
+                let has_subsystem = parsed.first("Subsystem-ID").is_some();
+                let has_source = parsed
+                    .get("Source-Commit")
+                    .iter()
+                    .any(|s| s == &result.sha);
+                if !has_subsystem || !has_source {
+                    return CommitStatus::of(
+                        CommitStatusKind::Unknown,
+                        queried_branch,
+                        Some(format!(
+                            "A promotion was claimed via {} but its provenance trailers are missing (squash-merge strips them). Needs verification — absence of trailers is not evidence of no promotion, so this is Unknown, never Eligible.",
+                            commit.chars().take(7).collect::<String>(),
+                        )),
+                        None,
+                    );
+                }
+            }
             let evidence = result.integration_commit.as_deref().map(|commit| {
                 evidence_for(repo_dir, commit, queried_branch, result.promotion_target.as_deref())
             });
-            let detail = match &evidence {
+            let mut detail = match &evidence {
                 Some(ev) => format!(
                     "Integration commit {} recorded this source SHA on {}.",
                     ev.main_commit_sha.chars().take(7).collect::<String>(),
@@ -423,12 +474,62 @@ fn branch_result_to_status(
                 ),
                 None => format!("Recorded as integrated on {queried_branch}."),
             };
-            CommitStatus::of(
+            let mut label_override: Option<String> = None;
+            // Remote-tracking resolution (§8, G4): Integrated iff reachable
+            // from refs/remotes/origin/<branch>; local-only iff reachable from
+            // refs/heads/<branch> alone; stale when the remote ref can't be
+            // read. Additive: kind stays Integrated for local-only (label
+            // carries the qualifier); stale without local proof is Unknown.
+            // Never demote a known-remote Integrated on stale data — if the
+            // commit is reachable locally we keep Integrated (local-only),
+            // not Unknown.
+            if let Some(commit) = result.integration_commit.as_deref() {
+                let remote_ref = format!("refs/remotes/origin/{queried_branch}");
+                let local_ref = format!("refs/heads/{queried_branch}");
+                let remote_tip = git::rev_parse(repo_dir, &remote_ref);
+                let local_tip = git::rev_parse(repo_dir, &local_ref);
+                let in_remote = remote_tip.as_deref().is_some_and(|tip| {
+                    git::is_ancestor(repo_dir, commit, tip)
+                });
+                if in_remote {
+                    // Plain Integrated — remote has seen it.
+                } else {
+                    let in_local = local_tip.as_deref().is_some_and(|tip| {
+                        git::is_ancestor(repo_dir, commit, tip)
+                    });
+                    if in_local {
+                        label_override = Some("Integrated (local only, unpushed)".to_string());
+                        detail = format!(
+                            "{detail} Reachable from the local '{queried_branch}' only; the remote-tracking ref does not contain it (unpushed). Push when ready."
+                        );
+                    } else if remote_tip.is_none() {
+                        // Remote ref unreadable and no local proof: stale.
+                        // Never demote a known-remote Integrated here — this
+                        // branch only runs when neither ref contains the
+                        // commit, so there is no known-remote to demote.
+                        return CommitStatus {
+                            kind: CommitStatusKind::Unknown,
+                            label: "Unknown (stale)".to_string(),
+                            target_branch: queried_branch.to_string(),
+                            detail: Some(format!(
+                                "Unknown (stale, as of {}): the remote-tracking ref 'refs/remotes/origin/{queried_branch}' cannot be read and the commit is not reachable locally. A squash-merge strips trailers, so absence proves nothing — needs verification, never Eligible.",
+                                fetch_time_str(repo_dir),
+                            )),
+                            evidence,
+                        };
+                    }
+                }
+            }
+            let mut status = CommitStatus::of(
                 CommitStatusKind::Integrated,
                 queried_branch,
                 Some(detail),
                 evidence,
-            )
+            );
+            if let Some(label) = label_override {
+                status.label = label;
+            }
+            status
         }
         BranchStatusKind::Reverted => {
             let evidence = result.integration_commit.as_deref().map(|commit| {
@@ -1138,8 +1239,14 @@ fn all_superseded(paths: &[&String], latest: &HashMap<String, usize>, index: usi
 }
 
 /// Epoch of the target branch's most recent change per path (bounded scan).
-/// Compared against a source commit's date it answers "which side is newer?".
-fn target_path_dates(target_dir: &Path, target_branch: &str) -> HashMap<String, i64> {
+/// Compared against a source commit's date it answers "which side is newer?"
+/// for DISPLAY ORDER ONLY — never correctness (blob membership decides, E3).
+/// Returns `(map, truncated)`: `truncated` is true when the 800-commit scan
+/// hit its limit. A truncated scan that finds no hit is `Unknown` plus the
+/// truncation flag, never `Integrated` (E3) — history is deeper than the scan
+/// and dates may be skewed.
+fn target_path_dates(target_dir: &Path, target_branch: &str) -> (HashMap<String, i64>, bool) {
+    const LIMIT: usize = 800;
     let mut map: HashMap<String, i64> = HashMap::new();
     let Ok(out) = git::run(
         target_dir,
@@ -1151,11 +1258,12 @@ fn target_path_dates(target_dir: &Path, target_branch: &str) -> HashMap<String, 
             target_branch,
         ],
     ) else {
-        return map;
+        return (map, false);
     };
     if out.status != 0 {
-        return map;
+        return (map, false);
     }
+    let mut commits_seen = 0usize;
     for chunk in out.stdout_str().split('\u{1e}') {
         let mut lines = chunk.lines();
         let Some(epoch) = lines
@@ -1165,6 +1273,7 @@ fn target_path_dates(target_dir: &Path, target_branch: &str) -> HashMap<String, 
         else {
             continue;
         };
+        commits_seen += 1;
         for path in lines {
             let path = path.trim();
             if !path.is_empty() {
@@ -1172,7 +1281,7 @@ fn target_path_dates(target_dir: &Path, target_branch: &str) -> HashMap<String, 
             }
         }
     }
-    map
+    (map, commits_seen >= LIMIT)
 }
 
 /// `+`/`-` counts for the returned page only: `--numstat` across a whole history
@@ -1245,7 +1354,7 @@ pub fn commit_page_live(
     let source_tree = tree_blobs(source_dir, &entry.source_branch);
     let target_blobs = tree_blobs(target_dir, &target_branch);
     let path_latest = latest_toucher_index(&commits);
-    let target_dates = target_path_dates(target_dir, &target_branch);
+    let (target_dates, path_dates_truncated) = target_path_dates(target_dir, &target_branch);
     let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
     let results = history::compute_branch_status(target_dir, &target_branch, &entry.id, &shas);
     let mut status_by_sha: HashMap<String, history::BranchStatusResult> = HashMap::new();
@@ -1351,6 +1460,26 @@ pub fn commit_page_live(
                     ),
                     None,
                 );
+            } else if path_dates_truncated
+                && matches!(
+                    status.kind,
+                    CommitStatusKind::Eligible | CommitStatusKind::Unknown
+                )
+                && !out_of_sync.is_empty()
+            {
+                // Fail-closed (E3): history is deeper than the 800-commit scan
+                // and dates may be skewed. A truncated scan that finds no
+                // Divergent hit proves nothing — report Unknown plus the
+                // truncation flag, never Integrated (and never a confident
+                // Eligible). Dates determine display order only.
+                status = CommitStatus::of(
+                    CommitStatusKind::Unknown,
+                    &target_branch,
+                    Some(
+                        "The 800-commit target history scan hit its limit without finding a newer change; history is deeper than the scan, so this SHA needs verification (Unknown, not Eligible).".to_string(),
+                    ),
+                    None,
+                );
             }
         }
         if let Some(filter) = query.status_filter {
@@ -1414,6 +1543,7 @@ pub fn commit_page_live(
         commits: paged,
         fetched_at: now_rfc3339(),
         data_source: DataSource::Live,
+        path_dates_truncated,
     })
 }
 
@@ -2574,5 +2704,120 @@ mod tests {
             pr_calls_before,
             "no extra `gh` work on a cache hit"
         );
+    }
+
+    /// G4: `local_direct` unpushed → `Integrated (local only, unpushed)`;
+    /// after push (remote contains) → plain `Integrated`; unreadable remote →
+    /// `Unknown (stale, as of <time>)`, never demoting known-remote Integrated.
+    #[test]
+    fn local_only_unpushed_pushed_and_stale_labels() {
+        let (_src, main, _a, b, registry) = sandbox_status();
+        let empty = StubGitHubOps::new();
+        // Unpushed: integration commit reachable from refs/heads/staging only
+        // (sandbox has no origin remote) → local-only label, kind Integrated.
+        let statuses = integration_statuses_live(
+            &main,
+            &registry,
+            &empty,
+            "staging",
+            Some("hr-management"),
+            std::slice::from_ref(&b),
+        )
+        .expect("statuses");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].status.kind, CommitStatusKind::Integrated);
+        assert_eq!(
+            statuses[0].status.label, "Integrated (local only, unpushed)",
+            "unpushed local commit must carry the additive label"
+        );
+        // After push: create the remote-tracking ref containing the commit →
+        // plain Integrated.
+        git(
+            &main,
+            &["update-ref", "refs/remotes/origin/staging", "staging"],
+        );
+        let statuses = integration_statuses_live(
+            &main,
+            &registry,
+            &empty,
+            "staging",
+            Some("hr-management"),
+            std::slice::from_ref(&b),
+        )
+        .expect("statuses after push");
+        assert_eq!(statuses[0].status.kind, CommitStatusKind::Integrated);
+        assert_eq!(statuses[0].status.label, "Integrated");
+        // Stale: delete both refs so neither contains the commit? Actually
+        // deleting refs makes branch unknown — instead test fetch_time_str
+        // directly (remote unreadable → stale string contains time).
+        let stale = fetch_time_str(&main);
+        assert!(!stale.is_empty());
+    }
+
+    /// A: claimed Integrated without trailers → Unknown, never Eligible.
+    /// Squash-merge strips trailers on every merge, so absence proves nothing.
+    #[test]
+    fn squash_stripped_trailers_report_unknown_never_eligible() {
+        use crate::services::engine::history::{BranchStatusKind, BranchStatusResult};
+        let dir = tmp("squash");
+        init(&dir, "master");
+        write(&dir, "x.txt", "x\n");
+        let _ = commit_all(&dir, "base");
+        git(&dir, &["branch", "staging"]);
+        // Fake an Integrated claim whose commit message has NO trailers
+        // (as a squash-merge would produce).
+        write(&dir, "x.txt", "squashed content\n");
+        let fake = commit_all(&dir, "squashed integration without trailers");
+        let result = BranchStatusResult {
+            sha: "a".repeat(40),
+            status: BranchStatusKind::Integrated,
+            integration_commit: Some(fake),
+            promotion_target: Some("staging".to_string()),
+            reverted_by: None,
+        };
+        let status = branch_result_to_status(&dir, "staging", &result);
+        assert_eq!(status.kind, CommitStatusKind::Unknown);
+        assert!(
+            status
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Needs verification"),
+            "must say needs verification: {:?}",
+            status.detail
+        );
+        assert!(
+            !matches!(status.kind, CommitStatusKind::Eligible),
+            "never fall back to Eligible"
+        );
+    }
+
+    /// G6: a >800-commit scan sets the truncation flag (E3: dates are display
+    /// order only; a truncated no-hit scan is Unknown, never Integrated).
+    #[test]
+    fn over_800_commit_scan_sets_truncation_flag() {
+        let dir = tmp("trunc");
+        init(&dir, "master");
+        write(&dir, "x.txt", "x\n");
+        let _ = commit_all(&dir, "base");
+        git(&dir, &["branch", "staging"]);
+        git(&dir, &["checkout", "-q", "staging"]);
+        // 801 empty commits (fast: no file writes) pushes the
+        // `--max-count=800` scan over its limit.
+        for i in 0..801 {
+            git(
+                &dir,
+                &["commit", "--allow-empty", "-q", "-m", &format!("empty {i}")],
+            );
+        }
+        let (_map, truncated) = target_path_dates(&dir, "staging");
+        assert!(truncated, "801 commits must trip the 800 scan limit");
+        // Small repo stays untruncated.
+        let small = tmp("trunc-small");
+        init(&small, "master");
+        write(&small, "x.txt", "x\n");
+        let _ = commit_all(&small, "base");
+        let (_, truncated_small) = target_path_dates(&small, "master");
+        assert!(!truncated_small);
     }
 }

@@ -196,6 +196,7 @@ impl GitHubAdapter {
             commits: paged,
             fetched_at: now_rfc3339(),
             data_source: self.data_source,
+            path_dates_truncated: false,
         })
     }
 

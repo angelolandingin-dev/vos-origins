@@ -82,49 +82,6 @@ export function SubsystemCard({ subsystem, selected, onSelect, commitCount }: Su
   );
 }
 
-/** Single segmented control for the subsystem filter row: one segment per subsystem. */
-export function SubsystemSegmentedControl({
-  subsystems,
-  selectedId,
-  onSelect,
-}: {
-  subsystems: SubsystemSummary[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <div
-      role="group"
-      aria-label="Subsystem filter"
-      className="inline-flex h-[25px] shrink-0 items-center divide-x divide-line overflow-hidden rounded-[3px] border border-line bg-surface"
-    >
-      {subsystems.map((subsystem) => {
-        const connectivity = CONNECTIVITY[subsystem.connectivity];
-        const selected = subsystem.id === selectedId;
-        return (
-          <button
-            key={subsystem.id}
-            type="button"
-            onClick={() => onSelect(subsystem.id)}
-            aria-pressed={selected}
-            title={`${subsystem.name} — ${subsystem.repository}`}
-            className={cx(
-              'flex h-full items-center gap-2 px-3 text-[11px] transition-colors focus-visible:control-focus',
-              selected ? 'bg-raised font-medium text-fg' : 'text-muted hover:bg-hover',
-            )}
-          >
-            <span
-              className={cx('h-1.5 w-1.5 shrink-0 rounded-full', connectivity.dot)}
-              aria-hidden="true"
-            />
-            <span className="max-w-[160px] truncate">{subsystem.name}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 export function SubsystemWarning({ message }: { message: string }) {
   return (
     <p className="flex items-start gap-2 rounded-md border border-status-unknown/40 bg-status-unknown-soft px-2.5 py-2 text-[11px] text-status-unknown-ink">

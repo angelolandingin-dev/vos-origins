@@ -9,11 +9,8 @@ import type {
 } from '../api/types';
 import { useApp } from '../app/context';
 import { CommitWorkspace } from '../components/CommitWorkspace';
-import {
-  SubsystemCard,
-  SubsystemSegmentedControl,
-  SubsystemWarning,
-} from '../components/SubsystemCard';
+import { SubsystemCard, SubsystemWarning } from '../components/SubsystemCard';
+import { SubsystemFilterList } from '../components/SubsystemFilterList';
 import { useMediaQuery } from '../components/ui/useMediaQuery';
 import {
   Button,
@@ -254,20 +251,22 @@ export function Subsystems() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-[220px] flex-1">
-            <Search
-              className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-disabled"
-              aria-hidden="true"
-            />
-            <input
-              type="search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search subsystems…"
-              aria-label="Search registered subsystems"
-              className="input pl-9"
-            />
-          </div>
+          {narrow ? null : (
+            <div className="relative min-w-[220px] flex-1">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-disabled"
+                aria-hidden="true"
+              />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search subsystems…"
+                aria-label="Search registered subsystems"
+                className="input pl-9"
+              />
+            </div>
+          )}{' '}
           <Button
             variant="secondary"
             icon={RefreshCw}
@@ -305,9 +304,9 @@ export function Subsystems() {
       <div className="flex min-h-0 flex-1 gap-2.5 px-3 pb-3">
         {narrow ? (
           <div className="flex min-h-0 flex-1 flex-col gap-2.5">
-            <div className="scroll-area flex shrink-0 overflow-x-auto pb-1">
-              <SubsystemSegmentedControl
-                subsystems={visible}
+            <div className="flex max-h-[260px] shrink-0 flex-col overflow-hidden rounded-md border border-line bg-surface">
+              <SubsystemFilterList
+                subsystems={subsystems}
                 selectedId={app.selectedSubsystemId}
                 onSelect={(id) => app.selectSubsystem(id)}
               />

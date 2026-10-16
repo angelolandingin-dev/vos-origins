@@ -42,6 +42,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     delivery: 'local_direct',
     onConflict: 'fail',
     message: '',
+    allowGaps: false,
+    excludedPaths: [],
     dispatching: false,
     error: null,
     result: null,
@@ -99,6 +101,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       delivery: promotion.delivery,
       onConflict: promotion.onConflict,
       message: promotion.message,
+      allowGaps: promotion.allowGaps,
+      excludedPaths: promotion.excludedPaths,
     });
   }, [
     promotion.open,
@@ -110,6 +114,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.delivery,
     promotion.message,
     promotion.onConflict,
+    promotion.allowGaps,
+    promotion.excludedPaths,
   ]);
 
   const pushNotice = useCallback((next: Omit<Notice, 'id'>) => {
@@ -156,6 +162,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       delivery: 'local_direct',
       onConflict: 'fail',
       message: '',
+      allowGaps: false,
+      excludedPaths: [],
       dispatching: false,
       error: null,
       result: null,
@@ -195,6 +203,31 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setPromotion((current) => ({ ...current, message }));
   }, []);
 
+  const setPromotionAllowGaps = useCallback((allowGaps: boolean) => {
+    setPromotion((current) => ({ ...current, allowGaps }));
+  }, []);
+
+  const setPromotionExcludedPaths = useCallback((paths: string[]) => {
+    setPromotion((current) => ({ ...current, excludedPaths: paths }));
+  }, []);
+
+  const addPromotionExcludedPath = useCallback((path: string) => {
+    const trimmed = path.trim();
+    if (!trimmed) return;
+    setPromotion((current) =>
+      current.excludedPaths.includes(trimmed)
+        ? current
+        : { ...current, excludedPaths: [...current.excludedPaths, trimmed] },
+    );
+  }, []);
+
+  const removePromotionExcludedPath = useCallback((path: string) => {
+    setPromotion((current) => ({
+      ...current,
+      excludedPaths: current.excludedPaths.filter((entry) => entry !== path),
+    }));
+  }, []);
+
   const dispatchPromotion = useCallback(() => {
     if (!selectedSubsystemId) return;
     setPromotion((current) => ({ ...current, dispatching: true, error: null }));
@@ -209,6 +242,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         delivery: promotion.delivery,
         onConflict: promotion.onConflict,
         message: promotion.message,
+        allowGaps: promotion.allowGaps,
+        excludedPaths: promotion.excludedPaths,
       })
       .then((result) => {
         setPromotion((current) => ({ ...current, dispatching: false, result }));
@@ -254,6 +289,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.delivery,
     promotion.message,
     promotion.onConflict,
+    promotion.allowGaps,
+    promotion.excludedPaths,
     selectedSubsystemId,
     targetBranch,
     pushNotice,
@@ -302,6 +339,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionDelivery,
       setPromotionOnConflict,
       setPromotionMessage,
+      setPromotionAllowGaps,
+      setPromotionExcludedPaths,
+      addPromotionExcludedPath,
+      removePromotionExcludedPath,
       dispatchPromotion,
     }),
     [
@@ -333,6 +374,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionDelivery,
       setPromotionOnConflict,
       setPromotionMessage,
+      setPromotionAllowGaps,
+      setPromotionExcludedPaths,
+      addPromotionExcludedPath,
+      removePromotionExcludedPath,
       dispatchPromotion,
     ],
   );

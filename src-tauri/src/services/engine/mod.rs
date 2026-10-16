@@ -3,6 +3,7 @@
 //! beyond the integration PR.
 
 pub mod apply;
+pub mod blobset;
 pub mod classify;
 pub mod deps;
 pub mod git;
@@ -74,6 +75,15 @@ pub struct EngineRequest {
     /// The promotion commit's own message (required; an empty one is refused so
     /// a multi-commit promotion is never labelled with only the last subject).
     pub message: String,
+    /// Wire `allowGaps`: when true, a non-contiguous selection (`[B, D]`
+    /// skipping `C`) is applied anyway and recorded in the commit trailers as
+    /// `Promotion-Gaps` + `Promotion-Override: true` (trailers survive
+    /// squash-merge and `local_direct`; the PR body does not).
+    #[allow(clippy::struct_field_names)]
+    pub allow_gaps: bool,
+    /// Wire `excludedPaths`: paths skipped by the plan and reported as
+    /// excluded. Makes the "exclude the path" remedy real.
+    pub excluded_paths: Vec<String>,
 }
 
 impl EngineRequest {
@@ -95,6 +105,8 @@ impl EngineRequest {
             delivery: PromotionDelivery::PushPr,
             on_conflict: PromotionOnConflict::Fail,
             message: "test promotion".to_string(),
+            allow_gaps: false,
+            excluded_paths: Vec::new(),
         }
     }
 }
@@ -131,6 +143,20 @@ pub struct ChangeSummary {
     /// version won instead of failing). Also surfaced as a dedicated
     /// `conflict_taken_from_subsystem` warning.
     pub conflict_taken: Vec<String>,
+    /// Copy-semantics reporting (§5): paths whose target copy was overwritten
+    /// (`updated` + `conflict_taken` mirror, kept as the canonical list).
+    pub replaced: Vec<String>,
+    /// Paths where the target already matched the source (no write).
+    pub unchanged: Vec<String>,
+    /// Subset of `replaced` whose target copy had independently diverged from
+    /// the commit's base (cross-subsystem overlap the user cares about).
+    /// Surfaced as a warning finding and in the PR body.
+    pub flagged: Vec<String>,
+    /// Paths skipped via `excludedPaths` (remedy two is real).
+    pub excluded: Vec<String>,
+    /// `worktree` delivery only: paths ignored by the target repo
+    /// (`git check-ignore`) that were written but never staged.
+    pub ignored_skipped: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -235,6 +261,168 @@ fn short(sha: &str) -> String {
     sha.chars().take(12).collect()
 }
 
+/// Per-checkout lock serializing concurrent local runs over
+/// `refs/vos-sources/*` (addendum D). The fetch writes that ref namespace
+/// into the checkout; two concurrent runs on the same `target_repo_dir`
+/// would race over it. One process-wide mutex per canonical checkout dir
+/// narrows (but see the post-commit PR re-check comment: concurrent runs
+/// still race over the remote — that window is narrowed, not closed).
+fn vos_sources_lock_for(dir: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = dir
+        .canonicalize()
+        .unwrap_or_else(|_| dir.to_path_buf())
+        .to_string_lossy()
+        .to_string();
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard.get(&key).cloned().unwrap_or_else(|| {
+        let slot = Arc::new(Mutex::new(()));
+        guard.insert(key, slot.clone());
+        slot
+    })
+}
+
+/// Best-effort deletion of the tool's `refs/vos-sources/*` namespace from the
+/// checkout after the run. The engine fetches the source branch into that
+/// namespace inside `VOS_TARGET_REPO_DIR` — which is the user's personal
+/// clone — so leaving it behind pollutes their ref list. Failures are silent:
+/// a leftover ref is untracked history, never a correctness issue.
+fn delete_vos_sources_refs(repo_dir: &Path) {
+    let Ok(out) = git::run(
+        repo_dir,
+        &["for-each-ref", "--format=%(refname)", "refs/vos-sources/"],
+    ) else {
+        return;
+    };
+    if out.status != 0 {
+        return;
+    }
+    for line in out.stdout_str().lines() {
+        let name = line.trim();
+        if name.is_empty() || !name.starts_with("refs/vos-sources/") {
+            continue;
+        }
+        let _ = git::run(repo_dir, &["update-ref", "-d", name]);
+    }
+}
+
+/// Worktree paths one delta entry touches — same expansion the apply uses
+/// (renames touch both sides, copies only materialize the new path).
+fn expanded_paths(entry: &git::DeltaEntry) -> Vec<String> {
+    if entry.status == 'D' {
+        entry.path.clone().into_iter().collect()
+    } else if entry.status == 'R' {
+        entry
+            .old_path
+            .clone()
+            .into_iter()
+            .chain(entry.new_path.clone())
+            .collect()
+    } else if entry.status == 'C' {
+        entry.new_path.clone().into_iter().collect()
+    } else {
+        entry.path.clone().into_iter().collect()
+    }
+}
+
+/// `globalFiles` match: exact path or directory prefix. No glob engine —
+/// `foo/bar` matches `foo/bar` and `foo/bar/**` (via `foo/bar/` prefix).
+/// Entries are normalized to `/` separators; a trailing `/` means directory.
+fn is_global_match(path: &str, global_files: &[String]) -> bool {
+    let norm = path.replace('\\', "/");
+    for entry in global_files {
+        let e = entry.replace('\\', "/");
+        let e = e.trim().trim_end_matches('/').to_string();
+        if e.is_empty() {
+            continue;
+        }
+        if norm == e || norm.starts_with(&format!("{e}/")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Last changer of `path` reachable from `target_tip`, as
+/// `(commit sha, subject, subsystem_id trailer or None)`.
+/// Used by the overwrite refusal so the message names who changed the target
+/// copy. Message parsing is a hint for the trailer only; divergence itself is
+/// decided by blob membership (addendum E2).
+fn target_last_changer(
+    repo_dir: &Path,
+    target_tip: &str,
+    path: &str,
+) -> (Option<String>, String, Option<String>) {
+    let out = git::run(
+        repo_dir,
+        &["log", "-1", "--format=%H%n%s%n%B", target_tip, "--", path],
+    );
+    let Ok(out) = out else {
+        return (None, "unknown".to_string(), None);
+    };
+    if out.status != 0 {
+        return (None, "unknown".to_string(), None);
+    }
+    let text = out.stdout_str();
+    let mut lines = text.lines();
+    let sha = lines
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let subject = lines
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    let body: String = lines.collect::<Vec<_>>().join("\n");
+    // Trailer block only (same rule as provenance): prose mentions never count.
+    let parsed = crate::services::engine::provenance::parse_trailers(&format!("subject\n\n{body}"));
+    // `parse_trailers` only recognizes canonical keys; `Subsystem-ID` is one.
+    let subsystem = parsed.first("Subsystem-ID").map(|s| s.to_string());
+    (sha, subject, subsystem)
+}
+
+/// `git worktree list --porcelain` check: is `branch` checked out in a linked
+/// worktree whose path differs from `repo_dir`? `local_direct` refuses the
+/// `update-ref` fast path in that case — moving the ref from here would
+/// desync that worktree.
+fn is_branch_checked_out_elsewhere(repo_dir: &Path, branch: &str) -> bool {
+    let Ok(out) = git::run(repo_dir, &["worktree", "list", "--porcelain"]) else {
+        return false;
+    };
+    if out.status != 0 {
+        return false;
+    }
+    let wanted = format!("refs/heads/{branch}");
+    let mut current_path: Option<String> = None;
+    let repo_canon = repo_dir
+        .canonicalize()
+        .unwrap_or_else(|_| repo_dir.to_path_buf())
+        .to_string_lossy()
+        .to_string();
+    for line in out.stdout_str().lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            current_path = Some(p.trim().to_string());
+        } else if line.trim() == format!("branch {wanted}") {
+            if let Some(p) = current_path.as_deref() {
+                let this_canon = std::path::PathBuf::from(p)
+                    .canonicalize()
+                    .map(|c| c.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| p.to_string());
+                // Same checkout (or case/sep differences on Windows) is fine;
+                // a *different* linked worktree refuses.
+                if this_canon.to_lowercase() != repo_canon.to_lowercase() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Expected/policy failures become blockers, never panics.
 pub fn run_promotion(
     registry: &Registry,
@@ -242,6 +430,13 @@ pub fn run_promotion(
     options: &EngineOptions,
     deps: &EngineDeps<'_>,
 ) -> PromotionReport {
+    // Pin the checkout for the whole run: concurrent local runs on the same
+    // repo race over `refs/vos-sources/*` (fetch writes that namespace into
+    // the checkout). The per-checkout mutex serializes runs in this process.
+    // Cross-process runs can still race — that window is documented, not
+    // claimed handled (addendum D).
+    let checkout_lock = vos_sources_lock_for(&options.target_repo_dir);
+    let _checkout_guard = checkout_lock.lock().unwrap_or_else(|e| e.into_inner());
     let mut report = PromotionReport::new();
     let mut worktree: Option<PathBuf> = None;
 
@@ -254,6 +449,11 @@ pub fn run_promotion(
         }
     }
     report.worktree = None;
+
+    // Housekeeping (§10): the fetch wrote `refs/vos-sources/*` into the
+    // user's own clone (`VOS_TARGET_REPO_DIR`). Delete the tool's namespace
+    // after the run — success or failure — so their ref list stays clean.
+    delete_vos_sources_refs(&options.target_repo_dir);
 
     if outcome.is_err() {
         // A failed promotion must not leave the temporary `integration/*`
@@ -607,6 +807,400 @@ fn run_inner(
         }
     }
 
+    // --- Policy snapshot pin (addendum C) ---------------------------------
+    // `registry` (and thus `subsystem`, its `integration_policy` and
+    // `global_files`) was read ONCE at the start of this run and this
+    // snapshot is used for both the preflight-equivalent checks below (gap /
+    // overwrite / global) and the apply that follows. The file is never
+    // re-read mid-run, so the two cannot disagree because the file changed
+    // mid-run. The standalone preflight command likewise loads the registry
+    // once per call.
+    let excluded_set: std::collections::HashSet<String> = request
+        .excluded_paths
+        .iter()
+        .map(|p| p.replace('\\', "/"))
+        .collect();
+    // Report excluded paths even when they match nothing (the remedy is real
+    // only if the report shows what was skipped).
+    {
+        let mut excluded: Vec<String> = excluded_set.iter().cloned().collect();
+        excluded.sort();
+        report.changes.excluded = excluded;
+    }
+
+    // Apply-paths only: dependency manifests are merged, lockfiles
+    // regenerated, main-owned/secret never imported — gaps/overwrites on those
+    // are decided elsewhere. Excluded paths are skipped entirely.
+    let apply_paths: Vec<String> = {
+        let mut v: Vec<String> = Vec::new();
+        for planned in &classified_plan {
+            for entry in &planned.entries {
+                if !matches!(entry.status, PathStatus::Apply | PathStatus::ExplicitReview) {
+                    continue;
+                }
+                // Renames already expanded to `to.path` by classify_entry; the
+                // old side is handled as a delete of the same logical path set
+                // via expanded_paths below. Use the classified path here.
+                if excluded_set.contains(&entry.path) {
+                    continue;
+                }
+                if !v.contains(&entry.path) {
+                    v.push(entry.path.clone());
+                }
+            }
+        }
+        v.sort();
+        v
+    };
+
+    // Ordered selection for blob sets: ancestry order from build_plan
+    // (already ancestor-first; unrelated SHAs deterministically by
+    // committer timestamp then SHA — see build_plan).
+    let ordered_selection: Vec<(String, Option<String>)> = verified_plan
+        .iter()
+        .map(|v| (v.sha.clone(), v.base_sha.clone()))
+        .collect();
+    let ordered_ref: Vec<(String, Option<String>)> = ordered_selection.clone();
+
+    // ONE ls-tree per revision for ALL paths (optimisation note §3).
+    let blob_sets = crate::services::engine::blobset::collect_blob_sets(
+        &options.target_repo_dir,
+        &ordered_ref,
+        &apply_paths,
+    );
+    let target_tree =
+        crate::services::engine::blobset::tree_blob_map(&options.target_repo_dir, &target_tip);
+    // Oldest selected base blob per path (for gap + flagged).
+    let oldest_base = ordered_selection.first().and_then(|(_, b)| b.clone());
+    let oldest_tree: std::collections::HashMap<String, String> = match oldest_base.as_deref() {
+        Some(base) => {
+            crate::services::engine::blobset::tree_blob_map(&options.target_repo_dir, base)
+        }
+        None => std::collections::HashMap::new(),
+    };
+
+    // Map path -> newest selected toucher SHA (last in ancestry order whose
+    // delta touches the path). Needed for gap content-awareness.
+    let mut newest_toucher: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for planned in &verified_plan {
+        for delta in &planned.entries {
+            for p in expanded_paths(delta) {
+                // Only track apply paths (non-excluded).
+                if apply_paths.iter().any(|a| a == &p) {
+                    newest_toucher.insert(p, planned.sha.clone());
+                }
+            }
+        }
+    }
+
+    // --- Non-contiguous gap refusal (§2, content-aware) --------------------
+    // Selecting [B, D] while skipping C silently ships C's edits to any path
+    // both touch, because D's blob already contains them. For each touched
+    // path, if a skipped SHA between the selected commits touches the same
+    // path AND blob(newest selected toucher) != blob(oldest selected base),
+    // the skip is material and we refuse. A path whose effect is fully undone
+    // (newest == oldest base) skips harmlessly without an override.
+    if request.mode == PromotionMode::Individual && verified_plan.len() > 1 && !request.allow_gaps {
+        if let (Some(oldest_b), Some(newest_sha)) = (
+            oldest_base.as_deref(),
+            ordered_selection.last().map(|(s, _)| s.as_str()),
+        ) {
+            let range = format!("{oldest_b}..{newest_sha}");
+            let selected_set: std::collections::HashSet<&str> =
+                ordered_selection.iter().map(|(s, _)| s.as_str()).collect();
+            // Skipped SHAs in ancestry order (oldest-first).
+            let mut skipped: Vec<String> = Vec::new();
+            if let Ok(out) = git::run(
+                &options.target_repo_dir,
+                &["rev-list", "--topo-order", "--reverse", &range],
+            ) {
+                if out.status == 0 {
+                    for line in out.stdout_str().lines() {
+                        let sha = line.trim().to_string();
+                        if sha.is_empty() || selected_set.contains(sha.as_str()) {
+                            continue;
+                        }
+                        // Only SHAs reachable from the source branch count;
+                        // rev-list over the fetched objects already ensures it.
+                        skipped.push(sha);
+                    }
+                }
+            }
+            if !skipped.is_empty() {
+                // Path -> skipped SHAs touching it.
+                let mut skipped_by_path: std::collections::HashMap<String, Vec<String>> =
+                    std::collections::HashMap::new();
+                let mut subject_by_sha: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                for sha in &skipped {
+                    subject_by_sha
+                        .entry(sha.clone())
+                        .or_insert_with(|| git::commit_subject(&options.target_repo_dir, sha));
+                    // Touched paths for this skipped commit.
+                    let touched: Vec<String> =
+                        match git::name_status_delta(&options.target_repo_dir, sha) {
+                            Ok((_, entries)) => {
+                                let mut v = Vec::new();
+                                for e in &entries {
+                                    for p in expanded_paths(e) {
+                                        if !v.contains(&p) {
+                                            v.push(p);
+                                        }
+                                    }
+                                }
+                                v
+                            }
+                            Err(_) => Vec::new(),
+                        };
+                    for p in touched {
+                        if apply_paths.iter().any(|a| a == &p) {
+                            skipped_by_path.entry(p).or_default().push(sha.clone());
+                        }
+                    }
+                }
+                // Material gaps only.
+                let mut gap_paths: Vec<String> = Vec::new();
+                let mut gap_shas: Vec<String> = Vec::new();
+                for path in &apply_paths {
+                    let Some(touchers) = skipped_by_path.get(path) else {
+                        continue;
+                    };
+                    if touchers.is_empty() {
+                        continue;
+                    }
+                    let newest_blob = newest_toucher.get(path).and_then(|sha| {
+                        crate::services::engine::blobset::tree_blob_map(
+                            &options.target_repo_dir,
+                            sha,
+                        )
+                        .get(path)
+                        .cloned()
+                    });
+                    let oldest_blob = oldest_tree.get(path).cloned();
+                    if newest_blob != oldest_blob {
+                        gap_paths.push(path.clone());
+                        for s in touchers {
+                            if !gap_shas.contains(s) {
+                                gap_shas.push(s.clone());
+                            }
+                        }
+                    }
+                }
+                gap_paths.sort();
+                gap_shas.sort();
+                if !gap_paths.is_empty() {
+                    let sha_list = gap_shas
+                        .iter()
+                        .map(|s| {
+                            let subj = subject_by_sha.get(s).cloned().unwrap_or_default();
+                            format!("{} {subj}", short(s))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    report.blockers.push(Blocker::new(
+                        "NON_CONTIGUOUS_PATH_OVERLAP",
+                        format!(
+                            "Non-contiguous selection skips {} commit(s) touching the same path(s): {} affects {}. The skipped edits are already inside the selected tip's blobs, so promoting would silently ship them. Remedies: select the skipped commit(s) too; exclude the affected path(s) via excludedPaths and re-promote; or re-run with allowGaps:true (records Promotion-Gaps + Promotion-Override trailers).",
+                            gap_shas.len(),
+                            sha_list,
+                            gap_paths.join(", ")
+                        ),
+                    ));
+                    return Err(Bail);
+                }
+            }
+        }
+    }
+    // When allowGaps is used, remember the overlapping skipped SHAs for the
+    // trailers (Promotion-Gaps). Recompute cheaply: same range, same touch map.
+    let mut gap_override_shas: Vec<String> = Vec::new();
+    if request.allow_gaps && request.mode == PromotionMode::Individual && verified_plan.len() > 1 {
+        if let (Some(oldest_b), Some(newest_sha)) = (
+            oldest_base.as_deref(),
+            ordered_selection.last().map(|(s, _)| s.as_str()),
+        ) {
+            let range = format!("{oldest_b}..{newest_sha}");
+            let selected_set: std::collections::HashSet<&str> =
+                ordered_selection.iter().map(|(s, _)| s.as_str()).collect();
+            if let Ok(out) = git::run(
+                &options.target_repo_dir,
+                &["rev-list", "--topo-order", "--reverse", &range],
+            ) {
+                if out.status == 0 {
+                    for line in out.stdout_str().lines() {
+                        let sha = line.trim().to_string();
+                        if sha.is_empty() || selected_set.contains(sha.as_str()) {
+                            continue;
+                        }
+                        // Only keep skipped SHAs that touch an apply path with a
+                        // material (non-undone) effect — same content-aware rule.
+                        let touched: Vec<String> =
+                            match git::name_status_delta(&options.target_repo_dir, &sha) {
+                                Ok((_, entries)) => {
+                                    let mut v = Vec::new();
+                                    for e in &entries {
+                                        for p in expanded_paths(e) {
+                                            if !v.contains(&p) {
+                                                v.push(p);
+                                            }
+                                        }
+                                    }
+                                    v
+                                }
+                                Err(_) => Vec::new(),
+                            };
+                        let mut material = false;
+                        for p in touched {
+                            if !apply_paths.contains(&p) {
+                                continue;
+                            }
+                            let newest_blob = newest_toucher.get(&p).and_then(|s| {
+                                crate::services::engine::blobset::tree_blob_map(
+                                    &options.target_repo_dir,
+                                    s,
+                                )
+                                .get(&p)
+                                .cloned()
+                            });
+                            let oldest_blob = oldest_tree.get(&p).cloned();
+                            if newest_blob != oldest_blob {
+                                material = true;
+                                break;
+                            }
+                        }
+                        if material {
+                            gap_override_shas.push(sha);
+                        }
+                    }
+                }
+            }
+            gap_override_shas.sort();
+            gap_override_shas.dedup();
+        }
+    }
+
+    // --- globalFiles guard (§6) -------------------------------------------
+    // Matched paths are protected app-shell files: if the target copy is NOT
+    // in the blob set, refuse. Entries are exact paths or directory prefixes
+    // (no glob engine).
+    {
+        let global_files = subsystem.global_files.clone().unwrap_or_default();
+        if !global_files.is_empty() {
+            let mut violations: Vec<String> = Vec::new();
+            for path in &apply_paths {
+                if !is_global_match(path, &global_files) {
+                    continue;
+                }
+                let target_blob = target_tree.get(path).cloned();
+                let set = blob_sets.get(path);
+                let allowed = match set {
+                    Some(s) => s.contains(&target_blob),
+                    None => target_blob.is_none(),
+                };
+                if !allowed {
+                    violations.push(path.clone());
+                }
+            }
+            violations.sort();
+            if !violations.is_empty() {
+                report.blockers.push(Blocker::new(
+                    "GLOBAL_FILE_PROTECTED",
+                    format!(
+                        "Protected app-shell file(s) would be overwritten: {}. The target copy has diverged from every source version in this selection. Remedy: adapt {} in the subsystem first, then re-promote (or exclude it via excludedPaths if the shell copy is canonical).",
+                        violations.join(", "),
+                        if violations.len() == 1 {
+                            format!("'{}'", violations[0])
+                        } else {
+                            "these paths".to_string()
+                        }
+                    ),
+                ));
+                return Err(Bail);
+            }
+        }
+    }
+
+    // --- Overwrite refusal by blob membership (§3) -------------------------
+    // For each touched path: if the target-tip blob IS in that path's blob
+    // set (or both sides are absent), the target is behind-or-equal — allow.
+    // Otherwise it has diverged — refuse. This REPLACES any timestamps /
+    // `ours != base` logic: dates determine display order only, never
+    // correctness — blob membership decides (addendum E3).
+    {
+        let mut diverged: Vec<(String, String, Option<String>)> = Vec::new();
+        for path in &apply_paths {
+            // globalFiles hits already refused above with their own code.
+            let global_files = subsystem.global_files.clone().unwrap_or_default();
+            if is_global_match(path, &global_files) {
+                continue;
+            }
+            let target_blob = target_tree.get(path).cloned();
+            let allowed = match blob_sets.get(path) {
+                Some(set) => set.contains(&target_blob),
+                None => target_blob.is_none(),
+            };
+            if !allowed {
+                let (sha_opt, subject, subsys) =
+                    target_last_changer(&options.target_repo_dir, &target_tip, path);
+                diverged.push((path.clone(), subject, subsys.clone().or(sha_opt.clone())));
+                // Store rich attribution for the message below (re-derive to
+                // keep the loop simple — paths are few, revisions cached).
+                let _ = (sha_opt, subsys);
+            }
+        }
+        if !diverged.is_empty() {
+            // Build one refusal per run naming every path (the brief requires
+            // naming the path, the target's last changer with Subsystem-ID or
+            // unknown/direct, and two remedies).
+            let mut parts: Vec<String> = Vec::new();
+            for (path, subject, subsys_or_sha) in &diverged {
+                let (sha_opt, subj, subsys) =
+                    target_last_changer(&options.target_repo_dir, &target_tip, path);
+                let _ = (subject, subsys_or_sha);
+                // Attribution qualifier (addendum B): `as recorded at <sha>`.
+                // When the live registry maps that path to a different
+                // subsystem than the recorded one, append the honesty note.
+                // Path→subsystem mapping today is implicit (all subsystems
+                // share preserve-relative-paths): a recorded Subsystem-ID that
+                // differs from the requesting subsystem means the registry now
+                // maps this path elsewhere (another subsystem changed it).
+                let recorded = subsys
+                    .clone()
+                    .unwrap_or_else(|| "unknown/direct".to_string());
+                let mut attr = match sha_opt.as_deref() {
+                    Some(sha) => format!(
+                        "'{path}' last changed by '{subj}' (Subsystem-ID: {recorded}) as recorded at {}",
+                        short(sha)
+                    ),
+                    None => format!(
+                        "'{path}' last changed by '{subj}' (Subsystem-ID: {recorded}) as recorded at unknown"
+                    ),
+                };
+                if let Some(rec) = subsys.as_deref() {
+                    if rec != request.subsystem_id.as_str() {
+                        attr.push_str("; current registry maps this path elsewhere");
+                    }
+                }
+                parts.push(attr);
+            }
+            let paths = diverged
+                .iter()
+                .map(|(p, _, _)| p.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            report.blockers.push(Blocker::new(
+                "TARGET_DIVERGED",
+                format!(
+                    "Target has diverged on {}: {}. The target copy is not in the source blob set (it matches no version from the oldest selected base through the selected tip), so overwriting would discard independent work. Remedies: adapt the file upstream in the subsystem and re-promote; or exclude the path via excludedPaths and re-promote.",
+                    paths,
+                    parts.join("; ")
+                ),
+            ));
+            return Err(Bail);
+        }
+    }
+
     let branch_name = integration_branch_name(
         &subsystem.id,
         &request.commits,
@@ -650,15 +1244,15 @@ fn run_inner(
         for entry in &planned.entries {
             match entry.status {
                 PathStatus::Apply | PathStatus::ExplicitReview => {
-                    let target_tip = report.start_point.clone().unwrap_or_default();
+                    // Exclusion (§4): skipped here, reported as excluded.
+                    if excluded_set.contains(&entry.path) {
+                        continue;
+                    }
+                    // Blob membership (§3) already decided correctness above;
+                    // dates never gate the write (addendum E3). The recency
+                    // guard is intentionally dead: pass an empty set.
                     let apply_options = apply::ApplyOptions {
-                        allowed_add_overwrite: allowed_add_overwrite(
-                            &options.target_repo_dir,
-                            &target_tip,
-                            &planned.sha,
-                            planned.base_sha.as_deref(),
-                            &entry.delta,
-                        ),
+                        allowed_add_overwrite: std::collections::HashSet::new(),
                         on_conflict: request.on_conflict,
                     };
                     match apply::apply_file_delta(
@@ -682,9 +1276,15 @@ fn run_inner(
                                         if result.reason.as_deref()
                                             == Some(apply::ADD_OVER_EXISTING_REASON)
                                         {
-                                            report.changes.updated.push(result.path)
+                                            report.changes.updated.push(result.path.clone());
+                                            report.changes.replaced.push(result.path);
                                         } else {
-                                            report.changes.applied.push(result.path)
+                                            report.changes.applied.push(result.path.clone());
+                                            // A fresh add still counts as replaced
+                                            // for reporting when the target had
+                                            // a file (add-over-existing reports
+                                            // via the reason above; plain adds
+                                            // stay in `applied` only).
                                         }
                                     }
                                     apply::ApplyOutcome::Merged => {
@@ -693,7 +1293,9 @@ fn run_inner(
                                     apply::ApplyOutcome::Deleted => {
                                         report.changes.deleted.push(result.path)
                                     }
-                                    apply::ApplyOutcome::Unchanged => {}
+                                    apply::ApplyOutcome::Unchanged => {
+                                        report.changes.unchanged.push(result.path)
+                                    }
                                 }
                             }
                         }
@@ -740,6 +1342,59 @@ fn run_inner(
                 report.changes.conflict_taken.join(", ")
             ),
         ));
+    }
+
+    // --- Reporting §5 ------------------------------------------------------
+    // `replaced`: overwritten existing copies (updated mirror). `flagged`:
+    // subset of replaced whose target copy had independently diverged from
+    // the oldest selected base (cross-subsystem overlap the user cares
+    // about) — i.e. target blob != oldest-base blob, even though the write
+    // was allowed because the target blob IS in the source blob set (it came
+    // from source history, e.g. a previously promoted version that later
+    // moved). Decided by blob comparison only, never by dates.
+    {
+        report.changes.applied.sort();
+        report.changes.applied.dedup();
+        report.changes.updated.sort();
+        report.changes.updated.dedup();
+        report.changes.deleted.sort();
+        report.changes.deleted.dedup();
+        report.changes.unchanged.sort();
+        report.changes.unchanged.dedup();
+        report.changes.replaced.sort();
+        report.changes.replaced.dedup();
+        // `replaced` mirrors `updated` (overwrites) for the canonical list.
+        for p in report.changes.updated.iter() {
+            if !report.changes.replaced.contains(p) {
+                report.changes.replaced.push(p.clone());
+            }
+        }
+        report.changes.replaced.sort();
+        let mut flagged: Vec<String> = Vec::new();
+        for p in report.changes.replaced.iter() {
+            let target_blob = target_tree.get(p).cloned();
+            let base_blob = oldest_tree.get(p).cloned();
+            // Target had moved since the base (independently diverged), yet
+            // the write was allowed (membership checked above) — flag it.
+            if target_blob != base_blob {
+                flagged.push(p.clone());
+            }
+        }
+        flagged.sort();
+        flagged.dedup();
+        report.changes.flagged = flagged;
+        report.changes.excluded.sort();
+        report.changes.excluded.dedup();
+        if !report.changes.flagged.is_empty() {
+            report.warnings.push(Blocker::new(
+                "flagged_overlap",
+                format!(
+                    "Cross-subsystem overlap: {} path(s) replaced whose target copy had independently diverged from the commit's base: {}. Review before merging.",
+                    report.changes.flagged.len(),
+                    report.changes.flagged.join(", ")
+                ),
+            ));
+        }
     }
 
     let manifest_path = worktree_dir.join("package.json");
@@ -881,7 +1536,8 @@ fn run_inner(
         && report.changes.updated.is_empty()
         && report.changes.merged.is_empty()
         && report.changes.deleted.is_empty()
-        && report.changes.conflict_taken.is_empty())
+        && report.changes.conflict_taken.is_empty()
+        && report.changes.replaced.is_empty())
         || deps_changed
         || regenerated_really;
     if !any_change {
@@ -963,6 +1619,8 @@ fn run_inner(
         mode: request.mode.as_str(),
         target: &request.target_branch,
         subject: &subject,
+        gap_shas: &gap_override_shas,
+        gap_override: request.allow_gaps,
     });
     report.provenance_message = Some(message.clone());
     let message_file = options
@@ -995,6 +1653,60 @@ fn run_inner(
         return Err(Bail);
     }
 
+    // Post-commit duplicate re-check (§10): the early guard ran before the
+    // build; two concurrent runs can both pass it, then both commit. Re-check
+    // open PRs (and active SHAs) after the commit and before any push or
+    // ref move, so the second committer fails closed instead of pushing a
+    // duplicate. BEST-EFFORT: it narrows the window between two concurrent
+    // runs, it does not close it — a true close needs cross-machine locking,
+    // which is explicitly out of scope. A push/merge that lands between this
+    // check and the push below can still duplicate; the remote remains the
+    // final arbiter (a manual push is never blocked).
+    {
+        let recheck = history::detect_branch_duplicates(
+            &options.target_repo_dir,
+            &request.target_branch,
+            &subsystem.id,
+            &request.commits,
+            &registry.main_repository,
+            deps.github,
+        );
+        if !recheck.active_shas.is_empty() {
+            // The SHAs became integrated while we built (a concurrent run
+            // landed first). Our commit is on the temp branch only — nothing
+            // reached the target — so fail closed here.
+            report.blockers.push(Blocker::new(
+                "DUPLICATE_ACTIVE",
+                format!(
+                    "SHA(s) became integrated on \"{}\" while this promotion was being built: {}. Re-promoting the same SHA is refused post-commit; nothing was pushed.",
+                    request.target_branch,
+                    recheck.active_shas.join(", ")
+                ),
+            ));
+            return Err(Bail);
+        }
+        if let Some(err) = &recheck.pr_lookup_error {
+            report.blockers.push(Blocker::new(
+                "PR_LOOKUP_FAILED",
+                format!(
+                    "Could not re-list open pull requests for base \"{}\" post-commit; refusing to push a possible duplicate ({err}).",
+                    request.target_branch
+                ),
+            ));
+            return Err(Bail);
+        }
+        if !recheck.open_prs.is_empty() {
+            report.blockers.push(Blocker::new(
+                "PR_ALREADY_OPEN",
+                format!(
+                    "An open integration PR for these SHA(s) appeared while this promotion was being built (base \"{}\"). Re-promoting is refused post-commit; nothing was pushed.",
+                    request.target_branch
+                ),
+            ));
+            return Err(Bail);
+        }
+    }
+
     // `local_direct` delivery: the commit built above (identical delta
     // application, provenance trailers, conflict handling, and `on_conflict`
     // policy) lands straight onto the local target branch. Never pushes,
@@ -1002,6 +1714,24 @@ fn run_inner(
     // the pinned tip, a dirty checkout of the target refuses, and the
     // temporary branch is always removed.
     if request.delivery == PromotionDelivery::LocalDirect {
+        // Linked-worktree guard (§10): refuse when `git worktree list` shows
+        // the target branch checked out in a different linked worktree. An
+        // `update-ref` from here would desync that worktree (and a
+        // fast-forward there would need to run there, not here).
+        if !git::current_branch(&options.target_repo_dir)
+            .is_some_and(|c| c == request.target_branch)
+            && is_branch_checked_out_elsewhere(&options.target_repo_dir, &request.target_branch)
+        {
+            report.blockers.push(Blocker::new(
+                "TARGET_CHECKED_OUT_ELSEWHERE",
+                format!(
+                    "Target branch \"{}\" is checked out in a different linked worktree; refusing to move its ref from '{}'. Finish or remove that worktree (`git worktree list`), or promote with the target checked out here, then re-promote. Nothing was committed to it.",
+                    request.target_branch,
+                    options.target_repo_dir.display(),
+                ),
+            ));
+            return Err(Bail);
+        }
         let repo = &options.target_repo_dir;
         let refname = format!("refs/heads/{}", request.target_branch);
         match git::local_tip(repo, &request.target_branch) {
@@ -1096,6 +1826,52 @@ fn run_inner(
     // a caller passing `push: true` cannot push in local mode.
     if request.delivery == PromotionDelivery::Local {
         return Ok(());
+    }
+
+    // Pre-push duplicate re-check (§10, best-effort — same caveat as above:
+    // narrows the window, does not close it; a manual push is never blocked).
+    if options.push || options.create_pr {
+        let recheck = history::detect_branch_duplicates(
+            &options.target_repo_dir,
+            &request.target_branch,
+            &subsystem.id,
+            &request.commits,
+            &registry.main_repository,
+            deps.github,
+        );
+        if !recheck.active_shas.is_empty() || !recheck.open_prs.is_empty() {
+            // Our commit is on the temp branch only; the target never moved.
+            // Fail closed rather than pushing a duplicate.
+            if !recheck.active_shas.is_empty() {
+                report.blockers.push(Blocker::new(
+                    "DUPLICATE_ACTIVE",
+                    format!(
+                        "SHA(s) became integrated on \"{}\" before push: {}. Re-promoting the same SHA is refused pre-push; nothing was pushed.",
+                        request.target_branch,
+                        recheck.active_shas.join(", ")
+                    ),
+                ));
+            } else {
+                report.blockers.push(Blocker::new(
+                    "PR_ALREADY_OPEN",
+                    format!(
+                        "An open integration PR for these SHA(s) appeared before push (base \"{}\"). Nothing was pushed.",
+                        request.target_branch
+                    ),
+                ));
+            }
+            return Err(Bail);
+        }
+        if let Some(err) = &recheck.pr_lookup_error {
+            report.blockers.push(Blocker::new(
+                "PR_LOOKUP_FAILED",
+                format!(
+                    "Could not re-list open pull requests pre-push for base \"{}\"; refusing to push a possible duplicate ({err}).",
+                    request.target_branch
+                ),
+            ));
+            return Err(Bail);
+        }
     }
 
     if options.push {
@@ -1210,62 +1986,13 @@ pub fn integration_branch_name(
     )
 }
 
-/// Recency guard for adds-over-existing (subsystem split history).
-///
-/// The subsystem repos were split from the main system, so files that exist
-/// in BOTH appear as adds in the subsystem's fresh history. An add may
-/// overwrite the target copy only when that copy is NOT newer than the
-/// source commit: allowed when the target branch never carried the path
-/// (`target_epoch.is_none()`) or the source commit is at least as new
-/// (`source_epoch >= target_epoch`). Computed per add-path; `apply`
-/// enforces the resulting set. Modified (`M`) paths are untouched and keep
-/// the three-way merge.
-fn allowed_add_overwrite(
-    objects_repo: &Path,
-    target_tip: &str,
-    source_sha: &str,
-    base_sha: Option<&str>,
-    delta: &git::DeltaEntry,
-) -> HashSet<String> {
-    let mut paths: Vec<&str> = Vec::new();
-    if delta.status == 'D' {
-        if let Some(path) = delta.path.as_deref() {
-            paths.push(path);
-        }
-    } else if delta.is_rename_or_copy() {
-        if let Some(old) = delta.old_path.as_deref() {
-            paths.push(old);
-        }
-        if let Some(new) = delta.new_path.as_deref() {
-            paths.push(new);
-        }
-    } else if let Some(path) = delta.path.as_deref() {
-        paths.push(path);
-    }
-    let source_epoch = git::commit_epoch(objects_repo, source_sha);
-    let mut allowed = HashSet::new();
-    for rel_path in paths {
-        // Only adds (absent from the source baseline, present in the source
-        // commit) can take the add-over-existing path in `apply`.
-        let base_blob = base_sha.and_then(|sha| git::read_blob(objects_repo, sha, rel_path));
-        if base_blob.is_some() {
-            continue;
-        }
-        if git::read_blob(objects_repo, source_sha, rel_path).is_none() {
-            continue;
-        }
-        let target_epoch = git::last_change_epoch(objects_repo, target_tip, rel_path);
-        let overwrite_ok = match target_epoch {
-            None => true,
-            Some(target) => source_epoch.map(|source| source >= target).unwrap_or(false),
-        };
-        if overwrite_ok {
-            allowed.insert(rel_path.to_string());
-        }
-    }
-    allowed
-}
-
+/// REMOVED: recency guard for adds-over-existing (timestamps).
+/// Replaced by overwrite refusal by blob membership (§3): for each touched
+/// path, the target-tip blob must be in the source blob set (oldest base →
+/// each selected tip), else the target has diverged and the promotion
+/// refuses with `TARGET_DIVERGED`. Dates determine display order only, never
+/// correctness (addendum E3). The function is deleted, not deprecated, so no
+/// caller can accidentally consult timestamps.
 fn resolve_local_ref(repo_dir: &Path, branch: &str) -> Option<String> {
     for candidate in [
         format!("refs/heads/{branch}"),
@@ -1304,7 +2031,7 @@ fn stage_into_own_worktree(
     worktree_dir: &Path,
     target_tip: &str,
     target_branch: &str,
-    report: &PromotionReport,
+    report: &mut PromotionReport,
     mode_ops: &[apply::ModeOp],
 ) -> Result<Vec<String>, Blocker> {
     match git::current_branch(repo) {
@@ -1336,6 +2063,9 @@ fn stage_into_own_worktree(
     written.extend(report.changes.updated.iter().cloned());
     written.extend(report.changes.merged.iter().cloned());
     written.extend(report.changes.conflict_taken.iter().cloned());
+    // `replaced` mirrors `updated`; include defensively in case a future path
+    // populates one without the other.
+    written.extend(report.changes.replaced.iter().cloned());
     let mut deleted: HashSet<String> = report.changes.deleted.iter().cloned().collect();
     for rel in WORKTREE_DRIFT_PATHS {
         let built = std::fs::read(worktree_dir.join(rel)).ok();
@@ -1351,6 +2081,48 @@ fn stage_into_own_worktree(
                 deleted.insert(rel.to_string());
             }
             _ => {}
+        }
+    }
+
+    // Ignored-path skip (§9): `git check-ignore` for each written path
+    // BEFORE staging. Ignored paths are reported as a skip and never forced
+    // with `-f` (the `add` below is plain, never `-f`). CRLF-normalised files
+    // pass: this check is names-only, content equality was already decided on
+    // CRLF-stripped bytes in the apply.
+    {
+        if !written.is_empty() {
+            let mut sorted: Vec<&str> = written.iter().map(String::as_str).collect();
+            sorted.sort_unstable();
+            let mut args: Vec<&str> = vec!["check-ignore", "--"];
+            args.extend(sorted);
+            // Exit 0 = at least one ignored (stdout lists them); 1 = none
+            // ignored; other = error (treat as none, staging will decide).
+            if let Ok(out) = git::run(repo, &args) {
+                if out.status == 0 {
+                    let ignored: Vec<String> = out
+                        .stdout_str()
+                        .lines()
+                        .map(|l| l.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !ignored.is_empty() {
+                        for p in &ignored {
+                            written.remove(p);
+                        }
+                        let mut v = ignored.clone();
+                        v.sort();
+                        report.changes.ignored_skipped.extend(v.clone());
+                        report.warnings.push(Blocker::new(
+                            "WORKTREE_IGNORED",
+                            format!(
+                                "{} path(s) are ignored by the target repository and were not staged: {}. Nothing was forced with `-f`.",
+                                v.len(),
+                                v.join(", ")
+                            ),
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -1446,11 +2218,22 @@ fn stage_into_own_worktree(
     };
     if staged != expected {
         rollback_worktree_stage(repo, target_tip, &written, &deleted);
+        // Name the mismatch (§9): a bare ENGINE_ERROR reads as tool breakage.
+        // Compute extra (staged but not expected) and missing (expected but
+        // not staged) so the operator sees exactly what raced the index.
+        let extra: Vec<String> = staged.difference(&expected).cloned().collect();
+        let mut extra_sorted = extra.clone();
+        extra_sorted.sort();
+        let missing: Vec<String> = expected.difference(&staged).cloned().collect();
+        let mut missing_sorted = missing.clone();
+        missing_sorted.sort();
         return Err(Blocker::new(
-            "ENGINE_ERROR",
+            "STAGED_MISMATCH",
             format!(
-                "The index in '{}' does not match the promoted paths after staging; the promotion was aborted and the working tree was rolled back. Nothing was committed.",
+                "The index in '{}' does not match the promoted paths after staging (extra staged: [{}]; missing: [{}]); the promotion was aborted and the working tree was rolled back. Nothing was committed.",
                 repo.display(),
+                extra_sorted.join(", "),
+                missing_sorted.join(", "),
             ),
         ));
     }
@@ -1688,8 +2471,23 @@ fn build_plan(
     // newest SELECTED commit that touches it, which is an ancestry question, not
     // an input-order one. Sort ancestor-first instead of refusing a selection
     // the user happened to make out of order.
+    // Determinism (addendum E3, §10): unrelated SHAs (neither is an ancestor
+    // of the other) sort by committer timestamp, then SHA — so
+    // last-writer-wins can't flip with click order. Dates determine display
+    // order only, never correctness (blob membership decides).
     let mut ordered: Vec<String> = Vec::with_capacity(request.commits.len());
-    for sha in &request.commits {
+    // Pre-sort by (committer epoch, SHA) so the ancestry insertion below is
+    // input-order independent for unrelated commits.
+    let mut by_time: Vec<(String, i64)> = request
+        .commits
+        .iter()
+        .map(|sha| {
+            let epoch = git::commit_epoch(repo_dir, sha).unwrap_or(0);
+            (sha.clone(), epoch)
+        })
+        .collect();
+    by_time.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    for (sha, _) in &by_time {
         if ordered.iter().any(|placed| placed == sha) {
             continue;
         }
@@ -1752,7 +2550,68 @@ fn build_pr_body(
         lines.push(format!("Source-Commit: {sha}"));
     }
     lines.push(format!("Promotion-Target: {}", request.target_branch));
+    // Override record mirrored in the body AND the trailers (addendum F).
+    // Nothing may depend on reading it back after a squash-merge — the body
+    // is destroyed by squash and by `local_direct`; the trailers are the
+    // record, and trust in them is what squash destroys.
+    if request.allow_gaps {
+        let gaps: Vec<String> = report
+            .provenance_message
+            .as_deref()
+            .and_then(|msg| {
+                crate::services::engine::provenance::parse_trailers(msg)
+                    .first("Promotion-Gaps")
+                    .map(|s| s.to_string())
+            })
+            .map(|s| vec![s])
+            .unwrap_or_default();
+        if gaps.is_empty() {
+            lines.push("Promotion-Override: true".to_string());
+        } else {
+            for g in gaps {
+                lines.push(format!("Promotion-Gaps: {g}"));
+            }
+            lines.push("Promotion-Override: true".to_string());
+        }
+    }
     lines.push(String::new());
+
+    // Reporting §5: replaced / deleted / unchanged / flagged / excluded.
+    if !report.changes.replaced.is_empty() {
+        lines.push("### Replaced (target copy overwritten)".to_string());
+        for path in &report.changes.replaced {
+            lines.push(format!("- `{path}`"));
+        }
+        lines.push(String::new());
+    }
+    if !report.changes.deleted.is_empty() {
+        lines.push("### Deleted".to_string());
+        for path in &report.changes.deleted {
+            lines.push(format!("- `{path}`"));
+        }
+        lines.push(String::new());
+    }
+    if !report.changes.unchanged.is_empty() {
+        lines.push("### Unchanged (target already matched source)".to_string());
+        for path in &report.changes.unchanged {
+            lines.push(format!("- `{path}`"));
+        }
+        lines.push(String::new());
+    }
+    if !report.changes.flagged.is_empty() {
+        lines.push("### Flagged (cross-subsystem overlap — review)".to_string());
+        for path in &report.changes.flagged {
+            lines.push(format!("- `{path}`"));
+        }
+        lines.push(String::new());
+    }
+    if !report.changes.excluded.is_empty() {
+        lines.push("### Excluded via excludedPaths".to_string());
+        for path in &report.changes.excluded {
+            lines.push(format!("- `{path}`"));
+        }
+        lines.push(String::new());
+    }
 
     if !report.dependencies.added.is_empty()
         || !report.dependencies.updated.is_empty()

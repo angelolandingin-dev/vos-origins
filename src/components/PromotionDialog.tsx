@@ -58,6 +58,11 @@ export interface PromotionDialogProps {
   onDeliveryChange: (delivery: PromotionDelivery) => void;
   message: string;
   onMessageChange: (message: string) => void;
+  allowGaps: boolean;
+  onAllowGapsChange: (allowGaps: boolean) => void;
+  excludedPaths: string[];
+  onAddExcludedPath: (path: string) => void;
+  onRemoveExcludedPath: (path: string) => void;
   dependencies: DependencyChange[];
   dependenciesLoading: boolean;
   preflight: PromotionPreflight | null;
@@ -91,6 +96,29 @@ function preflightSummary(preflight: PromotionPreflight): string {
   return `${preflight.files.length} files: ${parts.join(' · ')}`;
 }
 
+function PathList({ title, paths }: { title: string; paths: string[] }) {
+  if (paths.length === 0) return null;
+  return (
+    <section className="space-y-1">
+      <div className="flex h-[29px] items-center justify-between gap-2">
+        <h4 className="text-[11px] font-semibold tracking-wide text-muted uppercase">{title}</h4>
+        <span className="mono text-right text-muted tabular-nums">{paths.length}</span>
+      </div>
+      <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+        {paths.map((path) => (
+          <li
+            key={path}
+            className="mono flex h-[29px] items-center truncate px-2.5 text-[11px] text-muted tabular-nums"
+            title={path}
+          >
+            <span className="truncate">{path}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function PromotionDialogContent({
   open,
   onClose,
@@ -110,6 +138,11 @@ function PromotionDialogContent({
   onDeliveryChange,
   message,
   onMessageChange,
+  allowGaps,
+  onAllowGapsChange,
+  excludedPaths,
+  onAddExcludedPath,
+  onRemoveExcludedPath,
   dependencies,
   dependenciesLoading,
   preflight,
@@ -123,12 +156,24 @@ function PromotionDialogContent({
 }: PromotionDialogProps) {
   const [acknowledged, setAcknowledged] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [newExcludedPath, setNewExcludedPath] = useState('');
 
   const branches = targetBranches?.branches ?? [];
   const selectedBranch = branches.find((branch) => branch.name === targetBranch) ?? null;
   const conflicting = dependencies.filter((dependency) => dependency.conflict);
   const cumulative = mode === 'cumulative';
   const multiManifest = commits.filter((commit) => commit.touchesManifest).length > 1;
+  const replaced = preflight?.replaced ?? [];
+  const deleted = preflight?.deleted ?? [];
+  const unchanged = preflight?.unchanged ?? [];
+  const flagged = preflight?.flagged ?? [];
+  const preflightExcluded = preflight?.excluded ?? [];
+  const skippedFiles = (preflight?.files ?? [])
+    .filter((file) => file.outcome === 'skipped')
+    .map((file) => file.path);
+  const refusedPaths = Array.from(new Set([...(preflight?.conflicts ?? []), ...skippedFiles]));
+  const isExcluded = (path: string) =>
+    excludedPaths.includes(path) || preflightExcluded.includes(path);
   const isDirect = delivery === 'local_direct';
   const isWorktree = delivery === 'worktree';
   const isLocal = delivery === 'local';
@@ -281,6 +326,23 @@ function PromotionDialogContent({
             </Button>
           ) : null}
 
+          {(result.flagged ?? []).length > 0 ? (
+            <InlineAlert
+              tone="warning"
+              title={`${(result.flagged ?? []).length} path${(result.flagged ?? []).length === 1 ? '' : 's'} also changed in the main system by something else`}
+            >
+              <ul className="mono space-y-0.5 text-[11px] break-all">
+                {(result.flagged ?? []).map((path) => (
+                  <li key={path}>{path}</li>
+                ))}
+              </ul>
+            </InlineAlert>
+          ) : null}
+          <PathList title="Replaced" paths={result.replaced ?? []} />
+          <PathList title="Deleted" paths={result.deleted ?? []} />
+          <PathList title="Unchanged" paths={result.unchanged ?? []} />
+          <PathList title="Excluded" paths={result.excluded ?? []} />
+
           <ul className="space-y-2">
             {result.findings.map((finding) => (
               <li key={finding.code}>
@@ -350,6 +412,79 @@ function PromotionDialogContent({
                 })}
               </ul>
             )}
+          </section>
+
+          <section className="space-y-2 rounded-md border border-line bg-surface p-3">
+            <label className="flex items-start gap-2 text-xs text-fg">
+              <Checkbox
+                checked={allowGaps}
+                onChange={(event) => onAllowGapsChange(event.target.checked)}
+                label="Allow gaps — a skipped commit's changes are included"
+                className="mt-0.5"
+              />
+              <span>Allow gaps — a skipped commit&apos;s changes are included</span>
+            </label>
+            <div className="space-y-1.5">
+              <div className="flex h-[29px] items-center justify-between gap-2">
+                <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                  Excluded paths
+                </h3>
+                <span className="mono text-right text-muted tabular-nums">
+                  {excludedPaths.length}
+                </span>
+              </div>
+              {excludedPaths.length === 0 ? (
+                <p className="text-[11px] text-muted">No paths excluded.</p>
+              ) : (
+                <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+                  {excludedPaths.map((path) => (
+                    <li key={path} className="flex h-[29px] items-center gap-2 px-2.5">
+                      <span
+                        className="mono min-w-0 flex-1 truncate text-[11px] text-muted"
+                        title={path}
+                      >
+                        {path}
+                      </span>
+                      <IconButton
+                        icon={X}
+                        label={`Stop excluding ${path}`}
+                        onClick={() => onRemoveExcludedPath(path)}
+                        className="h-[21px] w-[21px]"
+                      />
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex gap-1.5">
+                <input
+                  className="input mono h-[25px] text-[11px]"
+                  value={newExcludedPath}
+                  onChange={(event) => setNewExcludedPath(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      onAddExcludedPath(newExcludedPath);
+                      setNewExcludedPath('');
+                    }
+                  }}
+                  placeholder="path/to/file or directory/prefix"
+                  aria-label="Add an excluded path"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={!newExcludedPath.trim()}
+                  onClick={() => {
+                    onAddExcludedPath(newExcludedPath);
+                    setNewExcludedPath('');
+                  }}
+                >
+                  Exclude
+                </Button>
+              </div>
+            </div>
           </section>
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -501,18 +636,56 @@ function PromotionDialogContent({
                 title={preflightSummary(preflight)}
               >
                 {preflight.conflict > 0 ? (
-                  <>
-                    <p>Resolve or drop the conflicting commit, then re-promote.</p>
-                    <ul className="mono space-y-0.5 text-[11px] break-all">
-                      {preflight.conflicts.map((path) => (
-                        <li key={path}>{path}</li>
-                      ))}
-                    </ul>
-                  </>
+                  <p>Resolve, exclude, or drop the conflicting commit, then re-promote.</p>
                 ) : (
                   <p>Ready to promote.</p>
                 )}
               </InlineAlert>
+              {refusedPaths.length > 0 ? (
+                <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+                  {refusedPaths.map((path) => (
+                    <li key={path} className="flex h-[29px] items-center gap-2 px-2.5">
+                      <TriangleAlert
+                        className="h-3 w-3 shrink-0 text-status-blocked"
+                        aria-hidden="true"
+                      />
+                      <span
+                        className="mono min-w-0 flex-1 truncate text-[11px] text-fg"
+                        title={path}
+                      >
+                        {path}
+                      </span>
+                      {isExcluded(path) ? (
+                        <span className="shrink-0 text-[11px] text-muted">excluded</span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => onAddExcludedPath(path)}
+                        >
+                          Exclude
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {flagged.length > 0 ? (
+                <InlineAlert
+                  tone="warning"
+                  title={`${flagged.length} path${flagged.length === 1 ? '' : 's'} also changed in the main system by something else`}
+                >
+                  <ul className="mono space-y-0.5 text-[11px] break-all">
+                    {flagged.map((path) => (
+                      <li key={path}>{path}</li>
+                    ))}
+                  </ul>
+                </InlineAlert>
+              ) : null}
+              <PathList title="Replaced" paths={replaced} />
+              <PathList title="Deleted" paths={deleted} />
+              <PathList title="Unchanged" paths={unchanged} />
+              <PathList title="Excluded" paths={preflightExcluded} />
             </section>
           ) : null}
 

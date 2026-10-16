@@ -44,6 +44,11 @@ pub struct SubsystemEntry {
     pub path_strategy: PathStrategy,
     pub dependency_strategy: DependencyStrategy,
     pub integration_policy: IntegrationPolicy,
+    /// Wire `globalFiles`: protected app-shell files (exact paths or
+    /// directory prefixes, no glob engine). A matched path whose target copy
+    /// is NOT in the source blob set refuses with `GLOBAL_FILE_PROTECTED`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_files: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -200,6 +205,31 @@ impl Registry {
                     format!("duplicate subsystem id: {}", subsystem.id),
                     "Subsystem ids must be unique across the registry.",
                 ));
+            }
+            // `globalFiles`: exact paths or directory prefixes, no glob engine.
+            // Fail closed on empty entries, absolute paths, or `..` segments —
+            // the guard compares normalized `/` paths, so unsafe entries would
+            // silently never match (or worse, match too much).
+            if let Some(globals) = subsystem.global_files.as_deref() {
+                for g in globals {
+                    let norm = g.replace('\\', "/");
+                    let trimmed = norm.trim();
+                    if trimmed.is_empty() {
+                        return Err(ValidationError::new(
+                            format!(
+                                "subsystems[{}].globalFiles must not contain blank entries",
+                                subsystem.id
+                            ),
+                            "Remove the blank entry or delete globalFiles.",
+                        ));
+                    }
+                    if trimmed.starts_with('/') || trimmed.contains("..") {
+                        return Err(ValidationError::new(
+                            format!("subsystems[{}].globalFiles entry is not a safe relative path: {g:?}", subsystem.id),
+                            "Use relative paths like \"src/app/layout.tsx\" or directory prefixes like \"src/app/\".",
+                        ));
+                    }
+                }
             }
         }
         Ok(())

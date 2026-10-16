@@ -216,22 +216,20 @@ fn delete_worktree_file(dir: &Path, rel_path: &str) -> Result<(), ApplyConflict>
     Ok(())
 }
 
+/// Retained for unit tests only. Copy semantics replaced the merge branch on
+/// all promotion paths: the apply copies unconditionally (with blob-membership
+/// refusals before it) and preflight has zero `three_way_merge` call sites
+/// (G3). Kept (dead on promotion paths) so whitespace-resolution behaviour
+/// stays pinned by tests.
+#[allow(dead_code)]
 pub(crate) enum MergeOutcome {
     Ok(Vec<u8>),
     Conflict(#[allow(dead_code)] String),
 }
 
-/// Three-way text merge shared by the real apply and the preflight dry run
-/// (both call this helper, so they can never disagree).
-///
-/// Runs scratch `git merge-file -p --diff3`. When it reports conflicts, each
-/// `--diff3` block is post-processed: a block whose `ours` and `theirs` sides
-/// are equivalent ignoring whitespace (per-line trim + collapsing interior
-/// whitespace runs) is resolved automatically by keeping the **target's
-/// (`ours`) block bytes**, so the main system's formatting is preserved and
-/// nothing is re-indented. Blocks that differ by real content stay conflicting
-/// and are returned as [`MergeOutcome::Conflict`] (governed by the caller's
-/// `on_conflict` policy).
+/// Three-way text merge (see `MergeOutcome` — retained for tests only, dead on
+/// promotion paths; preflight has zero call sites by construction).
+#[allow(dead_code)]
 pub(crate) fn three_way_merge(
     scratch_dir: &Path,
     rel_path: &str,
@@ -288,6 +286,7 @@ pub(crate) fn three_way_merge(
 /// Operates on raw bytes split at `\n`; reassembly is an exact round-trip, so
 /// resolved blocks keep the target's bytes verbatim (indentation, trailing
 /// newline state, everything outside the stripped whitespace comparison).
+#[allow(dead_code)]
 fn resolve_whitespace_only_blocks(output: &[u8]) -> Option<Vec<u8>> {
     let lines: Vec<&[u8]> = output.split(|b| *b == b'\n').collect();
     // Fast path: no conflict markers at all. (merge-file only exits nonzero
@@ -349,6 +348,7 @@ fn resolve_whitespace_only_blocks(output: &[u8]) -> Option<Vec<u8>> {
 /// runs of ASCII whitespace collapse to a single space before comparing.
 /// Re-indentation (leading runs) and trailing whitespace vanish; `hello world`
 /// vs `helloworld` still differ (a run is not nothing).
+#[allow(dead_code)]
 fn blocks_equal_ignoring_whitespace(ours: &[&[u8]], theirs: &[&[u8]]) -> bool {
     if ours.len() != theirs.len() {
         return false;
@@ -358,6 +358,7 @@ fn blocks_equal_ignoring_whitespace(ours: &[&[u8]], theirs: &[&[u8]]) -> bool {
         .all(|(a, b)| normalise_ws_line(a) == normalise_ws_line(b))
 }
 
+#[allow(dead_code)]
 fn normalise_ws_line(line: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(line.len());
     let mut pending_space = false;

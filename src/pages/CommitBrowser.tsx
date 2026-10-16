@@ -2,7 +2,7 @@ import { GitBranch, RefreshCw } from 'lucide-react';
 
 import { useApp } from '../app/context';
 import { CommitWorkspace } from '../components/CommitWorkspace';
-import { SubsystemSegmentedControl } from '../components/SubsystemCard';
+import { SubsystemFilterList } from '../components/SubsystemFilterList';
 import { Button, EmptyState, LoadingState, Select } from '../components/ui/primitives';
 
 /** Commit Browser (spec §3.3): commit-focused framing of the shared workspace. */
@@ -42,28 +42,35 @@ export function CommitBrowser() {
         </div>
       </header>
 
-      {subsystems.length > 0 ? (
-        <div className="scroll-area flex shrink-0 overflow-x-auto px-3 py-3">
-          <SubsystemSegmentedControl
-            subsystems={subsystems}
-            selectedId={app.selectedSubsystemId}
-            onSelect={(id) => app.selectSubsystem(id)}
-          />
-        </div>
-      ) : null}
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 px-3 pb-3 lg:flex-row">
+        {subsystems.length > 0 ? (
+          <aside
+            aria-label="Subsystem list"
+            className="flex shrink-0 flex-col overflow-hidden rounded-md border border-line bg-surface lg:w-[260px]"
+          >
+            <div className="max-h-[220px] min-h-0 flex-1 lg:max-h-none">
+              <SubsystemFilterList
+                subsystems={subsystems}
+                selectedId={app.selectedSubsystemId}
+                onSelect={(id) => app.selectSubsystem(id)}
+              />
+            </div>
+          </aside>
+        ) : null}
 
-      <div className="flex min-h-0 flex-1 gap-2.5 px-3 pb-3">
-        {app.subsystems.loading && subsystems.length === 0 ? (
-          <LoadingState label="Loading the subsystem registry…" />
-        ) : subsystems.length === 0 ? (
-          <EmptyState
-            icon={GitBranch}
-            title="No registered subsystem"
-            message="Register a subsystem on the Subsystems screen, then refresh to browse its commit history."
-          />
-        ) : (
-          <CommitWorkspace />
-        )}
+        <div className="flex min-h-0 flex-1">
+          {app.subsystems.loading && subsystems.length === 0 ? (
+            <LoadingState label="Loading the subsystem registry…" />
+          ) : subsystems.length === 0 ? (
+            <EmptyState
+              icon={GitBranch}
+              title="No registered subsystem"
+              message="Register a subsystem on the Subsystems screen, then refresh to browse its commit history."
+            />
+          ) : (
+            <CommitWorkspace />
+          )}
+        </div>
       </div>
     </div>
   );

@@ -82,6 +82,11 @@ export default function App() {
         onDeliveryChange={app.setPromotionDelivery}
         message={app.promotion.message}
         onMessageChange={app.setPromotionMessage}
+        allowGaps={app.promotion.allowGaps}
+        onAllowGapsChange={app.setPromotionAllowGaps}
+        excludedPaths={app.promotion.excludedPaths}
+        onAddExcludedPath={app.addPromotionExcludedPath}
+        onRemoveExcludedPath={app.removePromotionExcludedPath}
         dependencies={app.promotion.dependencies}
         dependenciesLoading={app.promotion.dependenciesLoading}
         preflight={app.promotion.preflight}

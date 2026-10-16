@@ -316,6 +316,21 @@ export interface PromotionRequest {
    * source commit's subject.
    */
   message: string;
+  /**
+   * Override the non-contiguous-selection refusal: a skipped commit's changes
+   * are included in the promotion. Omitted ⇒ false.
+   */
+  allowGaps?: boolean | null;
+  /** Paths to leave out of the promotion (exact paths or directory prefixes). */
+  excludedPaths?: string[] | null;
+}
+
+/** Per-subsystem counts for all subsystems in one call (Dashboard scale fix). */
+export interface SubsystemSummaryCounts {
+  subsystemId: string;
+  indexed: number;
+  total: number;
+  tally: Record<string, number>;
 }
 
 /** Per-file mergeability from the `preflight_promotion` dry run (mirrors the Rust `PreflightOutcome`). */
@@ -334,6 +349,16 @@ export interface PromotionPreflight {
   conflict: number;
   skipped: number;
   conflicts: string[];
+  /** Paths overwritten with the subsystem version (`take_subsystem`). */
+  replaced?: string[] | null;
+  /** Paths removed by the promotion. */
+  deleted?: string[] | null;
+  /** Paths already identical in the target. */
+  unchanged?: string[] | null;
+  /** Paths also changed in the main system by something else (warning, not an error). */
+  flagged?: string[] | null;
+  /** Paths left out via `excludedPaths`. */
+  excluded?: string[] | null;
 }
 
 /** In-tool promotion result (§9.2): `local_direct` commits onto the local target branch; `worktree` stages into the working tree on the checked-out target branch (no commit, no push, no PR — status unchanged); `local` stops at a branch + commit in the user's clone; `push_pr` pushes the branch + opens a PR. */
@@ -351,6 +376,16 @@ export interface PromotionDispatchResult {
   delivery: PromotionDelivery;
   /** Literal next steps for `local_direct` / `local` / `worktree` delivery (empty for `push_pr`). */
   nextCommands: string[];
+  /** Paths overwritten with the subsystem version. */
+  replaced?: string[] | null;
+  /** Paths removed by the promotion. */
+  deleted?: string[] | null;
+  /** Paths already identical in the target. */
+  unchanged?: string[] | null;
+  /** Paths also changed in the main system by something else (warning, not an error). */
+  flagged?: string[] | null;
+  /** Paths left out via `excludedPaths`. */
+  excluded?: string[] | null;
 }
 
 export type WorkflowRunStatus =
@@ -537,6 +572,8 @@ export interface RegistryConfig {
   subsystems: RegistrySubsystem[];
   /** Absolute path to the user's local clone of the main repository (local delivery). Omitted/null ⇒ resolve via env / managed checkout. */
   localMainRepositoryPath?: string | null;
+  /** Exact paths or directory prefixes owned by the main system (never imported). */
+  globalFiles?: string[] | null;
 }
 
 export interface RegistrySnapshot {

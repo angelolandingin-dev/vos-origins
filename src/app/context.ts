@@ -92,6 +92,10 @@ export interface PromotionState {
   onConflict: PromotionOnConflict;
   /** The promotion commit's own message; required before a dispatch. */
   message: string;
+  /** Override the non-contiguous-selection refusal: a skipped commit's changes are included. */
+  allowGaps: boolean;
+  /** Paths to leave out of the promotion. */
+  excludedPaths: string[];
   dispatching: boolean;
   error: ApiError | null;
   result: PromotionDispatchResult | null;
@@ -145,6 +149,10 @@ export interface AppContextValue {
   setPromotionDelivery: (delivery: PromotionDelivery) => void;
   setPromotionOnConflict: (onConflict: PromotionOnConflict) => void;
   setPromotionMessage: (message: string) => void;
+  setPromotionAllowGaps: (allowGaps: boolean) => void;
+  setPromotionExcludedPaths: (paths: string[]) => void;
+  addPromotionExcludedPath: (path: string) => void;
+  removePromotionExcludedPath: (path: string) => void;
   dispatchPromotion: () => void;
 }
 

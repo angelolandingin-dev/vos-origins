@@ -1,32 +1,35 @@
-//! Dry-run mergeability preflight: per-file `clean` / `merged` / `conflict` /
-//! `skipped` computed from the same blobs and the same three-way merge the real
-//! apply uses — without touching either repository.
+//! Dry-run copy-semantics preflight: per-file `clean` / `conflict` /
+//! `skipped` computed from the same blobs and the same blob-membership rules
+//! the real apply uses — without touching either repository.
 //!
 //! Read-only by construction: every git operation here is a read (`rev-parse`,
-//! `cat-file`, `ls-tree`, `log`, `show`, `merge-file`). This module never calls
-//! `worktree_add`, never creates a branch or a commit, and the only files it
-//! writes are `merge-file` scratch files under a temp dir that is always
-//! removed before returning.
+//! `cat-file`, `ls-tree`, `log`, `show`, `rev-list`, `diff`). This module never
+//! calls `worktree_add`, never creates a branch or a commit, and writes no
+//! files at all (copy semantics needs no `merge-file` scratch).
+//!
+//! `three_way_merge` has zero call sites on this path by construction (G3).
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use super::apply;
+use super::blobset;
 use super::classify::{self, PathStatus};
 use super::git;
 use crate::github::models::PromotionMode;
 use crate::github::models::PromotionOnConflict;
 use crate::services::registry::IntegrationPolicy;
 
-/// Per-file mergeability, mirroring the real apply's branches:
-/// - `clean`: applies without a merge (new file, target already matches the
-///   base, or target already matches the source);
-/// - `merged`: both sides moved and the three-way merge succeeded;
-/// - `conflict`: the three-way merge conflicts (or the engine would refuse the
-///   path outright, e.g. the add-over-existing recency guard);
+/// Per-file copy outcome, mirroring the real apply's branches:
+/// - `clean`: copies without refusal (new file, target behind-or-equal via
+///   blob membership, target already matches source, or source-unchanged);
+/// - `merged`: retained for wire compat, never emitted (copy never merges);
+/// - `conflict`: the engine would refuse the path outright
+///   (`NON_CONTIGUOUS_PATH_OVERLAP`, `TARGET_DIVERGED`,
+///   `GLOBAL_FILE_PROTECTED`, unsafe paths);
 /// - `skipped`: dependency manifest/lockfile paths, which the engine merges or
 ///   regenerates rather than writes (plus main-owned/secret paths, which the
-///   engine never imports).
+///   engine never imports, plus `excludedPaths`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreflightOutcome {
     Clean,
@@ -72,18 +75,26 @@ pub struct PreflightReport {
 }
 
 /// Read-only inputs for [`compute_preflight`] (mirrors `EngineRequest`).
+/// The registry snapshot is pinned once per call (addendum C): `policy`,
+/// `global_files`, `allow_gaps` and `excluded_paths` come from the same
+/// snapshot the apply would use, so the two cannot disagree because the file
+/// changed mid-run.
 pub struct PreflightRequest<'a> {
     pub policy: &'a IntegrationPolicy,
     pub commits: &'a [String],
     pub mode: PromotionMode,
     pub base_sha: Option<&'a str>,
     pub target_branch: &'a str,
-    /// Mirrors the real apply's `on_conflict`: with `take_subsystem`, paths
-    /// the policy would resolve report as `merged` instead of `conflict`, so
-    /// preflight and the real apply never disagree. Guards the policy never
-    /// bypasses (unsafe paths, classification, dependencies) still report
-    /// `conflict`/`skipped` exactly like the engine fails.
+    /// Mirrors the real apply's `on_conflict`. Copy semantics ignores it for
+    /// correctness (refusals are fail-closed and never bypassed); the field
+    /// stays for wire compat.
     pub on_conflict: PromotionOnConflict,
+    /// Wire `allowGaps` (default false).
+    pub allow_gaps: bool,
+    /// Wire `excludedPaths` (default empty). Excluded paths report `Skipped`.
+    pub excluded_paths: &'a [String],
+    /// Snapshot of `globalFiles` (exact paths or directory prefixes).
+    pub global_files: &'a [String],
 }
 
 #[derive(Debug, Clone)]
@@ -113,31 +124,37 @@ impl PreflightError {
 /// Per-file mergeability for the selected deltas against the target branch tip.
 /// Reads blobs from `source_dir` (base/theirs) and `target_dir` (ours); writes
 /// nothing to either and leaves no branch, commit, or worktree behind.
+/// Copy semantics (addendum §7): the apply copies unconditionally, never
+/// merges — so preflight never merges either. `three_way_merge` has zero call
+/// sites on this path by construction. Outcomes use the same vocabulary the
+/// apply reports: `Clean` = will write/delete/leave-unchanged without refusal
+/// (maps to apply `Written`/`Deleted`/`Unchanged`); `Conflict` = the apply
+/// would refuse (`NON_CONTIGUOUS_PATH_OVERLAP`, `TARGET_DIVERGED`,
+/// `GLOBAL_FILE_PROTECTED`); `Skipped` = dependency/main-owned/secret or
+/// `excludedPaths`. `Merged` is retained for wire compat but never emitted.
 pub fn compute_preflight(
     source_dir: &Path,
     target_dir: &Path,
     request: &PreflightRequest<'_>,
     scratch_root: &Path,
 ) -> Result<PreflightReport, PreflightError> {
+    let _ = scratch_root;
     let target_tip = resolve_target_tip(target_dir, request.target_branch)
         .ok_or_else(|| PreflightError::UnknownTargetBranch(request.target_branch.to_string()))?;
 
     let plan = build_delta_plan(source_dir, request)?;
 
-    let scratch = unique_dir(scratch_root, "vos-preflight");
-    std::fs::create_dir_all(&scratch).map_err(|err| {
-        PreflightError::Scratch(format!("Could not create preflight scratch dir: {err}"))
-    })?;
+    // No scratch dir: copy semantics needs no `merge-file` temp files.
     let report = evaluate_plan(
         source_dir,
         target_dir,
         request.policy,
         &plan,
         &target_tip,
-        &scratch,
-        request.on_conflict,
+        request.allow_gaps,
+        request.excluded_paths,
+        request.global_files,
     );
-    let _ = std::fs::remove_dir_all(&scratch);
     Ok(report)
 }
 
@@ -199,22 +216,98 @@ fn build_delta_plan(
     Ok(plan)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_plan(
     source_dir: &Path,
     target_dir: &Path,
     policy: &IntegrationPolicy,
     plan: &[PlannedDelta],
     target_tip: &str,
-    scratch: &Path,
-    on_conflict: PromotionOnConflict,
+    allow_gaps: bool,
+    excluded_paths: &[String],
+    global_files: &[String],
 ) -> PreflightReport {
-    // A path touched by several selected commits reports its worst outcome: a
-    // single conflicting delta fails the real promotion, so it must surface.
+    // Copy semantics, same rules as the engine (addendum §7 + E3):
+    // blob membership decides, dates never do. ONE ls-tree per revision for
+    // ALL paths. A path touched by several commits reports its worst outcome.
+    let excluded: HashSet<String> = excluded_paths.iter().cloned().collect();
+    // Ordered selection for blob sets (plan is already ancestry-ordered by
+    // build_delta_plan mirroring build_plan).
+    let ordered: Vec<(String, Option<String>)> = plan
+        .iter()
+        .map(|d| (d.sha.clone(), d.base_sha.clone()))
+        .collect();
+    // All apply-candidate paths (classification pre-pass for Skipped).
+    let mut candidate_paths: Vec<String> = Vec::new();
+    for delta in plan {
+        for entry in &delta.entries {
+            for p in expanded_paths(entry) {
+                if !candidate_paths.contains(&p) {
+                    candidate_paths.push(p);
+                }
+            }
+        }
+    }
+    candidate_paths.sort();
+    let blob_sets = blobset::collect_blob_sets(source_dir, &ordered, &candidate_paths);
+    let target_tree = blobset::tree_blob_map(target_dir, target_tip);
+    let oldest_tree: HashMap<String, String> = match ordered.first().and_then(|(_, b)| b.as_deref())
+    {
+        Some(base) => blobset::tree_blob_map(source_dir, base),
+        None => HashMap::new(),
+    };
+    // Newest selected toucher per path (for gap content-awareness).
+    let mut newest_toucher: HashMap<String, String> = HashMap::new();
+    for delta in plan {
+        for entry in &delta.entries {
+            for p in expanded_paths(entry) {
+                newest_toucher.insert(p, delta.sha.clone());
+            }
+        }
+    }
+    // Skipped SHAs between oldest base and newest tip (same range rule as the
+    // engine). Computed once; per-path touch map below.
+    let mut skipped_touch: HashMap<String, Vec<String>> = HashMap::new();
+    // Whether the request mode even has gaps (cumulative never does).
+    let has_range = plan.len() > 1 && ordered.first().and_then(|(_, b)| b.as_deref()).is_some();
+    if has_range {
+        if let (Some(oldest_b), Some(newest_sha)) = (
+            ordered.first().and_then(|(_, b)| b.as_deref()),
+            ordered.last().map(|(s, _)| s.as_str()),
+        ) {
+            let selected: HashSet<&str> = ordered.iter().map(|(s, _)| s.as_str()).collect();
+            if let Ok(out) = git::run(
+                source_dir,
+                &[
+                    "rev-list",
+                    "--topo-order",
+                    "--reverse",
+                    &format!("{oldest_b}..{newest_sha}"),
+                ],
+            ) {
+                if out.status == 0 {
+                    for line in out.stdout_str().lines() {
+                        let sha = line.trim().to_string();
+                        if sha.is_empty() || selected.contains(sha.as_str()) {
+                            continue;
+                        }
+                        if let Ok((_, entries)) = git::name_status_delta(source_dir, &sha) {
+                            for e in &entries {
+                                for p in expanded_paths(e) {
+                                    skipped_touch.entry(p).or_default().push(sha.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     let mut by_path: HashMap<String, PreflightOutcome> = HashMap::new();
     for delta in plan {
         for entry in &delta.entries {
             for rel_path in expanded_paths(entry) {
-                let outcome = evaluate_path(
+                let outcome = evaluate_path_copy(
                     source_dir,
                     target_dir,
                     policy,
@@ -222,8 +315,14 @@ fn evaluate_plan(
                     entry,
                     &rel_path,
                     target_tip,
-                    scratch,
-                    on_conflict,
+                    &target_tree,
+                    &blob_sets,
+                    &oldest_tree,
+                    &newest_toucher,
+                    &skipped_touch,
+                    allow_gaps,
+                    &excluded,
+                    global_files,
                 );
                 by_path
                     .entry(rel_path)
@@ -278,7 +377,7 @@ fn expanded_paths(entry: &git::DeltaEntry) -> Vec<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn evaluate_path(
+fn evaluate_path_copy(
     source_dir: &Path,
     target_dir: &Path,
     policy: &IntegrationPolicy,
@@ -286,14 +385,22 @@ fn evaluate_path(
     entry: &git::DeltaEntry,
     rel_path: &str,
     target_tip: &str,
-    scratch: &Path,
-    on_conflict: PromotionOnConflict,
+    target_tree: &HashMap<String, String>,
+    blob_sets: &HashMap<String, HashSet<Option<String>>>,
+    oldest_tree: &HashMap<String, String>,
+    newest_toucher: &HashMap<String, String>,
+    skipped_touch: &HashMap<String, Vec<String>>,
+    allow_gaps: bool,
+    excluded: &HashSet<String>,
+    global_files: &[String],
 ) -> PreflightOutcome {
     if rel_path.is_empty() {
         return PreflightOutcome::Conflict;
     }
-    // Same mode lookup as the engine's classifier: deletes and rename sources
-    // read the mode from the baseline, everything else from the source commit.
+    if excluded.contains(rel_path) {
+        return PreflightOutcome::Skipped;
+    }
+    // Same mode lookup as the engine's classifier.
     let mode_opt = if entry.status == 'D'
         || (entry.is_rename_or_copy() && Some(rel_path) == entry.old_path.as_deref())
     {
@@ -306,7 +413,6 @@ fn evaluate_path(
     };
     let classification = classify::classify_path(rel_path, policy, mode_opt.as_deref());
     match classification.status {
-        // Deleting the root manifest is never automatic (same rule as the engine).
         PathStatus::DependencyMerge if entry.status == 'D' => {
             return PreflightOutcome::Conflict;
         }
@@ -320,9 +426,7 @@ fn evaluate_path(
         PathStatus::Apply => {}
     }
 
-    // Same blob inputs as the real apply: base/theirs from the source checkout,
-    // ours from the target branch tip. Deletes and rename sources have no
-    // `theirs` blob, exactly like `apply_one` sees them.
+    // Same blob inputs as the real apply (CRLF-insensitive text compare).
     let theirs_opt = if entry.status == 'D'
         || (entry.is_rename_or_copy() && Some(rel_path) == entry.old_path.as_deref())
     {
@@ -335,38 +439,8 @@ fn evaluate_path(
         .as_deref()
         .and_then(|base| git::read_blob(source_dir, base, rel_path));
     let ours_opt = git::read_blob(target_dir, target_tip, rel_path);
-    blob_outcome(
-        source_dir,
-        target_dir,
-        scratch,
-        &delta.sha,
-        target_tip,
-        rel_path,
-        theirs_opt,
-        base_opt,
-        ours_opt,
-        on_conflict,
-    )
-}
-
-/// The blob-level branches of `apply_one`, without any worktree writes: the
-/// equality short-circuits are identical, and divergence falls through to the
-/// engine's own [`apply::three_way_merge`].
-#[allow(clippy::too_many_arguments)]
-fn blob_outcome(
-    source_dir: &Path,
-    target_dir: &Path,
-    scratch: &Path,
-    source_sha: &str,
-    target_tip: &str,
-    rel_path: &str,
-    theirs_opt: Option<Vec<u8>>,
-    base_opt: Option<Vec<u8>>,
-    ours_opt: Option<Vec<u8>>,
-    on_conflict: PromotionOnConflict,
-) -> PreflightOutcome {
-    // Same CRLF-insensitive text comparison as the apply path; binaries keep
-    // exact byte semantics and are never normalised.
+    // Note: `ours` comes from the target tree map (ONE ls-tree), not a
+    // per-path `cat-file`. Content equality below uses CRLF-stripped bytes.
     let text_path = !theirs_opt.as_ref().is_some_and(|b| apply::is_binary(b))
         && !base_opt.as_ref().is_some_and(|b| apply::is_binary(b))
         && !ours_opt.as_ref().is_some_and(|b| apply::is_binary(b));
@@ -381,93 +455,95 @@ fn blob_outcome(
     let base_norm_opt = base_opt.as_ref().map(|b| normalised(b));
     let ours_norm_opt = ours_opt.as_ref().map(|b| normalised(b));
 
-    // The source deleted the path.
+    // Gap refusal (content-aware, same rule as the engine): a skipped SHA
+    // touching this path with a material (non-undone) effect conflicts unless
+    // allowGaps. Undone effects (newest == oldest base) skip harmlessly.
+    if !allow_gaps {
+        if let Some(touchers) = skipped_touch.get(rel_path) {
+            if !touchers.is_empty() {
+                let newest_blob = newest_toucher
+                    .get(rel_path)
+                    .and_then(|s| blobset::tree_blob_map(source_dir, s).get(rel_path).cloned());
+                let oldest_blob = oldest_tree.get(rel_path).cloned();
+                if newest_blob != oldest_blob {
+                    return PreflightOutcome::Conflict;
+                }
+            }
+        }
+    }
+
+    // globalFiles guard (same rule as the engine).
+    if is_global_match(rel_path, global_files) {
+        let target_blob = target_tree.get(rel_path).cloned();
+        let allowed = match blob_sets.get(rel_path) {
+            Some(set) => set.contains(&target_blob),
+            None => target_blob.is_none(),
+        };
+        if !allowed {
+            return PreflightOutcome::Conflict;
+        }
+    }
+
+    // Overwrite refusal by blob membership (same rule as the engine).
+    // `theirs == None` deletes are included: set = {base, None}.
+    {
+        let target_blob = target_tree.get(rel_path).cloned();
+        let allowed = match blob_sets.get(rel_path) {
+            Some(set) => set.contains(&target_blob),
+            None => target_blob.is_none(),
+        };
+        if !allowed {
+            return PreflightOutcome::Conflict;
+        }
+    }
+
+    // Copy semantics below (no merge — `three_way_merge` is never called):
+    // each branch mirrors `apply_one`'s equality short-circuits.
     if theirs_opt.is_none() {
-        if ours_opt.is_none() {
-            return PreflightOutcome::Clean;
-        }
-        if base_opt.is_some() && ours_norm_opt == base_norm_opt {
-            return PreflightOutcome::Clean;
-        }
-        // Delete-vs-diverge: the real apply deletes under `take_subsystem`.
-        return take_or_conflict(on_conflict);
+        // Source deleted: allowed above means target absent or matching base.
+        return PreflightOutcome::Clean;
     }
     let theirs_norm = theirs_norm_opt.unwrap_or_default();
-
-    // The target already matches the source.
     if ours_norm_opt.as_deref() == Some(theirs_norm.as_slice()) {
         return PreflightOutcome::Clean;
     }
-    // The target does not carry the path: the add applies without a merge.
     if ours_opt.is_none() {
         return PreflightOutcome::Clean;
     }
     let ours_norm = ours_norm_opt.unwrap_or_default();
-    // Add over an existing target file: allowed only when the target copy is
-    // not newer than the source commit (same recency rule as the engine), or
-    // unconditionally under `take_subsystem` (same as the real apply).
-    if base_opt.is_none() {
-        let allowed =
-            add_overwrite_allowed(source_dir, target_dir, target_tip, source_sha, rel_path);
-        return if allowed {
-            PreflightOutcome::Clean
-        } else {
-            take_or_conflict(on_conflict)
-        };
-    }
     let base_norm = base_norm_opt.unwrap_or_default();
-    // The target still matches the source baseline: the delta applies cleanly.
     if ours_norm == base_norm {
         return PreflightOutcome::Clean;
     }
-    // The source left the content unchanged (e.g. a mode-only delta): the real
-    // apply keeps the target's bytes without merging — even for binaries.
     if theirs_norm == base_norm {
         return PreflightOutcome::Clean;
     }
-    // Both sides moved: the engine's own three-way merge decides (including
-    // its whitespace-only auto-resolution, shared with the real apply).
-    match apply::three_way_merge(scratch, rel_path, &ours_norm, &base_norm, &theirs_norm) {
-        apply::MergeOutcome::Ok(content) => {
-            if normalised(&content) == ours_norm {
-                PreflightOutcome::Clean
-            } else {
-                PreflightOutcome::Merged
-            }
+    // Both sides moved with membership allowed (target behind-or-equal):
+    // the copy overwrites — Clean (the apply reports Written/Replaced).
+    // No `Merged`: copy never merges (G3).
+    PreflightOutcome::Clean
+}
+
+fn is_global_match(path: &str, global_files: &[String]) -> bool {
+    let norm = path.replace('\\', "/");
+    for entry in global_files {
+        let e = entry.replace('\\', "/");
+        let e = e.trim().trim_end_matches('/').to_string();
+        if e.is_empty() {
+            continue;
         }
-        apply::MergeOutcome::Conflict(_) => take_or_conflict(on_conflict),
+        if norm == e || norm.starts_with(&format!("{e}/")) {
+            return true;
+        }
     }
+    false
 }
 
-/// A would-be `conflict` under `take_subsystem` resolves the way the real
-/// apply does (subsystem version wins — a change), so preflight reports it as
-/// `merged` instead of `conflict`. Under `fail` it stays a conflict.
-fn take_or_conflict(on_conflict: PromotionOnConflict) -> PreflightOutcome {
-    if on_conflict == PromotionOnConflict::TakeSubsystem {
-        PreflightOutcome::Merged
-    } else {
-        PreflightOutcome::Conflict
-    }
-}
-
-/// Same recency rule as the engine's add-over-existing guard: an add may
-/// overwrite the target copy only when the target branch never carried the
-/// path or the source commit is at least as new. Blobs come from the source
-/// checkout here (the engine reads them from its fetched object store instead).
-fn add_overwrite_allowed(
-    source_dir: &Path,
-    target_dir: &Path,
-    target_tip: &str,
-    source_sha: &str,
-    rel_path: &str,
-) -> bool {
-    let source_epoch = git::commit_epoch(source_dir, source_sha);
-    match git::last_change_epoch(target_dir, target_tip, rel_path) {
-        None => true,
-        Some(target) => source_epoch.map(|source| source >= target).unwrap_or(false),
-    }
-}
-
+/// REMOVED: `take_or_conflict`, `add_overwrite_allowed`, and the entire
+/// `three_way_merge` branch. Copy semantics never merges: disjoint edits that
+/// three-way would have called `Merged` now report `Clean` (will be replaced)
+/// when blob membership allows, else `Conflict` (would refuse). Dates never
+/// decide — blob membership does (addendum E3).
 fn resolve_target_tip(target_dir: &Path, branch: &str) -> Option<String> {
     [
         format!("refs/heads/{branch}"),
@@ -478,22 +554,11 @@ fn resolve_target_tip(target_dir: &Path, branch: &str) -> Option<String> {
     .find_map(|candidate| git::rev_parse(target_dir, &candidate))
 }
 
-fn unique_dir(root: &Path, prefix: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    root.join(format!("{prefix}-{pid}-{nanos}-{n}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::registry::Registry;
+    use std::path::PathBuf;
     use std::process::Command;
 
     static SANDBOX_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -604,6 +669,7 @@ mod tests {
     fn check(repo: &Path, shas: &[String]) -> PreflightReport {
         let registry = test_registry();
         let scratch = tmp("scratch");
+        let empty: Vec<String> = Vec::new();
         let request = PreflightRequest {
             policy: &registry.subsystems[0].integration_policy,
             commits: shas,
@@ -611,6 +677,9 @@ mod tests {
             base_sha: None,
             target_branch: "target",
             on_conflict: PromotionOnConflict::Fail,
+            allow_gaps: false,
+            excluded_paths: &empty,
+            global_files: &empty,
         };
         let report = compute_preflight(repo, repo, &request, &scratch).expect("preflight computes");
         let _ = std::fs::remove_dir_all(&scratch);
@@ -674,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn disjoint_edits_merge() {
+    fn disjoint_edits_no_longer_merge_copy_refuses_diverged() {
         let repo = tmp("repo");
         init(&repo);
         write(&repo, "app.txt", "a\nb\nc\nd\ne\nf\n");
@@ -688,10 +757,15 @@ mod tests {
         write(&repo, "app.txt", "a\nb\nc\nd\ne\nF\n");
         let sha = commit_all(&repo, "source tail");
 
+        // Copy semantics, blob membership (§3, §7): the target copy (`A…`)
+        // matches neither the oldest base nor the source tip, so it has
+        // diverged and preflight refuses — never `Merged`. Three-way would
+        // have merged these disjoint edits; the copy does not merge (G3).
         let report = check(&repo, &[sha]);
-        assert_eq!(report.conflicts, Vec::<String>::new());
-        assert_eq!(report.merged, 1, "{report:?}");
-        assert_eq!(outcome_of(&report, "app.txt"), PreflightOutcome::Merged);
+        assert_eq!(report.merged, 0, "copy never merges: {report:?}");
+        assert_eq!(report.conflict, 1, "{report:?}");
+        assert_eq!(report.conflicts, vec!["app.txt".to_string()]);
+        assert_eq!(outcome_of(&report, "app.txt"), PreflightOutcome::Conflict);
     }
 
     #[test]
@@ -746,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn add_over_existing_recency_refuses_newer_target() {
+    fn add_over_existing_membership_refuses_any_diverged_target() {
         let repo = tmp("repo");
         init(&repo);
         write(&repo, "base.txt", "base\n");
@@ -758,8 +832,10 @@ mod tests {
         write(&repo, "newer.txt", "source\n");
         write(&repo, "older.txt", "source\n");
         let sha = commit_all_at(&repo, "source adds", Some("2024-06-01T00:00:00Z"));
-        // The target adds its own newer copy of one file and an older copy of
-        // the other; only the newer copy must refuse the add.
+        // The target adds its own copies (newer and older dates): blob
+        // membership (§3) refuses BOTH — dates never decide (E3). Timestamps
+        // are display order only; the target blobs match neither the oldest
+        // base (absent) nor the source tip.
         git(&repo, &["checkout", "-q", "target"]);
         write(&repo, "newer.txt", "target\n");
         let _ = commit_all_at(&repo, "target newer", Some("2025-01-01T00:00:00Z"));
@@ -767,9 +843,13 @@ mod tests {
         let _ = commit_all_at(&repo, "target older", Some("2020-01-01T00:00:00Z"));
 
         let report = check(&repo, &[sha]);
-        assert_eq!(report.conflicts, vec!["newer.txt".to_string()]);
+        assert_eq!(report.merged, 0, "copy never merges: {report:?}");
+        assert_eq!(
+            report.conflicts,
+            vec!["newer.txt".to_string(), "older.txt".to_string()]
+        );
         assert_eq!(outcome_of(&report, "newer.txt"), PreflightOutcome::Conflict);
-        assert_eq!(outcome_of(&report, "older.txt"), PreflightOutcome::Clean);
+        assert_eq!(outcome_of(&report, "older.txt"), PreflightOutcome::Conflict);
     }
 
     #[test]
@@ -792,6 +872,7 @@ mod tests {
 
         let registry = test_registry();
         let scratch = tmp("scratch");
+        let empty: Vec<String> = Vec::new();
         let request = PreflightRequest {
             policy: &registry.subsystems[0].integration_policy,
             commits: &[sha],
@@ -799,14 +880,18 @@ mod tests {
             base_sha: None,
             target_branch: "target",
             on_conflict: PromotionOnConflict::Fail,
+            allow_gaps: false,
+            excluded_paths: &empty,
+            global_files: &empty,
         };
         let report =
             compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
         assert_eq!(report.conflict, 1);
+        // Copy semantics writes no scratch files (no merge-file temps).
         let leftovers: Vec<_> = std::fs::read_dir(&scratch).expect("read scratch").collect();
         assert!(
             leftovers.is_empty(),
-            "preflight must remove its merge scratch dir"
+            "preflight must leave no scratch files (copy needs none)"
         );
 
         assert_eq!(
@@ -829,5 +914,181 @@ mod tests {
             "no integration branch may exist afterwards"
         );
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// Preflight and apply agree (§7, G3) for: a modified path (target
+    /// behind), a divergent path (target not in blob set), a delete, an
+    /// add-over-existing, and an identical no-op. Copy semantics: no `Merged`,
+    /// `three_way_merge` has zero call sites above. When preflight says
+    /// `Clean`, the apply writes the same bytes (`Written`/`Deleted`/
+    /// `Unchanged`); when it says `Conflict`, the engine would refuse
+    /// (`TARGET_DIVERGED`) and the apply is never run — they agree.
+    #[test]
+    fn preflight_and_apply_agree_on_five_shapes() {
+        use crate::services::engine::apply::{apply_file_delta, ApplyOptions, ApplyOutcome};
+        use crate::services::engine::blobset;
+
+        let repo = tmp("agree");
+        init(&repo);
+        write(&repo, "mod.txt", "base\n");
+        write(&repo, "div.txt", "base\n");
+        write(&repo, "del.txt", "delete me\n");
+        write(&repo, "same.txt", "same\n");
+        let _ = commit_all(&repo, "base");
+        git(&repo, &["branch", "source"]);
+        git(&repo, &["branch", "target"]);
+        // Source: modify mod/div/same, delete del, add new.
+        git(&repo, &["checkout", "-q", "source"]);
+        write(&repo, "mod.txt", "source mod\n");
+        write(&repo, "div.txt", "source div\n");
+        write(&repo, "same.txt", "same v2\n");
+        std::fs::remove_file(repo.join("del.txt")).expect("remove del");
+        write(&repo, "new.txt", "brand new\n");
+        let sha = commit_all(&repo, "source work");
+        // Target: leave mod at base (behind), diverge div + new, keep del at
+        // base (so delete applies), match same (identical no-op).
+        git(&repo, &["checkout", "-q", "target"]);
+        write(&repo, "div.txt", "target divergent\n");
+        write(&repo, "new.txt", "target other\n");
+        write(&repo, "same.txt", "same v2\n");
+        let _ = commit_all(&repo, "target work");
+
+        let registry = test_registry();
+        let scratch = tmp("agree-scratch");
+        let empty: Vec<String> = Vec::new();
+        let request = PreflightRequest {
+            policy: &registry.subsystems[0].integration_policy,
+            commits: std::slice::from_ref(&sha),
+            mode: PromotionMode::Individual,
+            base_sha: None,
+            target_branch: "target",
+            on_conflict: PromotionOnConflict::Fail,
+            allow_gaps: false,
+            excluded_paths: &empty,
+            global_files: &empty,
+        };
+        let report =
+            compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
+        assert_eq!(report.merged, 0, "copy never merges: {report:?}");
+        // Modified (behind: target == base, in set) → Clean.
+        assert_eq!(outcome_of(&report, "mod.txt"), PreflightOutcome::Clean);
+        // Divergent (target matches neither base nor tip) → Conflict.
+        assert_eq!(outcome_of(&report, "div.txt"), PreflightOutcome::Conflict);
+        // Delete (target == base, in set {base, None}) → Clean.
+        assert_eq!(outcome_of(&report, "del.txt"), PreflightOutcome::Clean);
+        // Add-over-existing diverged → Conflict.
+        assert_eq!(outcome_of(&report, "new.txt"), PreflightOutcome::Conflict);
+        // Identical no-op (target == source) → Clean.
+        assert_eq!(outcome_of(&report, "same.txt"), PreflightOutcome::Clean);
+
+        // Blob membership behind the verdicts (E3: dates never decide).
+        let target_tip = git(&repo, &["rev-parse", "target"]);
+        let parent = git(&repo, &["rev-parse", &format!("{sha}^")]);
+        let ordered: Vec<(String, Option<String>)> = vec![(sha.clone(), Some(parent.clone()))];
+        for path in ["mod.txt", "div.txt", "del.txt", "new.txt", "same.txt"] {
+            let set = blobset::collect_blob_set(&repo, &ordered, path);
+            let target_blob = blobset::blob_id(&repo, &target_tip, path);
+            let allowed = set.contains(&target_blob);
+            let preflight = outcome_of(&report, path);
+            assert_eq!(
+                allowed,
+                preflight == PreflightOutcome::Clean,
+                "blob membership must match preflight for {path}"
+            );
+        }
+        let _ = ordered;
+
+        // For Clean paths, the apply writes the same bytes preflight predicts.
+        // Seed a worktree at the target tip and apply the source delta.
+        let wt = tmp("agree-wt");
+        let target_tip_sha = git(&repo, &["rev-parse", "target"]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                wt.to_str().unwrap(),
+                &target_tip_sha,
+            ],
+        );
+        // Apply mod.txt (modified): must be Written with source bytes.
+        let entry_mod = crate::services::engine::git::DeltaEntry {
+            status: 'M',
+            path: Some("mod.txt".to_string()),
+            old_path: None,
+            new_path: None,
+            score: None,
+        };
+        let set = apply_file_delta(
+            &repo,
+            &wt,
+            &sha,
+            Some(&parent),
+            &entry_mod,
+            &scratch,
+            &ApplyOptions::default(),
+        )
+        .expect("mod applies");
+        assert!(set
+            .results
+            .iter()
+            .any(|r| r.path == "mod.txt" && r.outcome == ApplyOutcome::Written));
+        assert_eq!(
+            std::fs::read(wt.join("mod.txt")).unwrap(),
+            b"source mod\n",
+            "applied bytes equal the source blob (preflight Clean)"
+        );
+        // Apply same.txt (identical): must be Unchanged.
+        let entry_same = crate::services::engine::git::DeltaEntry {
+            status: 'M',
+            path: Some("same.txt".to_string()),
+            old_path: None,
+            new_path: None,
+            score: None,
+        };
+        let set = apply_file_delta(
+            &repo,
+            &wt,
+            &sha,
+            Some(&parent),
+            &entry_same,
+            &scratch,
+            &ApplyOptions::default(),
+        )
+        .expect("same applies");
+        assert!(set
+            .results
+            .iter()
+            .any(|r| r.path == "same.txt" && r.outcome == ApplyOutcome::Unchanged));
+        // Apply del.txt (delete): must be Deleted.
+        let entry_del = crate::services::engine::git::DeltaEntry {
+            status: 'D',
+            path: Some("del.txt".to_string()),
+            old_path: None,
+            new_path: None,
+            score: None,
+        };
+        let set = apply_file_delta(
+            &repo,
+            &wt,
+            &sha,
+            Some(&parent),
+            &entry_del,
+            &scratch,
+            &ApplyOptions::default(),
+        )
+        .expect("delete applies");
+        assert!(set
+            .results
+            .iter()
+            .any(|r| r.path == "del.txt" && r.outcome == ApplyOutcome::Deleted));
+        assert!(!wt.join("del.txt").exists());
+        let _ = std::fs::remove_dir_all(&scratch);
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "remove", "--force", wt.to_str().unwrap()])
+            .output();
     }
 }

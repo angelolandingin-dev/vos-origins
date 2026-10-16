@@ -1,5 +1,20 @@
 //! Integration history from Git ancestry (spec §8): no ledger.
 //! Status comes from reachable trailers + open PRs; reverts restore correctly.
+//!
+//! Fail-closed posture (addendum E):
+//! 1. Squash strips all trailers → never infer `Eligible`/`Integrated` from
+//!    the absence of trailers; fail closed to `Unknown / needs verification`
+//!    (see `branch_result_to_status` in `live_read`, which verifies trailers
+//!    on the claimed commit and never falls back to `Eligible`).
+//! 2. Reverts may be invisible hand-reverts (no canonical `Revert "…"` line,
+//!    trailers stripped) → decide divergence by blob/content comparison only
+//!    (the engine's `TARGET_DIVERGED` membership check). Message parsing here
+//!    is a hint, never a verdict.
+//! 3. History is deeper than the 800-commit scan and dates may be skewed → a
+//!    truncated scan that finds no hit is `Unknown` plus the truncation flag,
+//!    never `Integrated`. Dates determine display order (deterministic
+//!    timestamp-then-SHA sort in `build_plan`), never correctness — blob
+//!    membership decides.
 
 use std::collections::HashMap;
 use std::path::Path;

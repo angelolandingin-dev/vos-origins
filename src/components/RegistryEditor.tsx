@@ -13,6 +13,13 @@ function splitList(value: string): string[] {
     .filter((item) => item.length > 0);
 }
 
+function splitLines(value: string): string[] {
+  return value
+    .split('\n')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 const DEFAULT_POLICY: RegistrySubsystem['integrationPolicy'] = {
   applicationFiles: 'selected-commit-delta',
   packageJson: 'merge-dependency-delta',
@@ -163,7 +170,7 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
           <p className="text-xs font-semibold text-fg">Promotion: local-first</p>
           <p className="mt-1 text-[11px] text-muted">Push + PR is opt-in per promotion.</p>
         </div>
-        <label className="block md:col-span-2">
+        <label className="block">
           <span className="muted">
             Local main repository clone (absolute path for local promotion)
           </span>
@@ -185,6 +192,24 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
             {' · '}
             <span className="font-mono">{localPathInEffect || 'managed checkout'}</span>
           </span>
+        </label>
+        <label className="block">
+          <span className="muted">Global files (main-owned)</span>
+          <textarea
+            className="input mono mt-1 h-auto min-h-[50px] py-1.5"
+            rows={2}
+            value={(config.globalFiles ?? []).join('\n')}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder={'src/app/layout.tsx\nsrc/components/shared/'}
+            aria-label="Global files (main-owned)"
+            onChange={(event) =>
+              setConfig((current) => ({
+                ...current,
+                globalFiles: splitLines(event.target.value),
+              }))
+            }
+          />
         </label>
       </div>
 

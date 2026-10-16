@@ -51,30 +51,21 @@ export function Dashboard() {
   const subsystems = app.subsystems.data ?? [];
 
   const counts = useAsyncData(async () => {
-    const perSubsystem = await Promise.all(
-      subsystems.map(async (subsystem) => {
-        const page = await api.getSubsystemCommits({
-          subsystemId: subsystem.id,
-          targetBranch: app.targetBranch,
-          page: 1,
-          pageSize: 200,
-          search: '',
-          statusFilter: null,
-          sort: 'newest',
-        });
-        const statuses = await api.getIntegrationStatuses(
-          app.targetBranch,
-          subsystem.id,
-          page.commits.map((commit) => commit.sha),
-        );
-        const tally: Partial<Record<CommitStatusKind, number>> = {};
-        for (const status of statuses) {
-          tally[status.status.kind] = (tally[status.status.kind] ?? 0) + 1;
-        }
-        return { subsystem, indexed: page.commits.length, total: page.total, tally };
-      }),
-    );
-    return perSubsystem;
+    const summaries = await api.getSubsystemSummaries();
+    const byId = new Map(summaries.map((summary) => [summary.subsystemId, summary]));
+    return subsystems.map((subsystem) => {
+      const summary = byId.get(subsystem.id);
+      const tally: Partial<Record<CommitStatusKind, number>> = {};
+      for (const [kind, value] of Object.entries(summary?.tally ?? {})) {
+        tally[kind as CommitStatusKind] = value ?? 0;
+      }
+      return {
+        subsystem,
+        indexed: summary?.indexed ?? 0,
+        total: summary?.total ?? 0,
+        tally,
+      };
+    });
   }, [subsystems, app.targetBranch, app.dataVersion]);
 
   const runs = useAsyncData(() => api.listWorkflowRuns(null, null, 6), [app.dataVersion]);
@@ -150,10 +141,7 @@ export function Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(counts.loading
-                    ? COUNTED
-                    : COUNTED.filter((entry) => (totals[entry.key] ?? 0) > 0)
-                  ).map((entry) => (
+                  {COUNTED.map((entry) => (
                     <tr key={entry.key} className="row-hover border-b border-line">
                       <td className="h-[29px] py-0 pl-4">
                         <StatusBadge kind={entry.key} label={entry.label} />

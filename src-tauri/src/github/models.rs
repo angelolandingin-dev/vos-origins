@@ -206,6 +206,20 @@ pub struct SubsystemSummary {
     pub allowed_target_branches: Vec<String>,
 }
 
+/// Per-subsystem counts for ALL registered subsystems in ONE call (§11).
+/// Wire shape is exact (the React agent consumes it):
+/// `SubsystemSummaryCounts { subsystemId, indexed, total, tally }`
+/// where `tally` keys are the existing status keys (snake_case
+/// `CommitStatusKind`: `eligible`, `integrated`, `pr_open`, …).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubsystemSummaryCounts {
+    pub subsystem_id: String,
+    pub indexed: u32,
+    pub total: u32,
+    pub tally: std::collections::HashMap<String, u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetBranch {
@@ -391,6 +405,11 @@ pub struct CommitPage {
     pub commits: Vec<CommitSummary>,
     pub fetched_at: String,
     pub data_source: DataSource,
+    /// True when the 800-commit target path-date scan hit its limit (§10, E3).
+    /// A truncated scan that finds no hit reports `Unknown` (never
+    /// `Integrated`); dates determine display order only, never correctness.
+    #[serde(default)]
+    pub path_dates_truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -627,6 +646,17 @@ pub struct PromotionRequest {
     /// source commit's subject.
     #[serde(default)]
     pub message: String,
+    /// Wire `allowGaps`: override the non-contiguous gap refusal. Recorded in
+    /// the commit trailers as `Promotion-Gaps` + `Promotion-Override: true`
+    /// (trailers survive squash-merge; the PR body does not) and mirrored in
+    /// the PR body (addendum F). Nothing may depend on reading it back after
+    /// a merge.
+    #[serde(default)]
+    pub allow_gaps: bool,
+    /// Wire `excludedPaths`: paths skipped by the plan and reported as
+    /// excluded.
+    #[serde(default)]
+    pub excluded_paths: Vec<String>,
 }
 
 /// Dry-run mergeability preflight (§9.2): per-file `clean` / `merged` /
