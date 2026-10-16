@@ -523,9 +523,41 @@ fn split_credentials(url: &str) -> (String, Option<String>) {
     )
 }
 
-/// `git` with the bearer token carried in `-c http.extraHeader` (never in an
-/// argv URL). Returns the command plus the redacted argv for error reports
-/// (the token itself is never part of `display`).
+/// GitHub's git endpoints accept `Authorization: Basic base64("x-access-token:<token>")`.
+/// `Bearer` is API-only and is rejected by git-http (401), after which git tries to prompt.
+fn basic_auth_header(token: &str) -> String {
+    format!(
+        "Authorization: Basic {}",
+        base64_encode(format!("x-access-token:{token}").as_bytes())
+    )
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let triple = ((chunk[0] as u32) << 16)
+            | ((*chunk.get(1).unwrap_or(&0) as u32) << 8)
+            | (*chunk.get(2).unwrap_or(&0) as u32);
+        out.push(ALPHABET[((triple >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((triple >> 12) & 0x3f) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((triple >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(triple & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// `git` with the token carried in `-c http.extraHeader` (never in an argv URL).
+/// Returns the command plus the redacted argv for error reports (the token
+/// itself is never part of `display`).
 fn authed_command(repo_dir: Option<&Path>, token: Option<&str>) -> (Command, Vec<String>) {
     let mut command = base_command();
     let mut display: Vec<String> = Vec::new();
@@ -535,9 +567,9 @@ fn authed_command(repo_dir: Option<&Path>, token: Option<&str>) -> (Command, Vec
     if let Some(secret) = token {
         command
             .arg("-c")
-            .arg(format!("http.extraHeader=Authorization: Bearer {secret}"));
+            .arg(format!("http.extraHeader={}", basic_auth_header(secret)));
         display.push("-c".to_string());
-        display.push("http.extraHeader=Authorization: Bearer ***".to_string());
+        display.push("http.extraHeader=Authorization: Basic ***".to_string());
     }
     (command, display)
 }
@@ -569,11 +601,18 @@ pub fn sanitize(text: &str) -> String {
             }
         }
     }
-    // Backstop for `git -c http.extraHeader="Authorization: Bearer <token>"`
+    // Backstop for `Authorization: Bearer <token>` and `Authorization: Basic <base64>`
     // argv fragments: mask the secret, never the marker.
+    for marker in ["Bearer ", "Basic "] {
+        redact_after_marker(&mut out, marker);
+    }
+    out
+}
+
+fn redact_after_marker(out: &mut String, marker: &str) {
     let mut search_from = 0;
-    while let Some(rel) = out[search_from..].find("Bearer ") {
-        let secret_start = search_from + rel + "Bearer ".len();
+    while let Some(rel) = out[search_from..].find(marker) {
+        let secret_start = search_from + rel + marker.len();
         let rest = &out[secret_start..];
         let secret_len = rest
             .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
@@ -585,7 +624,6 @@ pub fn sanitize(text: &str) -> String {
         out.replace_range(secret_start..secret_start + secret_len, "***");
         search_from = secret_start + "***".len();
     }
-    out
 }
 
 pub fn log_records(repo_dir: &Path, rev: &str, limit: usize) -> Vec<LogRecord> {
@@ -641,6 +679,33 @@ mod tests {
         let clean = sanitize(url);
         assert!(!clean.contains("ghs_secret"), "{clean}");
         assert!(clean.contains("x-access-token:***@"), "{clean}");
+    }
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    /// GitHub's git endpoints reject `Bearer`; the header must be Basic.
+    #[test]
+    fn basic_auth_header_is_basic_and_hides_the_token() {
+        let header = basic_auth_header("gho_secret");
+        assert!(header.starts_with("Authorization: Basic "), "{header}");
+        assert!(!header.contains("gho_secret"), "raw token leaked: {header}");
+    }
+
+    #[test]
+    fn sanitize_redacts_basic_auth() {
+        let text = "git -c http.extraHeader=Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2hz_abc";
+        let clean = sanitize(text);
+        assert!(clean.contains("Basic ***"), "{clean}");
+        assert!(!clean.contains("eC1hY2Nlc3MtdG9rZW46Z2hz_abc"), "{clean}");
     }
 
     #[test]
