@@ -430,8 +430,11 @@ pub fn worktree_add(
     }
     // Persist LF behaviour for later git operations inside this
     // engine-owned worktree (checkout, commit, add). Never touches `repo_dir`.
-    let _ = run(worktree_dir, &["config", "core.autocrlf", "false"]);
-    let _ = run(worktree_dir, &["config", "core.eol", "lf"]);
+    // The `-c core.autocrlf=false -c core.eol=lf` flags above already produced an
+    // LF checkout, which is all the engine needs (it writes blob bytes and
+    // commits; it never re-checks out). Writing config here would land in the
+    // worktree's SHARED config, mutating the owner's repository when the worktree
+    // is created off the user's own clone — so it is deliberately not done.
     Ok(())
 }
 
