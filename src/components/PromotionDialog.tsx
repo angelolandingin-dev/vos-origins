@@ -17,7 +17,6 @@ import type {
   PromotionDelivery,
   PromotionDispatchResult,
   PromotionMode,
-  PromotionOnConflict,
   PromotionPreflight,
   SubsystemSummary,
   TargetBranchList,
@@ -49,8 +48,8 @@ export interface PromotionDialogProps {
   onBaseShaChange: (sha: string) => void;
   delivery: PromotionDelivery;
   onDeliveryChange: (delivery: PromotionDelivery) => void;
-  onConflict: PromotionOnConflict;
-  onOnConflictChange: (onConflict: PromotionOnConflict) => void;
+  message: string;
+  onMessageChange: (message: string) => void;
   dependencies: DependencyChange[];
   dependenciesLoading: boolean;
   preflight: PromotionPreflight | null;
@@ -68,7 +67,7 @@ export function PromotionDialog(props: PromotionDialogProps) {
   if (!props.open) return null;
   return (
     <PromotionDialogContent
-      key={JSON.stringify([props.sourceShas, props.targetBranch, props.delivery, props.onConflict])}
+      key={JSON.stringify([props.sourceShas, props.targetBranch, props.delivery])}
       {...props}
     />
   );
@@ -101,8 +100,8 @@ function PromotionDialogContent({
   onBaseShaChange,
   delivery,
   onDeliveryChange,
-  onConflict,
-  onOnConflictChange,
+  message,
+  onMessageChange,
   dependencies,
   dependenciesLoading,
   preflight,
@@ -135,6 +134,7 @@ function PromotionDialogContent({
     !dispatching &&
     acknowledged &&
     sourceShas.length > 0 &&
+    message.trim().length > 0 &&
     Boolean(subsystem) &&
     Boolean(selectedBranch?.allowed) &&
     (!cumulative || baseSha.trim().length > 0);
@@ -364,17 +364,18 @@ function PromotionDialogContent({
             </Field>
 
             <Field
-              label="On conflict"
-              hint="Fail stops the promotion. Take the subsystem's version applies it instead — the replaced paths are reported in the result."
+              label="Commit message"
+              required
+              hint="Becomes the promotion commit's message. The source commits are recorded underneath as provenance trailers."
             >
-              <Select
-                aria-label="On conflict"
-                value={onConflict}
-                onChange={(event) => onOnConflictChange(event.target.value as PromotionOnConflict)}
-                options={[
-                  { value: 'fail', label: 'Fail (recommended)' },
-                  { value: 'take_subsystem', label: "Take the subsystem's version" },
-                ]}
+              <textarea
+                className="input mt-1"
+                aria-label="Commit message"
+                rows={2}
+                required
+                value={message}
+                onChange={(event) => onMessageChange(event.target.value)}
+                placeholder="Promote hr-management a81f2c3..f12b301"
               />
             </Field>
 

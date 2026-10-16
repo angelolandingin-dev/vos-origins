@@ -76,8 +76,8 @@ export default function App() {
         onBaseShaChange={app.setPromotionBaseSha}
         delivery={app.promotion.delivery}
         onDeliveryChange={app.setPromotionDelivery}
-        onConflict={app.promotion.onConflict}
-        onOnConflictChange={app.setPromotionOnConflict}
+        message={app.promotion.message}
+        onMessageChange={app.setPromotionMessage}
         dependencies={app.promotion.dependencies}
         dependenciesLoading={app.promotion.dependenciesLoading}
         preflight={app.promotion.preflight}

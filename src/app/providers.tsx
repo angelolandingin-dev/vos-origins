@@ -41,6 +41,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     baseSha: '',
     delivery: 'local_direct',
     onConflict: 'fail',
+    message: '',
     dispatching: false,
     error: null,
     result: null,
@@ -97,6 +98,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       confirmationAcknowledged: false,
       delivery: promotion.delivery,
       onConflict: promotion.onConflict,
+      message: promotion.message,
     });
   }, [
     promotion.open,
@@ -106,6 +108,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.mode,
     promotion.baseSha,
     promotion.delivery,
+    promotion.message,
     promotion.onConflict,
   ]);
 
@@ -152,6 +155,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       baseSha: '',
       delivery: 'local_direct',
       onConflict: 'fail',
+      message: '',
       dispatching: false,
       error: null,
       result: null,
@@ -187,6 +191,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setPromotion((current) => ({ ...current, onConflict }));
   }, []);
 
+  const setPromotionMessage = useCallback((message: string) => {
+    setPromotion((current) => ({ ...current, message }));
+  }, []);
+
   const dispatchPromotion = useCallback(() => {
     if (!selectedSubsystemId) return;
     setPromotion((current) => ({ ...current, dispatching: true, error: null }));
@@ -200,6 +208,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         confirmationAcknowledged: true,
         delivery: promotion.delivery,
         onConflict: promotion.onConflict,
+        message: promotion.message,
       })
       .then((result) => {
         setPromotion((current) => ({ ...current, dispatching: false, result }));
@@ -236,6 +245,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.mode,
     promotion.baseSha,
     promotion.delivery,
+    promotion.message,
     promotion.onConflict,
     selectedSubsystemId,
     targetBranch,
@@ -284,6 +294,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionBaseSha,
       setPromotionDelivery,
       setPromotionOnConflict,
+      setPromotionMessage,
       dispatchPromotion,
     }),
     [
@@ -314,6 +325,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionBaseSha,
       setPromotionDelivery,
       setPromotionOnConflict,
+      setPromotionMessage,
       dispatchPromotion,
     ],
   );

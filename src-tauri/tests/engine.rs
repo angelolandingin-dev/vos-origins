@@ -557,6 +557,7 @@ fn promote(
         target_branch: options.target_branch,
         delivery: options.delivery,
         on_conflict: options.on_conflict,
+        message: "test promotion".to_string(),
     };
     let temp_root = sandbox_root();
     let engine_options = EngineOptions {
@@ -1531,6 +1532,7 @@ fn case15_duplicate_and_open_pr_are_blocked() {
         target_branch: "development".to_string(),
         delivery: PromotionDelivery::PushPr,
         on_conflict: PromotionOnConflict::Fail,
+        message: "test promotion".to_string(),
     };
     let temp_root = sandbox_root();
     let engine_options = EngineOptions {
@@ -1909,6 +1911,7 @@ fn oracle_finding9_pr_lookup_failure_is_distinct_from_already_open() {
         target_branch: "staging".to_string(),
         delivery: PromotionDelivery::PushPr,
         on_conflict: PromotionOnConflict::Fail,
+        message: "test promotion".to_string(),
     };
     let engine_options = EngineOptions {
         target_repo_dir: main.dir.clone(),
@@ -2316,6 +2319,7 @@ fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
             target_branch: "staging".to_string(),
             delivery: PromotionDelivery::Local,
             on_conflict: PromotionOnConflict::Fail,
+            message: "test promotion".to_string(),
         };
         let engine_options = EngineOptions {
             target_repo_dir: main2.dir.clone(),
@@ -2648,6 +2652,7 @@ fn local_direct_target_tip_moved_fails_closed() {
         target_branch: "staging".to_string(),
         delivery: PromotionDelivery::LocalDirect,
         on_conflict: PromotionOnConflict::Fail,
+        message: "test promotion".to_string(),
     };
     let engine_options = EngineOptions {
         target_repo_dir: main.dir.clone(),

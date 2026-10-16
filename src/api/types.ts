@@ -310,6 +310,12 @@ export interface PromotionRequest {
   delivery?: PromotionDelivery | null;
   /** Omitted ⇒ `fail`. */
   onConflict?: PromotionOnConflict | null;
+  /**
+   * The promotion commit's own message. Required: the engine refuses an empty
+   * one, so a multi-commit promotion is never labelled with only the last
+   * source commit's subject.
+   */
+  message: string;
 }
 
 /** Per-file mergeability from the `preflight_promotion` dry run (mirrors the Rust `PreflightOutcome`). */

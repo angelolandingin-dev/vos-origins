@@ -90,6 +90,8 @@ export interface PromotionState {
   baseSha: string;
   delivery: PromotionDelivery;
   onConflict: PromotionOnConflict;
+  /** The promotion commit's own message; required before a dispatch. */
+  message: string;
   dispatching: boolean;
   error: ApiError | null;
   result: PromotionDispatchResult | null;
@@ -142,6 +144,7 @@ export interface AppContextValue {
   setPromotionBaseSha: (sha: string) => void;
   setPromotionDelivery: (delivery: PromotionDelivery) => void;
   setPromotionOnConflict: (onConflict: PromotionOnConflict) => void;
+  setPromotionMessage: (message: string) => void;
   dispatchPromotion: () => void;
 }
 

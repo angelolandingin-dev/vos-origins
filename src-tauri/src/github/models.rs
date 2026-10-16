@@ -617,6 +617,11 @@ pub struct PromotionRequest {
     /// `"fail" | "take_subsystem"`; omitted ⇒ `fail`.
     #[serde(default)]
     pub on_conflict: PromotionOnConflict,
+    /// The promotion commit's own message. Required: the engine refuses an empty
+    /// one, so a multi-commit promotion is never labelled with only the last
+    /// source commit's subject.
+    #[serde(default)]
+    pub message: String,
 }
 
 /// Dry-run mergeability preflight (§9.2): per-file `clean` / `merged` /

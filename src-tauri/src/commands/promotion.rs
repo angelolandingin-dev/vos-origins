@@ -114,6 +114,7 @@ pub async fn dispatch_promotion(
         target_branch: request.target_branch.clone(),
         delivery,
         on_conflict: request.on_conflict,
+        message: request.message.clone(),
     };
     let is_push_pr = delivery == PromotionDelivery::PushPr;
     let local_dir_for_commands = target_repo_dir.clone();

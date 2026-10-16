@@ -69,6 +69,9 @@ pub struct EngineRequest {
     /// such path. Never bypasses path-safety, classification, dependency,
     /// lockfile, or NOOP guards.
     pub on_conflict: PromotionOnConflict,
+    /// The promotion commit's own message (required; an empty one is refused so
+    /// a multi-commit promotion is never labelled with only the last subject).
+    pub message: String,
 }
 
 impl EngineRequest {
@@ -89,6 +92,7 @@ impl EngineRequest {
             target_branch: target_branch.to_string(),
             delivery: PromotionDelivery::PushPr,
             on_conflict: PromotionOnConflict::Fail,
+            message: "test promotion".to_string(),
         }
     }
 }
@@ -209,7 +213,6 @@ struct ClassifiedEntry {
 struct VerifiedEntry {
     sha: String,
     base_sha: Option<String>,
-    subject: String,
     entries: Vec<git::DeltaEntry>,
 }
 
@@ -217,7 +220,6 @@ struct VerifiedEntry {
 struct PlannedEntry {
     sha: String,
     base_sha: Option<String>,
-    subject: String,
     entries: Vec<ClassifiedEntry>,
 }
 
@@ -499,7 +501,6 @@ fn run_inner(
         classified_plan.push(PlannedEntry {
             sha: planned.sha.clone(),
             base_sha: planned.base_sha.clone(),
-            subject: planned.subject.clone(),
             entries,
         });
     }
@@ -831,17 +832,23 @@ fn run_inner(
         return Err(Bail);
     }
 
-    let last_subject = classified_plan
-        .last()
-        .map(|p| p.subject.clone())
-        .unwrap_or_default();
+    // A promotion carries its own message so a multi-commit promotion is never
+    // labelled with only the last source commit's subject.
+    let subject = request.message.trim().to_string();
+    if subject.is_empty() {
+        report.blockers.push(Blocker::new(
+            "MESSAGE_REQUIRED",
+            "Give the promotion its own commit message; the source commits are recorded as provenance trailers.",
+        ));
+        return Err(Bail);
+    }
     let message = provenance::build_provenance_message(&provenance::ProvenanceInput {
         subsystem_id: &subsystem.id,
         source_repo: &subsystem.repository,
         source_commits: &request.commits,
         mode: request.mode.as_str(),
         target: &request.target_branch,
-        subject: &last_subject,
+        subject: &subject,
     });
     report.provenance_message = Some(message.clone());
     let message_file = options
@@ -1025,7 +1032,7 @@ fn run_inner(
         let pr_request = CreatePrRequest {
             head: branch_name.clone(),
             base: request.target_branch.clone(),
-            title: format!("integrate({}): {}", subsystem.id, last_subject),
+            title: format!("integrate({}): {}", subsystem.id, subject),
             body,
             draft: false,
         };
@@ -1309,11 +1316,9 @@ fn build_plan(
                 return Err(());
             }
         };
-        let subject = git::commit_subject(repo_dir, &endpoint);
         return Ok(vec![VerifiedEntry {
             sha: endpoint,
             base_sha: Some(base_sha),
-            subject,
             entries,
         }]);
     }
@@ -1358,7 +1363,6 @@ fn build_plan(
         plan.push(VerifiedEntry {
             sha: sha.clone(),
             base_sha: parent,
-            subject: git::commit_subject(repo_dir, sha),
             entries,
         });
     }
