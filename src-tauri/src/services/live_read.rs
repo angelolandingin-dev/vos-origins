@@ -904,6 +904,7 @@ struct SourceCommit {
     author_name: String,
     authored_at: String,
     committed_at: String,
+    committed_unix: i64,
     parents: Vec<String>,
     files_changed: u32,
     additions: u32,
@@ -981,7 +982,7 @@ fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<SourceCommit
             let _author_email = parts.next().unwrap_or("");
             let authored_at = parts.next().unwrap_or("").to_string();
             let committed_at = parts.next().unwrap_or("").to_string();
-            let _committed_unix = parts.next().unwrap_or("0");
+            let committed_unix = parts.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
             let subject = parts.next().unwrap_or("").to_string();
             let parents: Vec<String> = parents_raw.split_whitespace().map(str::to_string).collect();
             current = Some(SourceCommit {
@@ -990,6 +991,7 @@ fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<SourceCommit
                 author_name,
                 authored_at,
                 committed_at,
+                committed_unix,
                 parents,
                 files_changed: 0,
                 additions: 0,
@@ -1121,6 +1123,69 @@ fn classify_delta(
     }
 }
 
+/// Newest source commit that touches each path, as an index into the
+/// newest-first commit list — used to spot commits a later one already covers.
+fn latest_toucher_index(commits: &[SourceCommit]) -> HashMap<String, usize> {
+    let mut map: HashMap<String, usize> = HashMap::new();
+    for (index, commit) in commits.iter().enumerate() {
+        for (path, _, _) in &commit.deltas {
+            map.entry(path.clone()).or_insert(index);
+        }
+    }
+    map
+}
+
+/// True when every path this commit changes is also changed by a newer source
+/// commit: promoting it would only re-apply stale content.
+fn all_paths_superseded(
+    deltas: &[(String, String, char)],
+    latest: &HashMap<String, usize>,
+    index: usize,
+) -> bool {
+    !deltas.is_empty()
+        && deltas
+            .iter()
+            .all(|(path, _, _)| latest.get(path).is_some_and(|newer| *newer < index))
+}
+
+/// Epoch of the target branch's most recent change per path (bounded scan).
+/// Compared against a source commit's date it answers "which side is newer?".
+fn target_path_dates(target_dir: &Path, target_branch: &str) -> HashMap<String, i64> {
+    let mut map: HashMap<String, i64> = HashMap::new();
+    let Ok(out) = git::run(
+        target_dir,
+        &[
+            "log",
+            "--max-count=800",
+            "--format=\u{1e}%ct",
+            "--name-only",
+            target_branch,
+        ],
+    ) else {
+        return map;
+    };
+    if out.status != 0 {
+        return map;
+    }
+    for chunk in out.stdout_str().split('\u{1e}') {
+        let mut lines = chunk.lines();
+        let Some(epoch) = lines
+            .next()
+            .map(str::trim)
+            .and_then(|s| s.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        for path in lines {
+            let path = path.trim();
+            if !path.is_empty() {
+                map.entry(path.to_string()).or_insert(epoch);
+            }
+        }
+    }
+    map
+}
+
 /// `+`/`-` counts for the returned page only: `--numstat` across a whole history
 /// costs ~0.8s because it line-diffs every commit, while one `--no-walk` pass
 /// over page-sized input costs ~0.05s.
@@ -1187,6 +1252,8 @@ pub fn commit_page_live(
     }
     let target_blobs = target_blob_map(target_dir, &target_branch);
     let commits = parse_source_log(source_dir, &entry.source_branch)?;
+    let path_latest = latest_toucher_index(&commits);
+    let target_dates = target_path_dates(target_dir, &target_branch);
     let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
     let results = history::compute_branch_status(target_dir, &target_branch, &entry.id, &shas);
     let mut status_by_sha: HashMap<String, history::BranchStatusResult> = HashMap::new();
@@ -1204,7 +1271,7 @@ pub fn commit_page_live(
     }
     let search = query.search.trim().to_lowercase();
     let mut rows: Vec<CommitSummary> = Vec::new();
-    for commit in &commits {
+    for (index, commit) in commits.iter().enumerate() {
         if let Some(wanted) = query.shas.as_ref() {
             let hit = wanted
                 .iter()
@@ -1240,30 +1307,60 @@ pub fn commit_page_live(
             status.kind,
             CommitStatusKind::Eligible | CommitStatusKind::Unknown
         ) {
-            match classify_delta(&commit.deltas, &target_blobs) {
-                DeltaState::Applied => {
-                    status = CommitStatus::of(
-                        CommitStatusKind::Applied,
-                        &target_branch,
-                        Some(
-                            "Every file this commit changes is already identical on the target branch; there is nothing to promote."
-                                .to_string(),
-                        ),
-                        None,
-                    );
+            if all_paths_superseded(&commit.deltas, &path_latest, index) {
+                status = CommitStatus::of(
+                    CommitStatusKind::Superseded,
+                    &target_branch,
+                    Some(
+                        "A newer commit on the source branch changes the same files; promoting this one would re-apply stale content."
+                            .to_string(),
+                    ),
+                    None,
+                );
+            } else {
+                match classify_delta(&commit.deltas, &target_blobs) {
+                    DeltaState::Applied => {
+                        status = CommitStatus::of(
+                            CommitStatusKind::Applied,
+                            &target_branch,
+                            Some(
+                                "Every file this commit changes is already identical on the target branch; there is nothing to promote."
+                                    .to_string(),
+                            ),
+                            None,
+                        );
+                    }
+                    DeltaState::Divergent => {
+                        // Which side is newer decides whether taking the
+                        // subsystem's version is an update or a regression.
+                        let target_is_newer = commit
+                            .deltas
+                            .iter()
+                            .filter(|(path, blob, kind)| {
+                                *kind == 'A'
+                                    && target_blobs
+                                        .get(path)
+                                        .is_some_and(|current| current != blob)
+                            })
+                            .any(|(path, _, _)| {
+                                target_dates
+                                    .get(path)
+                                    .is_some_and(|epoch| *epoch > commit.committed_unix)
+                            });
+                        let detail = if target_is_newer {
+                            "This commit adds a file the target already has, and the target's copy was changed more recently - taking the subsystem's version would revert newer work."
+                        } else {
+                            "This commit adds a file the target already has; the subsystem's copy is newer, so taking the subsystem's version would be an update."
+                        };
+                        status = CommitStatus::of(
+                            CommitStatusKind::Divergent,
+                            &target_branch,
+                            Some(detail.to_string()),
+                            None,
+                        );
+                    }
+                    DeltaState::Pending => {}
                 }
-                DeltaState::Divergent => {
-                    status = CommitStatus::of(
-                        CommitStatusKind::Divergent,
-                        &target_branch,
-                        Some(
-                            "This commit adds a file the target branch already has with different content; applying an add over an existing file is not possible."
-                                .to_string(),
-                        ),
-                        None,
-                    );
-                }
-                DeltaState::Pending => {}
             }
         }
         if let Some(filter) = query.status_filter {

@@ -38,6 +38,7 @@ const STATUS_FILTER_OPTIONS: Array<{ value: CommitStatusKind | 'all'; label: str
   { value: 'integrated', label: 'Integrated' },
   { value: 'applied', label: 'Already applied' },
   { value: 'divergent', label: 'Divergent' },
+  { value: 'superseded', label: 'Superseded' },
   { value: 'reverted', label: 'Reverted' },
   { value: 'blocked', label: 'Blocked' },
   { value: 'failed', label: 'Failed' },
@@ -89,6 +90,8 @@ function dotClassFor(commit: CommitSummary): string {
       return 'bg-teal-400 ring-teal-400/30';
     case 'divergent':
       return 'bg-amber-400 ring-amber-400/30';
+    case 'superseded':
+      return 'bg-slate-500 ring-slate-500/30';
     case 'reverted':
       return 'bg-slate-400 ring-slate-400/30';
     case 'blocked':

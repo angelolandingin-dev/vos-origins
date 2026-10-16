@@ -16,6 +16,7 @@ export type CommitStatusKind =
   | 'integrated'
   | 'applied'
   | 'divergent'
+  | 'superseded'
   | 'reverted'
   | 'blocked'
   | 'failed'

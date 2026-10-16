@@ -8,6 +8,7 @@ import {
   Eye,
   GitMerge,
   GitPullRequestArrow,
+  History,
   LoaderCircle,
   SquareCheck,
   TriangleAlert,
@@ -87,6 +88,13 @@ const APPEARANCE: Record<CommitStatusKind, Appearance> = {
     icon: TriangleAlert,
     meaning:
       'This commit adds a file the target branch already has with different content; an add cannot be applied over an existing file.',
+  },
+  superseded: {
+    label: 'Superseded',
+    className: 'bg-slate-900/70 text-slate-400 ring-1 ring-inset ring-slate-700',
+    icon: History,
+    meaning:
+      'A newer commit on the source branch changes the same files; promoting this one would re-apply stale content.',
   },
   reverted: {
     label: 'Reverted',
