@@ -417,8 +417,8 @@ export function AppShell({
       </main>
 
       {notice ? (
-        <div className="pointer-events-none fixed right-4 bottom-4 z-50 w-96 max-w-[calc(100vw-2rem)]">
-          <div className="pointer-events-auto flex items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2 text-xs text-fg animate-fade-in">
+        <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex justify-end">
+          <div className="pointer-events-auto flex max-w-[20rem] items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2 text-xs text-fg animate-fade-in">
             <p className="min-w-0 flex-1 truncate" title={notice.title}>
               <span className="font-semibold">{notice.title}</span>
               {notice.message ? <span className="text-muted"> — {notice.message}</span> : null}

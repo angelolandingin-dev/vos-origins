@@ -131,49 +131,45 @@ export function Dashboard() {
       </div>
 
       <div className="scroll-area min-h-0 flex-1 space-y-4 p-5">
-        <Panel
-          title="Status overview"
-          className="w-fit min-w-[280px]"
-          bodyClassName="overflow-x-auto"
-        >
-          {counts.loading && (counts.data?.length ?? 0) === 0 ? (
-            <LoadingState label="Counting statuses…" />
-          ) : counts.error ? (
-            <ErrorState error={counts.error} onRetry={counts.reload} compact />
-          ) : (
-            <table className="w-full border-separate border-spacing-0 text-xs">
-              <thead>
-                <tr className="table-head">
-                  <th scope="col" className="py-2 pl-4 text-left">
-                    Status
-                  </th>
-                  <th scope="col" className="py-2 pr-4 text-right">
-                    Commits
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {(counts.loading
-                  ? COUNTED
-                  : COUNTED.filter((entry) => (totals[entry.key] ?? 0) > 0)
-                ).map((entry) => (
-                  <tr key={entry.key} className="row-hover border-b border-line">
-                    <td className="h-[29px] py-0 pl-4">
-                      <StatusBadge kind={entry.key} label={entry.label} />
-                    </td>
-                    <td className="mono py-0 pr-4 text-right text-fg tabular-nums">
-                      {counts.loading ? '—' : (totals[entry.key] ?? 0)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Panel>
-
         <div className="grid gap-4 xl:grid-cols-3">
+          <Panel title="Status overview" className="min-w-0" bodyClassName="overflow-x-auto">
+            {counts.loading && (counts.data?.length ?? 0) === 0 ? (
+              <LoadingState label="Counting statuses…" />
+            ) : counts.error ? (
+              <ErrorState error={counts.error} onRetry={counts.reload} compact />
+            ) : (
+              <table className="w-full border-separate border-spacing-0 text-xs">
+                <thead>
+                  <tr className="table-head">
+                    <th scope="col" className="py-2 pl-4 text-left">
+                      Status
+                    </th>
+                    <th scope="col" className="py-2 pr-4 text-right">
+                      Commits
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(counts.loading
+                    ? COUNTED
+                    : COUNTED.filter((entry) => (totals[entry.key] ?? 0) > 0)
+                  ).map((entry) => (
+                    <tr key={entry.key} className="row-hover border-b border-line">
+                      <td className="h-[29px] py-0 pl-4">
+                        <StatusBadge kind={entry.key} label={entry.label} />
+                      </td>
+                      <td className="mono py-0 pr-4 text-right text-fg tabular-nums">
+                        {counts.loading ? '—' : (totals[entry.key] ?? 0)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Panel>
+
           <Panel
-            className="xl:col-span-2"
+            className="min-w-0 xl:col-span-2"
             title="Registered subsystems"
             actions={
               <Button
@@ -254,9 +250,11 @@ export function Dashboard() {
               </table>
             )}
           </Panel>
+        </div>
 
+        <div className="grid gap-4 xl:grid-cols-2">
           <Panel
-            className="xl:col-span-2"
+            className="min-w-0"
             title="Recent promotion runs"
             subtitle="Runs started by this tool"
             actions={
@@ -318,6 +316,7 @@ export function Dashboard() {
           </Panel>
 
           <Panel
+            className="min-w-0"
             title="Latest target activity"
             subtitle={`Integration events reachable from ${app.targetBranch}`}
             actions={

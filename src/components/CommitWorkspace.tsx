@@ -75,9 +75,12 @@ function CommitWorkspaceView() {
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [pageSize, setPageSize] = useState(10);
   // Closed by default below the compact breakpoint, where the panel renders as an
-  // overlay that would cover the tab bar and half the workspace on arrival.
-  const [detailsVisible, setDetailsVisible] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches,
+  // overlay that would cover the tab bar and half the workspace on arrival. Uses
+  // the same query (and the same guard) as the panel's own `isWide` derivation.
+  const [detailsVisible, setDetailsVisible] = useState(() =>
+    typeof window === 'undefined' || typeof window.matchMedia !== 'function'
+      ? true
+      : window.matchMedia('(min-width: 1280px)').matches,
   );
   const [sourceTab, setSourceTab] = useState<SourceTab>('commits');
 

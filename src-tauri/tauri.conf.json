@@ -36,7 +36,7 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Commit-selective, branch-scoped subsystem promotion",
-    "longDescription": "Desktop application for promoting explicitly selected, already-approved subsystem commits into a chosen branch of the main-system repository. The tool performs the promotion itself: it builds an integration branch from the target tip, applies only the selected commit deltas, regenerates the lockfile, and opens an integration pull request instead of pushing directly. It adds no files to the target repositories.",
+    "longDescription": "Desktop application for promoting explicitly selected, already-approved subsystem commits into a chosen branch of the main-system repository. The tool performs the promotion itself: it copies the selected files' subsystem content onto the target branch in your local clone, merges the manifest dependency changes, regenerates the lockfile, and records a provenance commit. Pushing and opening a pull request are an explicit opt-in, and a direct push to a protected branch is never performed. It adds no files to the target repositories.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

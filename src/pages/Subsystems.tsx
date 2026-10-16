@@ -357,11 +357,6 @@ export function Subsystems() {
               {app.selectedSubsystem?.connectivityMessage ? (
                 <SubsystemWarning message={app.selectedSubsystem.connectivityMessage} />
               ) : null}
-
-              <p className="rounded-md border border-line bg-surface p-2.5 text-[11px] leading-relaxed text-muted">
-                The subsystem registry lives in the tool — manage it under{' '}
-                <span className="mono">Settings → Main system registry</span>.
-              </p>
             </aside>
 
             <CommitWorkspace />
