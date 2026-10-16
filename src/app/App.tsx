@@ -12,14 +12,20 @@ import { WorkflowRuns } from '../pages/WorkflowRuns';
 import { useApp } from './context';
 
 /** Shell + active screen + the app-level promotion dialog shared by multiple screens. */
+let fixtureNoticeShown = false;
+
 export default function App() {
   const app = useApp();
   const { route, pushNotice } = app;
   const authStatus = app.auth.data;
 
-  // A fixture-mode banner must be visible exactly once per session start.
+  // A fixture-mode banner must be visible exactly once per session start. The
+  // module-level flag survives the dev server's double-invoked mount, which
+  // otherwise shows the banner twice.
   useEffect(() => {
     if (authStatus?.dataSource !== 'fixture') return;
+    if (fixtureNoticeShown) return;
+    fixtureNoticeShown = true;
     pushNotice({
       tone: 'info',
       title: 'Fixture data mode',

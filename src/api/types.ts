@@ -527,7 +527,7 @@ export interface RegistrySubsystem {
 export interface RegistryPromotionPolicy {
   allowedTargetBranches: string[];
   allowedTargetBranchPatterns: string[];
-  /** Always true: the engine only ever opens an integration PR, never a direct push. */
+  /** True only for `push_pr`; a local delivery never opens a pull request. */
   requirePullRequest: boolean;
 }
 

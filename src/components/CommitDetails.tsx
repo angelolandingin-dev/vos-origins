@@ -9,7 +9,6 @@ import {
   GitFork,
   GitPullRequestArrow,
   Package,
-  ShieldAlert,
   TriangleAlert,
 } from 'lucide-react';
 
@@ -394,16 +393,6 @@ export function CommitDetailsPanel({
           >
             View Full Diff
           </Button>
-
-          <div className="rounded-md border border-line bg-raised p-2.5">
-            <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
-              <ShieldAlert
-                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-unknown"
-                aria-hidden="true"
-              />
-              Promotion opens an integration PR — never a direct push.
-            </p>
-          </div>
 
           <dl className="rounded-md border border-line bg-raised px-3 py-1">
             <KeyValue label="Target branch">{targetBranch}</KeyValue>
