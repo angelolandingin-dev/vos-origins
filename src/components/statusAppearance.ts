@@ -87,7 +87,7 @@ const APPEARANCE: Record<CommitStatusKind, Appearance> = {
     className: 'bg-amber-900/60 text-amber-200 ring-1 ring-inset ring-amber-700/60',
     icon: TriangleAlert,
     meaning:
-      "The main system's copies of every file this commit changes were themselves changed more recently; promoting would revert newer work.",
+      "The main system's copies of every source file this commit changes were themselves changed more recently; promoting would revert newer work. Dependency manifest and lockfile paths are exempt — they are merged or regenerated.",
   },
   superseded: {
     label: 'Superseded',

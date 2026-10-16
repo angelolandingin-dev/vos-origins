@@ -1114,6 +1114,20 @@ fn latest_toucher_index(commits: &[SourceCommit]) -> HashMap<String, usize> {
     map
 }
 
+/// Paths the engine never writes wholesale: the manifest is merged as a
+/// dependency delta and lockfiles are regenerated, so recency must not treat
+/// them as "the target is newer". The engine does not support `bun` lockfiles.
+fn is_dependency_path(path: &str) -> bool {
+    matches!(
+        path.rsplit('/').next().unwrap_or(path),
+        "package.json"
+            | "package-lock.json"
+            | "npm-shrinkwrap.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+    )
+}
+
 /// True when every one of these paths is also changed by a newer source commit,
 /// so promoting the older commit would only re-apply stale content.
 fn all_superseded(paths: &[&String], latest: &HashMap<String, usize>, index: usize) -> bool {
@@ -1293,6 +1307,14 @@ pub fn commit_page_live(
                 .map(|(path, _, _)| path)
                 .filter(|path| source_tree.get(*path) != target_blobs.get(*path))
                 .collect();
+            // Manifest and lockfile paths are delta-merged or regenerated, never
+            // written wholesale (spec §6.4/§7), so a newer copy on the target does
+            // not invalidate this commit — reconciliation decides those.
+            let recency_paths: Vec<&String> = out_of_sync
+                .iter()
+                .copied()
+                .filter(|path| !is_dependency_path(path))
+                .collect();
             if out_of_sync.is_empty() {
                 status = CommitStatus::of(
                     CommitStatusKind::Applied,
@@ -1313,16 +1335,18 @@ pub fn commit_page_live(
                     ),
                     None,
                 );
-            } else if out_of_sync.iter().all(|path| {
-                target_dates
-                    .get(*path)
-                    .is_some_and(|epoch| *epoch > commit.committed_unix)
-            }) {
+            } else if !recency_paths.is_empty()
+                && recency_paths.iter().all(|path| {
+                    target_dates
+                        .get(*path)
+                        .is_some_and(|epoch| *epoch > commit.committed_unix)
+                })
+            {
                 status = CommitStatus::of(
                     CommitStatusKind::Divergent,
                     &target_branch,
                     Some(
-                        "The target branch's copies of every file this commit changes were themselves changed more recently; promoting would revert newer work."
+                        "The target branch's copies of every source file this commit changes were themselves changed more recently; promoting would revert newer work. (Dependency manifest and lockfile paths are exempt — they are merged or regenerated.)"
                             .to_string(),
                     ),
                     None,
