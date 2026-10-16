@@ -1,5 +1,6 @@
 import {
   Ban,
+  CheckCheck,
   CircleCheck,
   CircleHelp,
   CircleX,
@@ -9,6 +10,7 @@ import {
   GitPullRequestArrow,
   LoaderCircle,
   SquareCheck,
+  TriangleAlert,
   Undo2,
   type LucideIcon,
 } from 'lucide-react';
@@ -71,6 +73,20 @@ const APPEARANCE: Record<CommitStatusKind, Appearance> = {
     icon: GitMerge,
     meaning:
       'Recorded by a reachable integration commit on this target branch and not subsequently reverted.',
+  },
+  applied: {
+    label: 'Already applied',
+    className: 'bg-teal-950/70 text-teal-300 ring-1 ring-inset ring-teal-800/70',
+    icon: CheckCheck,
+    meaning:
+      'Every file this commit changes already has identical content on the target branch — there is nothing to promote.',
+  },
+  divergent: {
+    label: 'Divergent',
+    className: 'bg-amber-900/60 text-amber-200 ring-1 ring-inset ring-amber-700/60',
+    icon: TriangleAlert,
+    meaning:
+      'The target branch already contains a different version of at least one of these files; promoting would overwrite it.',
   },
   reverted: {
     label: 'Reverted',

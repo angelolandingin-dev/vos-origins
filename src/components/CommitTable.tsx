@@ -36,6 +36,8 @@ const STATUS_FILTER_OPTIONS: Array<{ value: CommitStatusKind | 'all'; label: str
   { value: 'pr_open', label: 'PR open' },
   { value: 'in_review', label: 'In review' },
   { value: 'integrated', label: 'Integrated' },
+  { value: 'applied', label: 'Already applied' },
+  { value: 'divergent', label: 'Divergent' },
   { value: 'reverted', label: 'Reverted' },
   { value: 'blocked', label: 'Blocked' },
   { value: 'failed', label: 'Failed' },
@@ -83,6 +85,10 @@ function dotClassFor(commit: CommitSummary): string {
     case 'pr_open':
     case 'in_review':
       return 'bg-violet-400 ring-violet-400/30';
+    case 'applied':
+      return 'bg-teal-400 ring-teal-400/30';
+    case 'divergent':
+      return 'bg-amber-400 ring-amber-400/30';
     case 'reverted':
       return 'bg-slate-400 ring-slate-400/30';
     case 'blocked':

@@ -909,6 +909,9 @@ struct SourceCommit {
     additions: u32,
     deletions: u32,
     touches_manifest: bool,
+    /// `(path, post-commit blob sha, status char)` per changed path — the blob
+    /// ids let us compare content against the target branch without a new diff.
+    deltas: Vec<(String, String, char)>,
 }
 
 fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<SourceCommit>> {
@@ -923,7 +926,7 @@ fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<SourceCommit
             "log",
             &format!("--max-count={MAX_SOURCE_COMMITS}"),
             &fmt,
-            "--numstat",
+            "--raw",
             branch,
         ],
     )
@@ -947,10 +950,10 @@ fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<SourceCommit
         )
         .with_remedy("Confirm the subsystem sourceBranch exists and is readable."));
     }
-    // `git log --numstat` interleaves one format header per commit with its
-    // numstat rows. Headers always contain FIELD separators; numstat rows
-    // never do, so scan line-wise instead of splitting on REC (the record
-    // marker trails the header, while its numstat rows follow on later lines).
+    // `git log --raw` interleaves one format header per commit with its raw
+    // change rows. Headers always contain FIELD separators; change rows never
+    // do, so scan line-wise instead of splitting on REC, and keep each commit's
+    // blob ids for the content-level classification below.
     let text = out.stdout_str();
     let mut commits: Vec<SourceCommit> = Vec::new();
     let mut current: Option<SourceCommit> = None;
@@ -992,29 +995,34 @@ fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<SourceCommit
                 additions: 0,
                 deletions: 0,
                 touches_manifest: false,
+                deltas: Vec::new(),
             });
         } else if let Some(commit) = current.as_mut() {
+            // `--raw` row: `:<old_mode> <new_mode> <old_sha> <new_sha> <status>\t<path>`.
             let row = line.trim();
-            if row.is_empty() {
+            let Some((meta, path)) = row.split_once('\t') else {
                 continue;
-            }
-            let mut cols = row.split('\t');
-            let adds = cols.next().unwrap_or("");
-            let dels = cols.next().unwrap_or("");
-            let path = cols.next().unwrap_or("");
-            if path.is_empty() {
+            };
+            let mut cols = meta.split(' ');
+            let (Some(_old_mode), Some(_new_mode), Some(_old_sha), Some(new_sha), Some(status)) = (
+                cols.next(),
+                cols.next(),
+                cols.next(),
+                cols.next(),
+                cols.next(),
+            ) else {
                 continue;
-            }
+            };
+            let Some(kind) = status.chars().next() else {
+                continue;
+            };
             commit.files_changed += 1;
-            if adds != "-" {
-                commit.additions += adds.parse::<u32>().unwrap_or(0);
-            }
-            if dels != "-" {
-                commit.deletions += dels.parse::<u32>().unwrap_or(0);
-            }
             if path == "package.json" || path.ends_with("/package.json") {
                 commit.touches_manifest = true;
             }
+            commit
+                .deltas
+                .push((path.to_string(), new_sha.to_string(), kind));
         }
     }
     flush(&mut current, &mut commits);
@@ -1050,6 +1058,105 @@ fn promotion_note_for(status: &CommitStatus) -> Option<String> {
     }
 }
 
+/// `path -> blob sha` at the target branch tip, in one call. Blob ids are
+/// content-addressed, so equal ids mean byte-identical files.
+fn target_blob_map(target_dir: &Path, target_branch: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Ok(out) = git::run(target_dir, &["ls-tree", "-r", target_branch]) else {
+        return map;
+    };
+    if out.status != 0 {
+        return map;
+    }
+    for line in out.stdout_str().lines() {
+        let Some((meta, path)) = line.split_once('\t') else {
+            continue;
+        };
+        if let Some(sha) = meta.split(' ').nth(2) {
+            map.insert(path.to_string(), sha.to_string());
+        }
+    }
+    map
+}
+
+/// How a commit's delta relates to the target branch's current content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeltaState {
+    /// Every changed path is already identical in the target.
+    Applied,
+    /// At least one changed path exists in the target with different content.
+    Divergent,
+    /// Nothing matching yet — safe to promote.
+    Pending,
+}
+
+fn classify_delta(
+    deltas: &[(String, String, char)],
+    target: &HashMap<String, String>,
+) -> DeltaState {
+    let (mut applied, mut divergent, mut pending) = (0usize, 0usize, 0usize);
+    for (path, new_blob, kind) in deltas {
+        match (kind, target.get(path)) {
+            ('D', None) => applied += 1,
+            ('D', Some(_)) => pending += 1,
+            (_, None) => pending += 1,
+            (_, Some(blob)) if blob == new_blob => applied += 1,
+            (_, Some(_)) => divergent += 1,
+        }
+    }
+    if divergent > 0 {
+        DeltaState::Divergent
+    } else if pending == 0 && applied > 0 {
+        DeltaState::Applied
+    } else {
+        DeltaState::Pending
+    }
+}
+
+/// `+`/`-` counts for the returned page only: `--numstat` across a whole history
+/// costs ~0.8s because it line-diffs every commit, while one `--no-walk` pass
+/// over page-sized input costs ~0.05s.
+fn numstat_totals(repo_dir: &Path, shas: &[&str]) -> HashMap<String, (u32, u32)> {
+    let mut map = HashMap::new();
+    if shas.is_empty() {
+        return map;
+    }
+    let mut args: Vec<String> = vec![
+        "log".to_string(),
+        "--no-walk".to_string(),
+        "--numstat".to_string(),
+        "--format=%x1e%H".to_string(),
+    ];
+    args.extend(shas.iter().map(|sha| (*sha).to_string()));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let Ok(out) = git::run(repo_dir, &refs) else {
+        return map;
+    };
+    if out.status != 0 {
+        return map;
+    }
+    for chunk in out.stdout_str().split('\u{1e}') {
+        let mut lines = chunk.lines();
+        let Some(sha) = lines.next().map(str::trim).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let (mut adds, mut dels) = (0u32, 0u32);
+        for row in lines {
+            let mut cols = row.trim().split('\t');
+            let (Some(add), Some(del), Some(path)) = (cols.next(), cols.next(), cols.next()) else {
+                continue;
+            };
+            if path.is_empty() {
+                continue;
+            }
+            adds += add.parse::<u32>().unwrap_or(0);
+            dels += del.parse::<u32>().unwrap_or(0);
+        }
+        map.insert(sha.to_string(), (adds, dels));
+    }
+    map
+}
+
 /// Live commit page from the source repo, with per-commit status for the
 /// selected target branch.
 pub fn commit_page_live(
@@ -1070,6 +1177,7 @@ pub fn commit_page_live(
             "branch does not exist in the target checkout",
         ));
     }
+    let target_blobs = target_blob_map(target_dir, &target_branch);
     let commits = parse_source_log(source_dir, &entry.source_branch)?;
     let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
     let results = history::compute_branch_status(target_dir, &target_branch, &entry.id, &shas);
@@ -1118,6 +1226,38 @@ pub fn commit_page_live(
                 status = open_pr_status(pr, &target_branch);
             }
         }
+        // Content-level truth: a trailer only records that the tool integrated a
+        // SHA, so also compare this commit's blobs against the target tip.
+        if matches!(
+            status.kind,
+            CommitStatusKind::Eligible | CommitStatusKind::Unknown
+        ) {
+            match classify_delta(&commit.deltas, &target_blobs) {
+                DeltaState::Applied => {
+                    status = CommitStatus::of(
+                        CommitStatusKind::Applied,
+                        &target_branch,
+                        Some(
+                            "Every file this commit changes is already identical on the target branch; there is nothing to promote."
+                                .to_string(),
+                        ),
+                        None,
+                    );
+                }
+                DeltaState::Divergent => {
+                    status = CommitStatus::of(
+                        CommitStatusKind::Divergent,
+                        &target_branch,
+                        Some(
+                            "The target branch already has a different version of at least one of these files; promoting would overwrite it."
+                                .to_string(),
+                        ),
+                        None,
+                    );
+                }
+                DeltaState::Pending => {}
+            }
+        }
         if let Some(filter) = query.status_filter {
             if status.kind != filter {
                 continue;
@@ -1156,11 +1296,19 @@ pub fn commit_page_live(
     let page_size = query.page_size.clamp(5, 200);
     let page = query.page.max(1);
     let start = ((page - 1) * page_size) as usize;
-    let paged: Vec<CommitSummary> = rows
+    let mut paged: Vec<CommitSummary> = rows
         .into_iter()
         .skip(start)
         .take(page_size as usize)
         .collect();
+    let page_shas: Vec<&str> = paged.iter().map(|row| row.sha.as_str()).collect();
+    let stats = numstat_totals(source_dir, &page_shas);
+    for row in &mut paged {
+        if let Some((adds, dels)) = stats.get(&row.sha) {
+            row.additions = *adds;
+            row.deletions = *dels;
+        }
+    }
     Ok(CommitPage {
         target_branch,
         source_branch: entry.source_branch.clone(),

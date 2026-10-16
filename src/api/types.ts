@@ -14,6 +14,8 @@ export type CommitStatusKind =
   | 'pr_open'
   | 'in_review'
   | 'integrated'
+  | 'applied'
+  | 'divergent'
   | 'reverted'
   | 'blocked'
   | 'failed'
