@@ -24,12 +24,34 @@ pub async fn get_auth_status(state: State<'_, AppState>) -> AppResult<AuthStatus
         crate::github::models::DataSource::Live
     };
 
+    // Live mode must report the tool-local registry (the real source of truth), not the fixture adapter.
+    let (main_repository, registry_branch, workflow_file) = if live_read::use_fixtures() {
+        (
+            adapter.main_repository.clone(),
+            adapter.registry_branch.clone(),
+            adapter.workflow_file.clone(),
+        )
+    } else {
+        match live_read::load_live_registry() {
+            Ok(registry) => (
+                registry.main_repository.clone(),
+                "(tool-local)".to_string(),
+                "(none; the tool opens the PR)".to_string(),
+            ),
+            Err(_) => (
+                adapter.main_repository.clone(),
+                adapter.registry_branch.clone(),
+                adapter.workflow_file.clone(),
+            ),
+        }
+    };
+
     Ok(gh_cli::auth_status(
         probe,
         data_source,
-        &adapter.main_repository,
-        &adapter.registry_branch,
-        &adapter.workflow_file,
+        &main_repository,
+        &registry_branch,
+        &workflow_file,
         fixtures::NAMESPACE,
         fixtures::now_rfc3339(),
     ))

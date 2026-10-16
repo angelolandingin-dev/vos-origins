@@ -103,9 +103,6 @@ export function Settings() {
                 <KeyValue label="Main repository">
                   <span className="mono">{status?.mainRepository}</span>
                 </KeyValue>
-                <KeyValue label="Registry branch">
-                  <span className="mono">{status?.registryBranch}</span>
-                </KeyValue>
                 <KeyValue label="Registry entries">{app.subsystems.data?.length ?? 0}</KeyValue>
                 <KeyValue label="Data source">
                   <span

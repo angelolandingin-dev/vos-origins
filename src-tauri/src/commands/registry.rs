@@ -162,7 +162,10 @@ pub async fn get_registry() -> AppResult<RegistrySnapshot> {
 
 /// Validates fail-closed, then writes the tool-local override (`%APPDATA%`). Never touches a repo.
 #[tauri::command]
-pub async fn save_registry(config: Registry) -> AppResult<RegistrySnapshot> {
+pub async fn save_registry(
+    state: State<'_, AppState>,
+    config: Registry,
+) -> AppResult<RegistrySnapshot> {
     let path = Registry::app_data_override_path().ok_or_else(|| {
         AppError::new(
             ErrorCode::Internal,
@@ -201,6 +204,9 @@ pub async fn save_registry(config: Registry) -> AppResult<RegistrySnapshot> {
         )
         .with_remedy("Check permissions for the user configuration directory.")
     })?;
+
+    // A changed main repository invalidates every cached read.
+    state.cache.clear();
 
     registry_snapshot()
 }
