@@ -488,7 +488,6 @@ export type ApiErrorCode =
   | 'duplicate_registration'
   | 'rate_limited'
   | 'offline'
-  | 'workflow_dispatch_rejected'
   | 'patch_conflict'
   | 'dependency_conflict'
   | 'ci_failure'
