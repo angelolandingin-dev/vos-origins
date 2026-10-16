@@ -455,18 +455,29 @@ fn evaluate_path_copy(
     let base_norm_opt = base_opt.as_ref().map(|b| normalised(b));
     let ours_norm_opt = ours_opt.as_ref().map(|b| normalised(b));
 
-    // Gap refusal (content-aware, same rule as the engine): a skipped SHA
-    // touching this path with a material (non-undone) effect conflicts unless
-    // allowGaps. Undone effects (newest == oldest base) skip harmlessly.
+    // Gap refusal (content-aware, same corrected rule as the engine): a
+    // skipped SHA touching this path conflicts only when the newest selected
+    // toucher of this path is a proper DESCENDANT of that skipped SHA
+    // (shared `blobset::skipped_ships_through` — smuggling needs ancestry)
+    // with a material (non-undone) effect, unless allowGaps. Undone effects
+    // (newest == oldest base) skip harmlessly.
     if !allow_gaps {
         if let Some(touchers) = skipped_touch.get(rel_path) {
             if !touchers.is_empty() {
-                let newest_blob = newest_toucher
-                    .get(rel_path)
-                    .and_then(|s| blobset::tree_blob_map(source_dir, s).get(rel_path).cloned());
-                let oldest_blob = oldest_tree.get(rel_path).cloned();
-                if newest_blob != oldest_blob {
+                let Some(newest_sha) = newest_toucher.get(rel_path) else {
                     return PreflightOutcome::Conflict;
+                };
+                let smuggles = touchers
+                    .iter()
+                    .any(|s| blobset::skipped_ships_through(source_dir, s, newest_sha));
+                if smuggles {
+                    let newest_blob = newest_toucher
+                        .get(rel_path)
+                        .and_then(|s| blobset::tree_blob_map(source_dir, s).get(rel_path).cloned());
+                    let oldest_blob = oldest_tree.get(rel_path).cloned();
+                    if newest_blob != oldest_blob {
+                        return PreflightOutcome::Conflict;
+                    }
                 }
             }
         }

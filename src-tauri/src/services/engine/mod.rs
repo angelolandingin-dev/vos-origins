@@ -895,12 +895,15 @@ fn run_inner(
     }
 
     // --- Non-contiguous gap refusal (§2, content-aware) --------------------
-    // Selecting [B, D] while skipping C silently ships C's edits to any path
-    // both touch, because D's blob already contains them. For each touched
-    // path, if a skipped SHA between the selected commits touches the same
-    // path AND blob(newest selected toucher) != blob(oldest selected base),
-    // the skip is material and we refuse. A path whose effect is fully undone
-    // (newest == oldest base) skips harmlessly without an override.
+    // Selecting [B, D] while skipping C can silently ship C's edits to a path
+    // both touch, because the shipped blob already contains them. For each
+    // touched path, a skipped SHA counts only when the newest selected commit
+    // touching that path is a proper DESCENDANT of the skipped SHA
+    // (`is_ancestor(skip, newest_toucher)` — smuggling needs ancestry) AND
+    // blob(newest selected toucher) != blob(oldest selected base). A path
+    // whose effect is fully undone (newest == oldest base) skips harmlessly
+    // without an override. Shared predicate:
+    // `blobset::skipped_ships_through` (also used by preflight).
     if request.mode == PromotionMode::Individual && verified_plan.len() > 1 && !request.allow_gaps {
         if let (Some(oldest_b), Some(newest_sha)) = (
             oldest_base.as_deref(),
@@ -959,7 +962,12 @@ fn run_inner(
                         }
                     }
                 }
-                // Material gaps only.
+                // Material gaps only: a skipped SHA counts against a path only
+                // when the newest selected toucher of that path is a proper
+                // descendant of the skipped SHA (smuggling needs ancestry —
+                // the skipped bytes must be inside a blob that actually
+                // ships). Plus the undone-effect rule: newest blob ==
+                // oldest-base blob skips harmlessly.
                 let mut gap_paths: Vec<String> = Vec::new();
                 let mut gap_shas: Vec<String> = Vec::new();
                 for path in &apply_paths {
@@ -967,6 +975,24 @@ fn run_inner(
                         continue;
                     };
                     if touchers.is_empty() {
+                        continue;
+                    }
+                    let Some(newest_sha) = newest_toucher.get(path) else {
+                        continue;
+                    };
+                    // Ancestry filter: keep only skipped SHAs the newest
+                    // toucher descends from.
+                    let smuggling: Vec<&String> = touchers
+                        .iter()
+                        .filter(|s| {
+                            crate::services::engine::blobset::skipped_ships_through(
+                                &options.target_repo_dir,
+                                s,
+                                newest_sha,
+                            )
+                        })
+                        .collect();
+                    if smuggling.is_empty() {
                         continue;
                     }
                     let newest_blob = newest_toucher.get(path).and_then(|sha| {
@@ -980,7 +1006,7 @@ fn run_inner(
                     let oldest_blob = oldest_tree.get(path).cloned();
                     if newest_blob != oldest_blob {
                         gap_paths.push(path.clone());
-                        for s in touchers {
+                        for s in smuggling {
                             if !gap_shas.contains(s) {
                                 gap_shas.push(s.clone());
                             }
@@ -1034,7 +1060,8 @@ fn run_inner(
                             continue;
                         }
                         // Only keep skipped SHAs that touch an apply path with a
-                        // material (non-undone) effect — same content-aware rule.
+                        // material (non-undone) effect AND ancestry — same
+                        // corrected rule (shared predicate).
                         let touched: Vec<String> =
                             match git::name_status_delta(&options.target_repo_dir, &sha) {
                                 Ok((_, entries)) => {
@@ -1050,9 +1077,20 @@ fn run_inner(
                                 }
                                 Err(_) => Vec::new(),
                             };
+                        let skipped_sha = sha.clone();
                         let mut material = false;
                         for p in touched {
                             if !apply_paths.contains(&p) {
+                                continue;
+                            }
+                            let Some(newest_sha) = newest_toucher.get(&p) else {
+                                continue;
+                            };
+                            if !crate::services::engine::blobset::skipped_ships_through(
+                                &options.target_repo_dir,
+                                &skipped_sha,
+                                newest_sha,
+                            ) {
                                 continue;
                             }
                             let newest_blob = newest_toucher.get(&p).and_then(|s| {
@@ -1070,7 +1108,7 @@ fn run_inner(
                             }
                         }
                         if material {
-                            gap_override_shas.push(sha);
+                            gap_override_shas.push(skipped_sha);
                         }
                     }
                 }
@@ -2198,6 +2236,22 @@ fn stage_into_own_worktree(
     // The stage must contain exactly the promotion's paths: anything else
     // means something raced the promotion into the index.
     let expected: HashSet<String> = written.union(&deleted).cloned().collect();
+    if let Err(blocker) = check_staged_matches(repo, &expected) {
+        rollback_worktree_stage(repo, target_tip, &written, &deleted);
+        return Err(blocker);
+    }
+
+    let mut staged_paths: Vec<String> = expected.into_iter().collect();
+    staged_paths.sort();
+    Ok(staged_paths)
+}
+
+/// Verify the index contains exactly `expected` after staging. Returns the
+/// staged set on match, else a blocker that NAMES the extra/missing paths
+/// (§9, second addendum E): a bare `ENGINE_ERROR` reads as tool breakage.
+/// Extracted so tests can fire it by behaviour (stage an extra file, call
+/// this, assert the error names it) — the promotion path above calls it too.
+fn check_staged_matches(repo: &Path, expected: &HashSet<String>) -> Result<(), Blocker> {
     let staged = match git::run(repo, &["diff", "--cached", "--name-only", "-z"]) {
         Ok(out) if out.status == 0 => out
             .stdout
@@ -2206,7 +2260,6 @@ fn stage_into_own_worktree(
             .map(|s| String::from_utf8_lossy(s).to_string())
             .collect::<HashSet<_>>(),
         _ => {
-            rollback_worktree_stage(repo, target_tip, &written, &deleted);
             return Err(Blocker::new(
                 "ENGINE_ERROR",
                 format!(
@@ -2216,16 +2269,13 @@ fn stage_into_own_worktree(
             ));
         }
     };
-    if staged != expected {
-        rollback_worktree_stage(repo, target_tip, &written, &deleted);
-        // Name the mismatch (§9): a bare ENGINE_ERROR reads as tool breakage.
-        // Compute extra (staged but not expected) and missing (expected but
-        // not staged) so the operator sees exactly what raced the index.
-        let extra: Vec<String> = staged.difference(&expected).cloned().collect();
-        let mut extra_sorted = extra.clone();
+    if staged != *expected {
+        // Name the mismatch: extra (staged but not expected) and missing
+        // (expected but not staged) so the operator sees exactly what raced
+        // the index.
+        let mut extra_sorted: Vec<String> = staged.difference(expected).cloned().collect();
         extra_sorted.sort();
-        let missing: Vec<String> = expected.difference(&staged).cloned().collect();
-        let mut missing_sorted = missing.clone();
+        let mut missing_sorted: Vec<String> = expected.difference(&staged).cloned().collect();
         missing_sorted.sort();
         return Err(Blocker::new(
             "STAGED_MISMATCH",
@@ -2237,10 +2287,7 @@ fn stage_into_own_worktree(
             ),
         ));
     }
-
-    let mut staged_paths: Vec<String> = expected.into_iter().collect();
-    staged_paths.sort();
-    Ok(staged_paths)
+    Ok(())
 }
 
 fn write_repo_file(repo: &Path, worktree_dir: &Path, rel: &str) -> Result<(), String> {
@@ -2684,5 +2731,76 @@ mod tests {
                 "a".repeat(12)
             )
         );
+    }
+
+    /// `STAGED_MISMATCH` fires by behaviour (second addendum E): inject an
+    /// extra staged file alongside a missing expected path and assert the
+    /// produced error names both. Same helper the promotion path calls.
+    #[test]
+    fn staged_mismatch_names_extra_and_missing_paths() {
+        use std::collections::HashSet;
+        use std::process::Command;
+
+        let dir = std::env::temp_dir().join(format!(
+            "vos-staged-mismatch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .expect("spawn git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "master"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "T"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("keep.txt"), "keep\n").expect("write");
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "--no-verify",
+            "-q",
+            "-m",
+            "base",
+        ]);
+        // Expected set: keep.txt (staged) + missing.txt (never staged).
+        // Inject: stage an extra file the promotion never wrote.
+        std::fs::write(dir.join("keep.txt"), "keep\n").expect("write");
+        std::fs::write(dir.join("extra.txt"), "injected race\n").expect("write");
+        git(&["add", "--", "keep.txt", "extra.txt"]);
+        let mut expected = HashSet::new();
+        expected.insert("keep.txt".to_string());
+        expected.insert("missing.txt".to_string());
+        let err = check_staged_matches(&dir, &expected).expect_err("must mismatch");
+        assert_eq!(err.code, "STAGED_MISMATCH", "{err:?}");
+        assert!(
+            err.message.contains("extra.txt"),
+            "must name the extra staged path: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("missing.txt"),
+            "must name the missing path: {}",
+            err.message
+        );
+        assert_ne!(err.code, "ENGINE_ERROR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

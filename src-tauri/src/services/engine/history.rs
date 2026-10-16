@@ -1,20 +1,19 @@
 //! Integration history from Git ancestry (spec §8): no ledger.
 //! Status comes from reachable trailers + open PRs; reverts restore correctly.
 //!
-//! Fail-closed posture (addendum E):
-//! 1. Squash strips all trailers → never infer `Eligible`/`Integrated` from
-//!    the absence of trailers; fail closed to `Unknown / needs verification`
-//!    (see `branch_result_to_status` in `live_read`, which verifies trailers
-//!    on the claimed commit and never falls back to `Eligible`).
-//! 2. Reverts may be invisible hand-reverts (no canonical `Revert "…"` line,
-//!    trailers stripped) → decide divergence by blob/content comparison only
-//!    (the engine's `TARGET_DIVERGED` membership check). Message parsing here
-//!    is a hint, never a verdict.
-//! 3. History is deeper than the 800-commit scan and dates may be skewed → a
-//!    truncated scan that finds no hit is `Unknown` plus the truncation flag,
-//!    never `Integrated`. Dates determine display order (deterministic
-//!    timestamp-then-SHA sort in `build_plan`), never correctness — blob
-//!    membership decides.
+//! Posture notes (second addendum C — describing what the code does):
+//! `compute_branch_status` returns `Eligible` when no trailer record exists
+//! for a SHA. That behaviour is kept: the broader flip to `Unknown` would
+//! break the normal squash flow, and `collect_events` already cannot emit
+//! `Integrated` without both `Subsystem-ID` and `Source-Commit` trailers, so
+//! a trailerless false-`Integrated` is unproducible. What the code DOES do:
+//! a claimed `Integrated` whose commit lacks those trailers is reported as
+//! `Unknown / needs verification` (see `branch_result_to_status` in
+//! `live_read`), never `Eligible`.
+//! Reverts may be invisible hand-reverts → divergence is decided by
+//! blob/content comparison in the engine (`TARGET_DIVERGED`); message parsing
+//! here is a hint, never a verdict. Dates determine display order
+//! (deterministic timestamp-then-SHA sort in `build_plan`), never correctness.
 
 use std::collections::HashMap;
 use std::path::Path;

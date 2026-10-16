@@ -16,6 +16,27 @@ use std::path::Path;
 
 use super::git;
 
+/// Smuggling predicate shared by the engine (`mod.rs`) and the preflight
+/// (`preflight.rs`) — one helper, two call sites, so preview and apply cannot
+/// disagree (second addendum A).
+///
+/// A skipped SHA counts against a path only when the newest *selected* commit
+/// touching that path is a proper **descendant** of the skipped SHA:
+/// `is_ancestor(skipped, newest_toucher) && skipped != newest_toucher`.
+/// Smuggling requires the skipped bytes to be inside a blob that actually
+/// ships, which needs ancestry. Counter-example: chain `A→B→C→D`, select
+/// `[B, D]`, `C` touches `P`, `D` touches only `Q` — writing `P` comes from
+/// `B`, which predates `C`, so nothing of `C` ships to `P` and there is no
+/// gap on `P`. True positives are unaffected, including merge-second-parent
+/// shapes: when the newest toucher descends from the skip, the skip's bytes
+/// can be in the shipped blob and the refusal still fires.
+pub fn skipped_ships_through(repo_dir: &Path, skipped_sha: &str, newest_toucher_sha: &str) -> bool {
+    if skipped_sha == newest_toucher_sha {
+        return false;
+    }
+    git::is_ancestor(repo_dir, skipped_sha, newest_toucher_sha)
+}
+
 /// Blob ID for `rev:path`, or `None` when the path is absent at `rev`.
 /// Uses `ls-tree` plumbing so paths with spaces are safe (no `rev:path`
 /// shell splitting — argv is explicit).
@@ -261,5 +282,25 @@ mod tests {
         assert_eq!(sets["b.txt"].len(), 1, "{:?}", sets["b.txt"]);
         // a.txt changed: 2 members.
         assert_eq!(sets["a.txt"].len(), 2, "{:?}", sets["a.txt"]);
+    }
+
+    #[test]
+    fn skipped_ships_only_through_descendants() {
+        let repo = tmp("ancestry");
+        init(&repo);
+        write(&repo, "p.txt", "a\n");
+        let _a = commit(&repo, "A base");
+        write(&repo, "p.txt", "b\n");
+        let b = commit(&repo, "B");
+        write(&repo, "p.txt", "c\n");
+        let c = commit(&repo, "C");
+        write(&repo, "p.txt", "d\n");
+        let d = commit(&repo, "D");
+        // Newest toucher D descends from C → smuggles.
+        assert!(skipped_ships_through(&repo, &c, &d));
+        // Newest toucher B predates C → cannot ship C's bytes.
+        assert!(!skipped_ships_through(&repo, &c, &b));
+        // Self is never smuggling.
+        assert!(!skipped_ships_through(&repo, &c, &c));
     }
 }

@@ -190,6 +190,12 @@ export interface CommitPage {
   commits: CommitSummary[];
   fetchedAt: string;
   dataSource: DataSource;
+  /**
+   * True when the path-date scan hit its limit, so ordering may be incomplete.
+   * The backend turns this into an `Unknown` status plus a note; the UI reads the
+   * note rather than the flag, but the type must match the wire.
+   */
+  pathDatesTruncated: boolean;
 }
 
 export interface CommitQuery {

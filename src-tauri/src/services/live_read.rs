@@ -553,7 +553,7 @@ fn branch_result_to_status(
             CommitStatusKind::Eligible,
             queried_branch,
             Some(format!(
-                "Reachable from the protected source branch. No successful integration found for {queried_branch}."
+                "Reachable from the protected source branch. No successful integration found for {queried_branch}. Trailers absent — a squash-merge strips them; the content labels Applied / Divergent are the cross-check."
             )),
             None,
         ),

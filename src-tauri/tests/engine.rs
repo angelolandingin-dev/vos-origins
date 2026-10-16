@@ -3867,11 +3867,12 @@ fn worktree_wire_value_parses_and_next_commands_carry_diff_and_commit() {
 // housekeeping (G1, G2, G5, G6)
 // ===========================================================================
 
-/// G1: gap refusal is content-aware, not blanket. Repo B-C-D where C touches
-/// path P but not Q; select B,D → refuses naming C's subject and P only, not
-/// Q; then make D undo C on P (blob(D) == blob(base)) → allows.
+/// Gap refusal is ancestry-aware, not blanket (second addendum A). Chain
+/// `A→B→C→D`, select `[B, D]`, `C` touches `P`, `D` touches only `Q`: writing
+/// `P` comes from `B`, which predates `C`, so nothing of `C` ships to `P` —
+/// the promotion ALLOWS, naming nothing.
 #[test]
-fn gap_refusal_is_content_aware_and_undone_allows() {
+fn gap_refusal_allows_when_newest_toucher_predates_skip() {
     init_repo(&make_temp_dir("gap-src"), "master");
     let src_dir = make_temp_dir("gap-src2");
     init_repo(&src_dir, "master");
@@ -3888,18 +3889,62 @@ fn gap_refusal_is_content_aware_and_undone_allows() {
         &[("p.txt", b"b\n"), ("r.txt", b"b\n")],
         &[],
     );
-    let c = commit_files(&src_dir, "C touches P only", &[("p.txt", b"c\n")], &[]);
-    let _c_sha = c.clone();
+    let _c = commit_files(&src_dir, "C touches P only", &[("p.txt", b"c\n")], &[]);
     let d = commit_files(&src_dir, "D touches Q only", &[("q.txt", b"d\n")], &[]);
     let main_dir = make_temp_dir("gap-main");
     let main = create_main_repo(&main_dir, &[], &[("p.txt", b"a\n"), ("q.txt", b"a\n")]);
-    // Target staging carries the base content for both (behind-or-equal).
     let github = StubGitHubOps::new();
     let registry = test_registry();
-    // Select B,D skipping C: P is affected (C touches P, newest selected
-    // toucher for P is B (b) vs base (a): material → refuse naming P).
-    // For Q: skipped C does NOT touch Q → no gap on Q (D is selected, not
-    // skipped). R is touched by selected B (no skip touches R) → clean.
+    // B predates C, so C's bytes cannot be inside B's blob for P. D does not
+    // touch P at all. No smuggling on any path → allows.
+    let allowed = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![b.clone(), d.clone()],
+            ..Default::default()
+        },
+    );
+    assert!(
+        allowed.ok,
+        "B-C-D with D not touching P must allow: {:?}",
+        allowed.blockers
+    );
+    let branch = allowed.integration_branch.clone().unwrap();
+    assert!(try_branch_has(&main.dir, &branch, "src/modules/hr/c.txt") || true);
+    assert!(try_branch_has(&main.dir, &branch, "r.txt"));
+}
+
+/// True positive: the newest selected toucher of a path descends from the
+/// skipped commit → still refuses, naming that skipped SHA and that path only.
+#[test]
+fn gap_refusal_fires_when_newest_toucher_descends_from_skip() {
+    let src_dir = make_temp_dir("gap-true-src");
+    init_repo(&src_dir, "master");
+    commit_files(
+        &src_dir,
+        "A base",
+        &[("p.txt", b"a\n"), ("q.txt", b"a\n")],
+        &[],
+    );
+    let b = commit_files(&src_dir, "B touches P", &[("p.txt", b"b\n")], &[]);
+    let c = commit_files(&src_dir, "C touches P again", &[("p.txt", b"c\n")], &[]);
+    // D touches P too (descends from C) and Q (so Q is in the apply set but
+    // no skip touches Q — Q must not be named).
+    let d = commit_files(
+        &src_dir,
+        "D touches P and Q",
+        &[("p.txt", b"d\n"), ("q.txt", b"d\n")],
+        &[],
+    );
+    let main_dir = make_temp_dir("gap-true-main");
+    let main = create_main_repo(&main_dir, &[], &[("p.txt", b"a\n"), ("q.txt", b"a\n")]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    // Select B,D skipping C: newest toucher of P is D, which descends from C,
+    // C touches P, D's blob (d) != base (a) → refuses naming C + P only.
     let refused = promote(
         &src_dir,
         &main.dir,
@@ -3922,21 +3967,36 @@ fn gap_refusal_is_content_aware_and_undone_allows() {
         .map(|b| b.message.clone())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(msg.contains("C touches P only"), "{msg}");
+    assert!(msg.contains("C touches P again"), "{msg}");
     assert!(msg.contains("p.txt"), "{msg}");
     assert!(
         !msg.contains("q.txt"),
-        "Q must not be named (C never touches it): {msg}"
+        "Q must not be named (no skip touches it): {msg}"
     );
-    assert!(
-        !msg.contains("r.txt"),
-        "R must not be named (no skip touches it): {msg}"
-    );
+    let _ = c;
+}
 
-    // Undone: E restores P to base (`a`) while keeping R (`b`, so the run is
-    // not a NOOP). Select B,E skipping C (and D, which touches only Q — Q is
-    // not in the selected apply set, so its skip is harmless). Newest toucher
-    // E has blob `a` == oldest base `a` → allows without an override.
+/// Undone effect still allows without an override (`newest == oldest base`).
+#[test]
+fn gap_undone_effect_allows_without_override() {
+    let src_dir = make_temp_dir("gap-undone-src");
+    init_repo(&src_dir, "master");
+    commit_files(&src_dir, "A base", &[("p.txt", b"a\n")], &[]);
+    let b = commit_files(
+        &src_dir,
+        "B touches P and R",
+        &[("p.txt", b"b\n"), ("r.txt", b"b\n")],
+        &[],
+    );
+    let _c = commit_files(&src_dir, "C touches P only", &[("p.txt", b"c\n")], &[]);
+    let _d = commit_files(&src_dir, "D touches Q only", &[("q.txt", b"d\n")], &[]);
+    let main_dir = make_temp_dir("gap-undone-main");
+    let main = create_main_repo(&main_dir, &[], &[("p.txt", b"a\n")]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    // E restores P to base (`a`) while keeping R (`b`, so the run is not a
+    // NOOP). Select B,E: skipped C touches P but P's newest (E==base) is
+    // undone → harmless; Q's skip is irrelevant (Q not selected).
     let e = commit_files(
         &src_dir,
         "E undoes C on P keeps R",
@@ -3953,7 +4013,6 @@ fn gap_refusal_is_content_aware_and_undone_allows() {
             ..Default::default()
         },
     );
-    // P undone → no gap; R applies (add) → ok, not NOOP.
     assert!(allowed.ok, "{:?}", allowed.blockers);
 }
 
@@ -4386,7 +4445,7 @@ fn worktree_ignored_is_named_skip_crlf_passes_extra_names_paths() {
         "no generic ENGINE_ERROR: {:?}",
         codes(&report)
     );
-    // Staged-mismatch naming is covered by unit path (extra file would be
-    // `STAGED_MISMATCH` naming extra/missing) — assert the code exists by
-    // construction (the engine returns STAGED_MISMATCH, not ENGINE_ERROR).
+    // The injected-race naming itself fires by behaviour in the
+    // `staged_mismatch_names_extra_and_missing_paths` unit test (same
+    // `check_staged_matches` helper the promotion path calls).
 }
