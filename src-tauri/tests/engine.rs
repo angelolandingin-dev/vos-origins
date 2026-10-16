@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use subsystem_integration_manager_lib::github::models::PromotionDelivery;
 use subsystem_integration_manager_lib::github::models::PromotionMode;
+use subsystem_integration_manager_lib::github::models::PromotionOnConflict;
 use subsystem_integration_manager_lib::services::engine::apply::{
     apply_file_delta, ApplyConflict, ApplyOptions,
 };
@@ -519,6 +520,7 @@ struct PromoteOptions {
     create_pr: bool,
     real_lockfile: bool,
     delivery: PromotionDelivery,
+    on_conflict: PromotionOnConflict,
 }
 
 impl Default for PromoteOptions {
@@ -535,6 +537,7 @@ impl Default for PromoteOptions {
             create_pr: true,
             real_lockfile: false,
             delivery: PromotionDelivery::PushPr,
+            on_conflict: PromotionOnConflict::Fail,
         }
     }
 }
@@ -553,6 +556,7 @@ fn promote(
         base_sha: options.base_sha,
         target_branch: options.target_branch,
         delivery: options.delivery,
+        on_conflict: options.on_conflict,
     };
     let temp_root = sandbox_root();
     let engine_options = EngineOptions {
@@ -1533,6 +1537,7 @@ fn case15_duplicate_and_open_pr_are_blocked() {
         base_sha: None,
         target_branch: "development".to_string(),
         delivery: PromotionDelivery::PushPr,
+        on_conflict: PromotionOnConflict::Fail,
     };
     let temp_root = sandbox_root();
     let engine_options = EngineOptions {
@@ -1910,6 +1915,7 @@ fn oracle_finding9_pr_lookup_failure_is_distinct_from_already_open() {
         base_sha: None,
         target_branch: "staging".to_string(),
         delivery: PromotionDelivery::PushPr,
+        on_conflict: PromotionOnConflict::Fail,
     };
     let engine_options = EngineOptions {
         target_repo_dir: main.dir.clone(),
@@ -2357,6 +2363,7 @@ fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
             base_sha: None,
             target_branch: "staging".to_string(),
             delivery: PromotionDelivery::Local,
+            on_conflict: PromotionOnConflict::Fail,
         };
         let engine_options = EngineOptions {
             target_repo_dir: main2.dir.clone(),
@@ -2782,6 +2789,676 @@ fn plain_modify_over_different_content_still_three_way_merges() {
         "no update may be reported for a merge: {:?}",
         report.changes
     );
+}
+
+// ===========================================================================
+// Conflict policy (on_conflict) + whitespace-only auto-resolution
+// ===========================================================================
+
+use subsystem_integration_manager_lib::services::engine::preflight::{
+    compute_preflight, PreflightOutcome as Mergeability, PreflightReport as EnginePreflight,
+    PreflightRequest,
+};
+
+fn probe_preflight(
+    source: &Path,
+    target: &Path,
+    commits: Vec<String>,
+    on_conflict: PromotionOnConflict,
+) -> EnginePreflight {
+    let registry = test_registry();
+    let scratch = make_temp_dir("probe-scratch");
+    let request = PreflightRequest {
+        policy: &registry.subsystems[0].integration_policy,
+        commits: &commits,
+        mode: PromotionMode::Individual,
+        base_sha: None,
+        target_branch: "staging",
+        on_conflict,
+    };
+    let report = compute_preflight(source, target, &request, &scratch).expect("preflight computes");
+    let _ = std::fs::remove_dir_all(&scratch);
+    report
+}
+
+fn probe_outcome(report: &EnginePreflight, path: &str) -> Mergeability {
+    report
+        .files
+        .iter()
+        .find(|f| f.path == path)
+        .unwrap_or_else(|| panic!("{path} missing from preflight"))
+        .outcome
+}
+
+fn write_main_with_layout(dir: &Path, layout: &[u8]) {
+    init_repo(dir, "master");
+    write(dir, "package.json", BASE_MAIN_PKG.as_bytes());
+    write(dir, "package-lock.json", LOCKFILE.as_bytes());
+    write(dir, "src/app/layout.tsx", layout);
+    commit_all(dir, "main: base");
+    git_out(dir, &["branch", "staging"]);
+}
+
+const LAYOUT_BASE: &[u8] = b"export default function RootLayout() {\nreturn (\n<html>\n<body>\n<p>hello</p>\n</body>\n</html>\n);\n}\n";
+const LAYOUT_TARGET_2SP: &[u8] = b"export default function RootLayout() {\n  return (\n    <html>\n      <body>\n        <p>hello</p>\n      </body>\n    </html>\n  );\n}\n";
+const LAYOUT_SOURCE_8SP: &[u8] = b"export default function RootLayout() {\n        return (\n                <html>\n                        <body>\n                                <p>hello</p>\n                        </body>\n                </html>\n        );\n}\n";
+
+#[test]
+fn conflict_whitespace_reindent_keeps_target_bytes() {
+    let src_dir = make_temp_dir("src-ws");
+    let main_dir = make_temp_dir("main-ws");
+
+    init_repo(&src_dir, "master");
+    commit_files(
+        &src_dir,
+        "A: layout baseline",
+        &[("src/app/layout.tsx", LAYOUT_BASE)],
+        &[],
+    );
+    // The subsystem re-indents the whole file AND adds an unrelated file, so
+    // the promotion is not a NOOP even though the layout merge is a no-op.
+    let c = commit_files(
+        &src_dir,
+        "C: re-indent layout + new file",
+        &[
+            ("src/app/layout.tsx", LAYOUT_SOURCE_8SP),
+            ("src/app/new.txt", b"fresh\n"),
+        ],
+        &[],
+    );
+
+    write_main_with_layout(&main_dir, LAYOUT_BASE);
+    commit_message_on_branch(
+        &main_dir,
+        "staging",
+        "staging: own 2-space indent",
+        &[("src/app/layout.tsx", LAYOUT_TARGET_2SP)],
+        &[],
+    );
+
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let report = promote(
+        &src_dir,
+        &main_dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![c.clone()],
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    assert!(
+        report.changes.conflict_taken.is_empty(),
+        "whitespace-only must not count as policy-taken: {:?}",
+        report.changes
+    );
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file(&main_dir, &branch, "src/app/layout.tsx"),
+        LAYOUT_TARGET_2SP,
+        "the target's bytes (2-space indent) are preserved verbatim"
+    );
+    assert_eq!(
+        branch_file_text(&main_dir, &branch, "src/app/new.txt"),
+        "fresh\n"
+    );
+
+    // Preflight agrees under both policies: no conflict either way.
+    for policy in [
+        PromotionOnConflict::Fail,
+        PromotionOnConflict::TakeSubsystem,
+    ] {
+        let probe = probe_preflight(&src_dir, &main_dir, vec![c.clone()], policy);
+        assert_eq!(probe.conflict, 0, "{policy:?}: {probe:?}");
+        assert_eq!(
+            probe_outcome(&probe, "src/app/layout.tsx"),
+            Mergeability::Clean
+        );
+    }
+}
+
+const IMPORT_BASE: &[u8] =
+    b"import React from 'react';\nimport { A } from './a';\nexport const x = 1;\n";
+const IMPORT_TARGET: &[u8] =
+    b"import React from 'react';\nimport { A, B, C } from './a';\nexport const x = 1;\n";
+const IMPORT_SOURCE: &[u8] =
+    b"import React from 'react';\nimport { A, B } from './a';\nexport const x = 1;\n";
+
+#[test]
+fn conflict_import_union_fail_vs_take() {
+    let build = || {
+        let src_dir = make_temp_dir("src-union");
+        let main_dir = make_temp_dir("main-union");
+        init_repo(&src_dir, "master");
+        commit_files(
+            &src_dir,
+            "A: base",
+            &[("src/app/layout.tsx", IMPORT_BASE)],
+            &[],
+        );
+        let c = commit_files(
+            &src_dir,
+            "C: extend the import",
+            &[("src/app/layout.tsx", IMPORT_SOURCE)],
+            &[],
+        );
+        write_main_with_layout(&main_dir, IMPORT_BASE);
+        commit_message_on_branch(
+            &main_dir,
+            "staging",
+            "staging: extend the import further",
+            &[("src/app/layout.tsx", IMPORT_TARGET)],
+            &[],
+        );
+        (src_dir, main_dir, c)
+    };
+
+    // Default policy: a real content difference in one hunk stays a conflict.
+    let (src_dir, main_dir, c) = build();
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let refused = promote(
+        &src_dir,
+        &main_dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![c.clone()],
+            ..Default::default()
+        },
+    );
+    assert!(!refused.ok);
+    assert!(
+        codes(&refused).contains(&"PATCH_CONFLICT".to_string()),
+        "{:?}",
+        codes(&refused)
+    );
+    let blocker = refused
+        .blockers
+        .iter()
+        .find(|b| b.code == "PATCH_CONFLICT")
+        .expect("PATCH_CONFLICT blocker");
+    assert_eq!(
+        blocker.details.as_deref(),
+        Some("merge-conflict"),
+        "{blocker:?}"
+    );
+    let probe = probe_preflight(
+        &src_dir,
+        &main_dir,
+        vec![c.clone()],
+        PromotionOnConflict::Fail,
+    );
+    assert_eq!(probe.conflicts, vec!["src/app/layout.tsx".to_string()]);
+    assert_eq!(
+        probe_outcome(&probe, "src/app/layout.tsx"),
+        Mergeability::Conflict
+    );
+
+    // take_subsystem: the file equals the subsystem's content and is reported.
+    let (src_dir, main_dir, c) = build();
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let taken = promote(
+        &src_dir,
+        &main_dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![c.clone()],
+            on_conflict: PromotionOnConflict::TakeSubsystem,
+            ..Default::default()
+        },
+    );
+    assert!(taken.ok, "{:?}", taken.blockers);
+    let branch = taken.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file(&main_dir, &branch, "src/app/layout.tsx"),
+        IMPORT_SOURCE,
+        "the subsystem's version wins byte-for-byte"
+    );
+    assert_eq!(
+        taken.changes.conflict_taken,
+        vec!["src/app/layout.tsx".to_string()]
+    );
+    assert!(
+        taken
+            .warnings
+            .iter()
+            .any(|w| w.code == "conflict_taken_from_subsystem"
+                && w.message.contains("src/app/layout.tsx")),
+        "a dedicated finding must list the replaced path: {:?}",
+        taken.warnings
+    );
+    let probe = probe_preflight(
+        &src_dir,
+        &main_dir,
+        vec![c.clone()],
+        PromotionOnConflict::TakeSubsystem,
+    );
+    assert_eq!(probe.conflict, 0, "{probe:?}");
+    assert_eq!(
+        probe_outcome(&probe, "src/app/layout.tsx"),
+        Mergeability::Merged
+    );
+}
+
+#[test]
+fn conflict_delete_vs_diverge_take_deletes() {
+    let build = || {
+        let src_dir = make_temp_dir("src-deldiv");
+        let main_dir = make_temp_dir("main-deldiv");
+        init_repo(&src_dir, "master");
+        commit_files(&src_dir, "A: base", &[("src/gone.txt", b"v1\n")], &[]);
+        git_out(&src_dir, &["rm", "-q", "src/gone.txt"]);
+        git_out(
+            &src_dir,
+            &[
+                "-c",
+                "user.name=Sandbox Bot",
+                "-c",
+                "user.email=sandbox-bot@example.com",
+                "commit",
+                "--no-verify",
+                "-q",
+                "-m",
+                "C: delete gone.txt",
+            ],
+        );
+        let c = sha(&src_dir, "HEAD");
+        init_repo(&main_dir, "master");
+        write(&main_dir, "package.json", BASE_MAIN_PKG.as_bytes());
+        write(&main_dir, "package-lock.json", LOCKFILE.as_bytes());
+        write(&main_dir, "src/gone.txt", b"v1\n");
+        commit_all(&main_dir, "main: base");
+        git_out(&main_dir, &["branch", "staging"]);
+        commit_message_on_branch(
+            &main_dir,
+            "staging",
+            "staging: diverge gone.txt",
+            &[("src/gone.txt", b"v2-target\n")],
+            &[],
+        );
+        (src_dir, main_dir, c)
+    };
+
+    let (src_dir, main_dir, c) = build();
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let refused = promote(
+        &src_dir,
+        &main_dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![c.clone()],
+            ..Default::default()
+        },
+    );
+    assert!(!refused.ok);
+    let blocker = refused
+        .blockers
+        .iter()
+        .find(|b| b.code == "PATCH_CONFLICT")
+        .expect("PATCH_CONFLICT blocker");
+    assert_eq!(
+        blocker.details.as_deref(),
+        Some("delete-diverge"),
+        "{blocker:?}"
+    );
+    let probe = probe_preflight(
+        &src_dir,
+        &main_dir,
+        vec![c.clone()],
+        PromotionOnConflict::Fail,
+    );
+    assert_eq!(
+        probe_outcome(&probe, "src/gone.txt"),
+        Mergeability::Conflict
+    );
+
+    let (src_dir, main_dir, c) = build();
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let taken = promote(
+        &src_dir,
+        &main_dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![c.clone()],
+            on_conflict: PromotionOnConflict::TakeSubsystem,
+            ..Default::default()
+        },
+    );
+    assert!(taken.ok, "{:?}", taken.blockers);
+    let branch = taken.integration_branch.clone().unwrap();
+    assert!(
+        !try_branch_has(&main_dir, &branch, "src/gone.txt"),
+        "the subsystem's deletion wins"
+    );
+    assert_eq!(
+        taken.changes.conflict_taken,
+        vec!["src/gone.txt".to_string()]
+    );
+    let probe = probe_preflight(
+        &src_dir,
+        &main_dir,
+        vec![c.clone()],
+        PromotionOnConflict::TakeSubsystem,
+    );
+    assert_eq!(probe.conflict, 0, "{probe:?}");
+    assert_eq!(probe_outcome(&probe, "src/gone.txt"), Mergeability::Merged);
+}
+
+#[test]
+fn conflict_add_over_existing_take_overwrites_refused_add() {
+    let build = || {
+        let src_dir = make_temp_dir("src-takeadd");
+        let main_dir = make_temp_dir("main-takeadd");
+        init_repo(&src_dir, "master");
+        commit_files_dated(
+            &src_dir,
+            "A: base",
+            &[("package.json", b"{\"name\":\"hr-management\"}\n".as_slice())],
+            "2020-01-01T00:00:00+00:00",
+        );
+        let add = commit_files_dated(
+            &src_dir,
+            "B: add shared file",
+            &[("src/shared.txt", b"subsystem older version\n".as_slice())],
+            "2020-02-01T00:00:00+00:00",
+        );
+        init_repo(&main_dir, "master");
+        commit_files_dated(
+            &main_dir,
+            "main: base",
+            &[
+                ("package.json", BASE_MAIN_PKG.as_bytes()),
+                ("package-lock.json", LOCKFILE.as_bytes()),
+                ("src/shared.txt", b"main newer version\n".as_slice()),
+            ],
+            "2024-01-01T00:00:00+00:00",
+        );
+        git_out(&main_dir, &["branch", "staging"]);
+        (src_dir, main_dir, add)
+    };
+
+    // Sanity: the recency guard refuses this add under the default policy
+    // (covered by `add_over_existing_with_newer_target_stays_blocked`).
+    let (src_dir, main_dir, add) = build();
+    let probe = probe_preflight(
+        &src_dir,
+        &main_dir,
+        vec![add.clone()],
+        PromotionOnConflict::Fail,
+    );
+    assert_eq!(
+        probe_outcome(&probe, "src/shared.txt"),
+        Mergeability::Conflict
+    );
+
+    let (src_dir, main_dir, add) = build();
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let taken = promote(
+        &src_dir,
+        &main_dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![add.clone()],
+            on_conflict: PromotionOnConflict::TakeSubsystem,
+            ..Default::default()
+        },
+    );
+    assert!(taken.ok, "{:?}", taken.blockers);
+    let branch = taken.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main_dir, &branch, "src/shared.txt"),
+        "subsystem older version\n"
+    );
+    assert_eq!(
+        taken.changes.conflict_taken,
+        vec!["src/shared.txt".to_string()]
+    );
+    let probe = probe_preflight(
+        &src_dir,
+        &main_dir,
+        vec![add.clone()],
+        PromotionOnConflict::TakeSubsystem,
+    );
+    assert_eq!(probe.conflict, 0, "{probe:?}");
+    assert_eq!(
+        probe_outcome(&probe, "src/shared.txt"),
+        Mergeability::Merged
+    );
+}
+
+#[test]
+fn conflict_binary_both_sides_take_wins() {
+    let build = || {
+        let src_dir = make_temp_dir("src-takebin");
+        let main_dir = make_temp_dir("main-takebin");
+        let v1: &[u8] = &[0x00, 0x01, 0x02, 0xff, 0x00, 0x10];
+        let v2: &[u8] = &[0x00, 0x09, 0x00, 0xfe];
+        let v3: &[u8] = &[0x00, 0x07, 0x00, 0xfd];
+        init_repo(&src_dir, "master");
+        commit_files(
+            &src_dir,
+            "A: binary baseline",
+            &[("src/assets/bin.dat", v1)],
+            &[],
+        );
+        let c = commit_files(
+            &src_dir,
+            "C: modify binary",
+            &[("src/assets/bin.dat", v2)],
+            &[],
+        );
+        init_repo(&main_dir, "master");
+        write(&main_dir, "package.json", BASE_MAIN_PKG.as_bytes());
+        write(&main_dir, "package-lock.json", LOCKFILE.as_bytes());
+        write(&main_dir, "src/assets/bin.dat", v1);
+        commit_all(&main_dir, "main: base");
+        git_out(&main_dir, &["branch", "staging"]);
+        commit_message_on_branch(
+            &main_dir,
+            "staging",
+            "staging: modify binary differently",
+            &[("src/assets/bin.dat", v3)],
+            &[],
+        );
+        (src_dir, main_dir, c, v2.to_vec())
+    };
+
+    let (src_dir, main_dir, c, _) = build();
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let refused = promote(
+        &src_dir,
+        &main_dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![c.clone()],
+            ..Default::default()
+        },
+    );
+    assert!(!refused.ok);
+    assert!(
+        codes(&refused).contains(&"PATCH_CONFLICT".to_string()),
+        "{:?}",
+        codes(&refused)
+    );
+    let probe = probe_preflight(
+        &src_dir,
+        &main_dir,
+        vec![c.clone()],
+        PromotionOnConflict::Fail,
+    );
+    assert_eq!(
+        probe_outcome(&probe, "src/assets/bin.dat"),
+        Mergeability::Conflict
+    );
+
+    let (src_dir, main_dir, c, v2) = build();
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let taken = promote(
+        &src_dir,
+        &main_dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![c.clone()],
+            on_conflict: PromotionOnConflict::TakeSubsystem,
+            ..Default::default()
+        },
+    );
+    assert!(taken.ok, "{:?}", taken.blockers);
+    let branch = taken.integration_branch.clone().unwrap();
+    assert_eq!(branch_file(&main_dir, &branch, "src/assets/bin.dat"), v2);
+    assert_eq!(
+        taken.changes.conflict_taken,
+        vec!["src/assets/bin.dat".to_string()]
+    );
+    let probe = probe_preflight(
+        &src_dir,
+        &main_dir,
+        vec![c.clone()],
+        PromotionOnConflict::TakeSubsystem,
+    );
+    assert_eq!(probe.conflict, 0, "{probe:?}");
+    assert_eq!(
+        probe_outcome(&probe, "src/assets/bin.dat"),
+        Mergeability::Merged
+    );
+}
+
+#[test]
+fn conflict_source_unchanged_binary_keeps_target() {
+    use subsystem_integration_manager_lib::services::engine::apply::ApplyOutcome;
+
+    // Recorded defect: a binary the source did not touch (theirs == base)
+    // faked a merge conflict when the target had modified it, because the
+    // only fast path was ours == base and `git merge-file` refuses binaries.
+    let src_dir = make_temp_dir("src-bin-untouched");
+    init_repo(&src_dir, "master");
+    let v1: &[u8] = &[0x00, 0x01, 0x02, 0xff];
+    let v2: &[u8] = &[0x00, 0x07, 0x00, 0xfd];
+    commit_files(
+        &src_dir,
+        "A: binary baseline",
+        &[("src/assets/bin.dat", v1), ("src/other.txt", b"a\n")],
+        &[],
+    );
+    let base = sha(&src_dir, "HEAD");
+    // The source commit touches only an unrelated file: the binary blob is
+    // identical to the base blob.
+    let head = commit_files(&src_dir, "B: unrelated", &[("src/other.txt", b"b\n")], &[]);
+
+    let work = make_temp_dir("wt-bin-untouched");
+    write(&work, "src/assets/bin.dat", v2);
+
+    let entry = DeltaEntry {
+        status: 'M',
+        path: Some("src/assets/bin.dat".to_string()),
+        old_path: None,
+        new_path: None,
+        score: None,
+    };
+    let set = apply_file_delta(
+        &src_dir,
+        &work,
+        &head,
+        Some(&base),
+        &entry,
+        &sandbox_root(),
+        &ApplyOptions::default(),
+    )
+    .expect("a source-unchanged binary must not conflict");
+    assert_eq!(set.results.len(), 1, "{:?}", set.results);
+    assert_eq!(set.results[0].outcome, ApplyOutcome::Unchanged);
+    assert_eq!(
+        std::fs::read(work.join("src").join("assets").join("bin.dat")).unwrap(),
+        v2,
+        "the target's bytes are kept"
+    );
+}
+
+#[test]
+fn conflict_take_does_not_bypass_guards() {
+    // An unsafe traversal path still errors under take_subsystem.
+    let objects = make_temp_dir("obj-traversal");
+    let work = make_temp_dir("wt-traversal");
+    let entry = DeltaEntry {
+        status: 'M',
+        path: Some("../evil.txt".to_string()),
+        old_path: None,
+        new_path: None,
+        score: None,
+    };
+    let err: ApplyConflict = apply_file_delta(
+        &objects,
+        &work,
+        &"0".repeat(40),
+        None,
+        &entry,
+        &sandbox_root(),
+        &ApplyOptions {
+            on_conflict: PromotionOnConflict::TakeSubsystem,
+            ..Default::default()
+        },
+    )
+    .expect_err("traversal must fail closed even under take_subsystem");
+    assert_eq!(err.kind, "path-escape");
+
+    // An incompatible dependency range still fails closed under take_subsystem.
+    let src_dir = make_temp_dir("src-takedep");
+    let main_dir = make_temp_dir("main-takedep");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[("exceljs", "^3.0.0")], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            on_conflict: PromotionOnConflict::TakeSubsystem,
+            ..Default::default()
+        },
+    );
+    assert!(!report.ok);
+    assert!(
+        codes(&report).contains(&"DEPENDENCY_INCOMPATIBLE_RANGE".to_string()),
+        "{:?}",
+        codes(&report)
+    );
+}
+
+#[test]
+fn conflict_on_conflict_wire_defaults_to_fail() {
+    use subsystem_integration_manager_lib::github::models::{
+        PromotionOnConflict, PromotionRequest,
+    };
+
+    let without: PromotionRequest = serde_json::from_str(
+        r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true}"#,
+    )
+    .expect("wire without onConflict parses");
+    assert_eq!(without.on_conflict, PromotionOnConflict::Fail);
+
+    let explicit: PromotionRequest = serde_json::from_str(
+        r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true,"onConflict":"take_subsystem"}"#,
+    )
+    .expect("wire with take_subsystem parses");
+    assert_eq!(explicit.on_conflict, PromotionOnConflict::TakeSubsystem);
 }
 
 // ===========================================================================

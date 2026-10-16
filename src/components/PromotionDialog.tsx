@@ -17,6 +17,7 @@ import type {
   PromotionDelivery,
   PromotionDispatchResult,
   PromotionMode,
+  PromotionOnConflict,
   PromotionPreflight,
   SubsystemSummary,
   TargetBranchList,
@@ -48,6 +49,8 @@ export interface PromotionDialogProps {
   onBaseShaChange: (sha: string) => void;
   delivery: PromotionDelivery;
   onDeliveryChange: (delivery: PromotionDelivery) => void;
+  onConflict: PromotionOnConflict;
+  onOnConflictChange: (onConflict: PromotionOnConflict) => void;
   dependencies: DependencyChange[];
   dependenciesLoading: boolean;
   preflight: PromotionPreflight | null;
@@ -65,7 +68,7 @@ export function PromotionDialog(props: PromotionDialogProps) {
   if (!props.open) return null;
   return (
     <PromotionDialogContent
-      key={JSON.stringify([props.sourceShas, props.targetBranch, props.delivery])}
+      key={JSON.stringify([props.sourceShas, props.targetBranch, props.delivery, props.onConflict])}
       {...props}
     />
   );
@@ -98,6 +101,8 @@ function PromotionDialogContent({
   onBaseShaChange,
   delivery,
   onDeliveryChange,
+  onConflict,
+  onOnConflictChange,
   dependencies,
   dependenciesLoading,
   preflight,
@@ -342,6 +347,21 @@ function PromotionDialogContent({
                 options={[
                   { value: 'individual', label: 'Individual (recommended)' },
                   { value: 'cumulative', label: 'Cumulative (requires baseline)' },
+                ]}
+              />
+            </Field>
+
+            <Field
+              label="On conflict"
+              hint="Fail stops the promotion. Take the subsystem's version applies it instead — the replaced paths are reported in the result."
+            >
+              <Select
+                aria-label="On conflict"
+                value={onConflict}
+                onChange={(event) => onOnConflictChange(event.target.value as PromotionOnConflict)}
+                options={[
+                  { value: 'fail', label: 'Fail (recommended)' },
+                  { value: 'take_subsystem', label: "Take the subsystem's version" },
                 ]}
               />
             </Field>

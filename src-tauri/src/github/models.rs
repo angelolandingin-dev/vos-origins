@@ -579,6 +579,25 @@ impl PromotionDelivery {
     }
 }
 
+/// Conflict policy for a promotion (wire `onConflict`, camelCase field).
+/// Omitted on the wire defaults to [`PromotionOnConflict::Fail`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionOnConflict {
+    #[default]
+    Fail,
+    TakeSubsystem,
+}
+
+impl PromotionOnConflict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PromotionOnConflict::Fail => "fail",
+            PromotionOnConflict::TakeSubsystem => "take_subsystem",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromotionRequest {
@@ -593,6 +612,9 @@ pub struct PromotionRequest {
     /// `"local" | "push_pr"`; omitted ⇒ `local`.
     #[serde(default)]
     pub delivery: PromotionDelivery,
+    /// `"fail" | "take_subsystem"`; omitted ⇒ `fail`.
+    #[serde(default)]
+    pub on_conflict: PromotionOnConflict,
 }
 
 /// Dry-run mergeability preflight (§9.2): per-file `clean` / `merged` /

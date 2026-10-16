@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use crate::github::models::PromotionDelivery;
 use crate::github::models::PromotionMode;
+use crate::github::models::PromotionOnConflict;
 use crate::services::registry::{
     assert_full_sha, assert_safe_branch_name, DependencyStrategy, Registry, SubsystemEntry,
 };
@@ -60,6 +61,12 @@ pub struct EngineRequest {
     /// (no push, no PR); `push_pr` is today's push-then-PR behaviour.
     /// Defaults to `local` when omitted on the wire.
     pub delivery: PromotionDelivery,
+    /// `fail` (default) refuses every unmergeable path; `take_subsystem`
+    /// resolves merge conflicts, both-sides-touched binaries, delete-vs-diverge,
+    /// and recency-refused adds with the subsystem's version and reports every
+    /// such path. Never bypasses path-safety, classification, dependency,
+    /// lockfile, or NOOP guards.
+    pub on_conflict: PromotionOnConflict,
 }
 
 impl EngineRequest {
@@ -79,6 +86,7 @@ impl EngineRequest {
             base_sha,
             target_branch: target_branch.to_string(),
             delivery: PromotionDelivery::PushPr,
+            on_conflict: PromotionOnConflict::Fail,
         }
     }
 }
@@ -111,6 +119,10 @@ pub struct ChangeSummary {
     pub main_owned_skipped: Vec<String>,
     pub secret_excluded: Vec<String>,
     pub regenerated: Vec<String>,
+    /// Paths resolved via `on_conflict = take_subsystem` (the subsystem's
+    /// version won instead of failing). Also surfaced as a dedicated
+    /// `conflict_taken_from_subsystem` warning.
+    pub conflict_taken: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -567,6 +579,7 @@ fn run_inner(
                             planned.base_sha.as_deref(),
                             &entry.delta,
                         ),
+                        on_conflict: request.on_conflict,
                     };
                     match apply::apply_file_delta(
                         &options.target_repo_dir,
@@ -579,6 +592,10 @@ fn run_inner(
                     ) {
                         Ok(set) => {
                             mode_ops.extend(set.mode_ops);
+                            report
+                                .changes
+                                .conflict_taken
+                                .extend(set.taken_from_subsystem);
                             for result in set.results {
                                 match result.outcome {
                                     apply::ApplyOutcome::Written => {
@@ -630,6 +647,19 @@ fn run_inner(
                 PathStatus::Rejected => {}
             }
         }
+    }
+
+    report.changes.conflict_taken.sort();
+    report.changes.conflict_taken.dedup();
+    if !report.changes.conflict_taken.is_empty() {
+        report.warnings.push(Blocker::new(
+            "conflict_taken_from_subsystem",
+            format!(
+                "On-conflict policy `take_subsystem` replaced {} path(s) with the subsystem's version: {}. Review the replaced files before merging.",
+                report.changes.conflict_taken.len(),
+                report.changes.conflict_taken.join(", ")
+            ),
+        ));
     }
 
     let manifest_path = worktree_dir.join("package.json");
@@ -770,7 +800,8 @@ fn run_inner(
     let any_change = !(report.changes.applied.is_empty()
         && report.changes.updated.is_empty()
         && report.changes.merged.is_empty()
-        && report.changes.deleted.is_empty())
+        && report.changes.deleted.is_empty()
+        && report.changes.conflict_taken.is_empty())
         || deps_changed
         || regenerated_really;
     if !any_change {
@@ -1282,6 +1313,13 @@ fn build_pr_body(
     if !report.changes.main_owned_skipped.is_empty() {
         lines.push("### Not imported (main-owned)".to_string());
         for path in &report.changes.main_owned_skipped {
+            lines.push(format!("- `{path}`"));
+        }
+        lines.push(String::new());
+    }
+    if !report.changes.conflict_taken.is_empty() {
+        lines.push("### Resolved via on-conflict policy (subsystem version wins)".to_string());
+        for path in &report.changes.conflict_taken {
             lines.push(format!("- `{path}`"));
         }
         lines.push(String::new());

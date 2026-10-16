@@ -33,6 +33,9 @@ export type PromotionMode = 'individual' | 'cumulative';
 /** Local-first delivery: `local` builds a branch + commit in the user's clone (no push, no PR); `push_pr` is the explicit opt-in. */
 export type PromotionDelivery = 'local' | 'push_pr';
 
+/** Conflict policy: `fail` refuses every unmergeable path; `take_subsystem` resolves it with the subsystem's version and reports every replaced path. */
+export type PromotionOnConflict = 'fail' | 'take_subsystem';
+
 export interface ValidationFinding {
   level: 'info' | 'warning' | 'error';
   code: string;
@@ -305,6 +308,8 @@ export interface PromotionRequest {
   confirmationAcknowledged: boolean;
   /** Omitted ⇒ `local`. */
   delivery?: PromotionDelivery | null;
+  /** Omitted ⇒ `fail`. */
+  onConflict?: PromotionOnConflict | null;
 }
 
 /** Per-file mergeability from the `preflight_promotion` dry run (mirrors the Rust `PreflightOutcome`). */

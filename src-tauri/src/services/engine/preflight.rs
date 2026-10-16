@@ -15,6 +15,7 @@ use super::apply;
 use super::classify::{self, PathStatus};
 use super::git;
 use crate::github::models::PromotionMode;
+use crate::github::models::PromotionOnConflict;
 use crate::services::registry::IntegrationPolicy;
 
 /// Per-file mergeability, mirroring the real apply's branches:
@@ -77,6 +78,12 @@ pub struct PreflightRequest<'a> {
     pub mode: PromotionMode,
     pub base_sha: Option<&'a str>,
     pub target_branch: &'a str,
+    /// Mirrors the real apply's `on_conflict`: with `take_subsystem`, paths
+    /// the policy would resolve report as `merged` instead of `conflict`, so
+    /// preflight and the real apply never disagree. Guards the policy never
+    /// bypasses (unsafe paths, classification, dependencies) still report
+    /// `conflict`/`skipped` exactly like the engine fails.
+    pub on_conflict: PromotionOnConflict,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +135,7 @@ pub fn compute_preflight(
         &plan,
         &target_tip,
         &scratch,
+        request.on_conflict,
     );
     let _ = std::fs::remove_dir_all(&scratch);
     Ok(report)
@@ -198,6 +206,7 @@ fn evaluate_plan(
     plan: &[PlannedDelta],
     target_tip: &str,
     scratch: &Path,
+    on_conflict: PromotionOnConflict,
 ) -> PreflightReport {
     // A path touched by several selected commits reports its worst outcome: a
     // single conflicting delta fails the real promotion, so it must surface.
@@ -206,7 +215,15 @@ fn evaluate_plan(
         for entry in &delta.entries {
             for rel_path in expanded_paths(entry) {
                 let outcome = evaluate_path(
-                    source_dir, target_dir, policy, delta, entry, &rel_path, target_tip, scratch,
+                    source_dir,
+                    target_dir,
+                    policy,
+                    delta,
+                    entry,
+                    &rel_path,
+                    target_tip,
+                    scratch,
+                    on_conflict,
                 );
                 by_path
                     .entry(rel_path)
@@ -270,6 +287,7 @@ fn evaluate_path(
     rel_path: &str,
     target_tip: &str,
     scratch: &Path,
+    on_conflict: PromotionOnConflict,
 ) -> PreflightOutcome {
     if rel_path.is_empty() {
         return PreflightOutcome::Conflict;
@@ -318,8 +336,16 @@ fn evaluate_path(
         .and_then(|base| git::read_blob(source_dir, base, rel_path));
     let ours_opt = git::read_blob(target_dir, target_tip, rel_path);
     blob_outcome(
-        source_dir, target_dir, scratch, &delta.sha, target_tip, rel_path, theirs_opt, base_opt,
+        source_dir,
+        target_dir,
+        scratch,
+        &delta.sha,
+        target_tip,
+        rel_path,
+        theirs_opt,
+        base_opt,
         ours_opt,
+        on_conflict,
     )
 }
 
@@ -337,6 +363,7 @@ fn blob_outcome(
     theirs_opt: Option<Vec<u8>>,
     base_opt: Option<Vec<u8>>,
     ours_opt: Option<Vec<u8>>,
+    on_conflict: PromotionOnConflict,
 ) -> PreflightOutcome {
     // Same CRLF-insensitive text comparison as the apply path; binaries keep
     // exact byte semantics and are never normalised.
@@ -362,7 +389,8 @@ fn blob_outcome(
         if base_opt.is_some() && ours_norm_opt == base_norm_opt {
             return PreflightOutcome::Clean;
         }
-        return PreflightOutcome::Conflict;
+        // Delete-vs-diverge: the real apply deletes under `take_subsystem`.
+        return take_or_conflict(on_conflict);
     }
     let theirs_norm = theirs_norm_opt.unwrap_or_default();
 
@@ -376,14 +404,15 @@ fn blob_outcome(
     }
     let ours_norm = ours_norm_opt.unwrap_or_default();
     // Add over an existing target file: allowed only when the target copy is
-    // not newer than the source commit (same recency rule as the engine).
+    // not newer than the source commit (same recency rule as the engine), or
+    // unconditionally under `take_subsystem` (same as the real apply).
     if base_opt.is_none() {
         let allowed =
             add_overwrite_allowed(source_dir, target_dir, target_tip, source_sha, rel_path);
         return if allowed {
             PreflightOutcome::Clean
         } else {
-            PreflightOutcome::Conflict
+            take_or_conflict(on_conflict)
         };
     }
     let base_norm = base_norm_opt.unwrap_or_default();
@@ -391,7 +420,13 @@ fn blob_outcome(
     if ours_norm == base_norm {
         return PreflightOutcome::Clean;
     }
-    // Both sides moved: the engine's own three-way merge decides.
+    // The source left the content unchanged (e.g. a mode-only delta): the real
+    // apply keeps the target's bytes without merging — even for binaries.
+    if theirs_norm == base_norm {
+        return PreflightOutcome::Clean;
+    }
+    // Both sides moved: the engine's own three-way merge decides (including
+    // its whitespace-only auto-resolution, shared with the real apply).
     match apply::three_way_merge(scratch, rel_path, &ours_norm, &base_norm, &theirs_norm) {
         apply::MergeOutcome::Ok(content) => {
             if normalised(&content) == ours_norm {
@@ -400,7 +435,18 @@ fn blob_outcome(
                 PreflightOutcome::Merged
             }
         }
-        apply::MergeOutcome::Conflict(_) => PreflightOutcome::Conflict,
+        apply::MergeOutcome::Conflict(_) => take_or_conflict(on_conflict),
+    }
+}
+
+/// A would-be `conflict` under `take_subsystem` resolves the way the real
+/// apply does (subsystem version wins — a change), so preflight reports it as
+/// `merged` instead of `conflict`. Under `fail` it stays a conflict.
+fn take_or_conflict(on_conflict: PromotionOnConflict) -> PreflightOutcome {
+    if on_conflict == PromotionOnConflict::TakeSubsystem {
+        PreflightOutcome::Merged
+    } else {
+        PreflightOutcome::Conflict
     }
 }
 
@@ -564,6 +610,7 @@ mod tests {
             mode: PromotionMode::Individual,
             base_sha: None,
             target_branch: "target",
+            on_conflict: PromotionOnConflict::Fail,
         };
         let report = compute_preflight(repo, repo, &request, &scratch).expect("preflight computes");
         let _ = std::fs::remove_dir_all(&scratch);
@@ -751,6 +798,7 @@ mod tests {
             mode: PromotionMode::Individual,
             base_sha: None,
             target_branch: "target",
+            on_conflict: PromotionOnConflict::Fail,
         };
         let report =
             compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");

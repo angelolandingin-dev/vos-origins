@@ -6,6 +6,7 @@ import type {
   DependencyChange,
   PromotionDelivery,
   PromotionMode,
+  PromotionOnConflict,
   PromotionPreflight,
 } from '../api/types';
 import {
@@ -39,6 +40,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     mode: 'individual',
     baseSha: '',
     delivery: 'local',
+    onConflict: 'fail',
     dispatching: false,
     error: null,
     result: null,
@@ -94,6 +96,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       targetBranch,
       confirmationAcknowledged: false,
       delivery: promotion.delivery,
+      onConflict: promotion.onConflict,
     });
   }, [
     promotion.open,
@@ -103,6 +106,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.mode,
     promotion.baseSha,
     promotion.delivery,
+    promotion.onConflict,
   ]);
 
   const pushNotice = useCallback((next: Omit<Notice, 'id'>) => {
@@ -147,6 +151,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       mode: 'individual',
       baseSha: '',
       delivery: 'local',
+      onConflict: 'fail',
       dispatching: false,
       error: null,
       result: null,
@@ -178,6 +183,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setPromotion((current) => ({ ...current, delivery }));
   }, []);
 
+  const setPromotionOnConflict = useCallback((onConflict: PromotionOnConflict) => {
+    setPromotion((current) => ({ ...current, onConflict }));
+  }, []);
+
   const dispatchPromotion = useCallback(() => {
     if (!selectedSubsystemId) return;
     setPromotion((current) => ({ ...current, dispatching: true, error: null }));
@@ -190,6 +199,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         targetBranch,
         confirmationAcknowledged: true,
         delivery: promotion.delivery,
+        onConflict: promotion.onConflict,
       })
       .then((result) => {
         setPromotion((current) => ({ ...current, dispatching: false, result }));
@@ -220,6 +230,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.mode,
     promotion.baseSha,
     promotion.delivery,
+    promotion.onConflict,
     selectedSubsystemId,
     targetBranch,
     pushNotice,
@@ -266,6 +277,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionMode,
       setPromotionBaseSha,
       setPromotionDelivery,
+      setPromotionOnConflict,
       dispatchPromotion,
     }),
     [
@@ -295,6 +307,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionMode,
       setPromotionBaseSha,
       setPromotionDelivery,
+      setPromotionOnConflict,
       dispatchPromotion,
     ],
   );

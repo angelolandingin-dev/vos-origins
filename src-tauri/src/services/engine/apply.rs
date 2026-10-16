@@ -4,6 +4,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::github::models::PromotionOnConflict;
+
 use super::git;
 
 #[derive(Debug, Clone)]
@@ -56,6 +58,9 @@ pub struct ModeOp {
 pub struct ApplyOutcomeSet {
     pub results: Vec<ApplyResult>,
     pub mode_ops: Vec<ModeOp>,
+    /// Paths written or deleted via `on_conflict = take_subsystem` instead of
+    /// failing. The engine reports these distinctly (`conflict_taken_from_subsystem`).
+    pub taken_from_subsystem: Vec<String>,
 }
 
 /// Reason recorded when an add overwrites an existing target file whose
@@ -70,6 +75,12 @@ pub struct ApplyOptions {
     /// Membership is decided by the promotion engine's recency guard;
     /// `apply` only consults it, never computes it.
     pub allowed_add_overwrite: HashSet<String>,
+    /// `fail` (default) refuses every unmergeable path; `take_subsystem`
+    /// writes the subsystem's content (or applies its deletion) and records
+    /// the path in [`ApplyOutcomeSet::taken_from_subsystem`]. Never bypasses
+    /// path-safety, classification, dependency, lockfile, or NOOP guards —
+    /// those fail closed before this policy is ever consulted.
+    pub on_conflict: PromotionOnConflict,
 }
 
 pub(crate) fn is_binary(bytes: &[u8]) -> bool {
@@ -201,6 +212,17 @@ pub(crate) enum MergeOutcome {
     Conflict(String),
 }
 
+/// Three-way text merge shared by the real apply and the preflight dry run
+/// (both call this helper, so they can never disagree).
+///
+/// Runs scratch `git merge-file -p --diff3`. When it reports conflicts, each
+/// `--diff3` block is post-processed: a block whose `ours` and `theirs` sides
+/// are equivalent ignoring whitespace (per-line trim + collapsing interior
+/// whitespace runs) is resolved automatically by keeping the **target's
+/// (`ours`) block bytes**, so the main system's formatting is preserved and
+/// nothing is re-indented. Blocks that differ by real content stay conflicting
+/// and are returned as [`MergeOutcome::Conflict`] (governed by the caller's
+/// `on_conflict` policy).
 pub(crate) fn three_way_merge(
     scratch_dir: &Path,
     rel_path: &str,
@@ -233,18 +255,119 @@ pub(crate) fn three_way_merge(
     let args = [
         "merge-file",
         "-p",
+        "--diff3",
         &ours_file.to_string_lossy(),
         &base_file.to_string_lossy(),
         &theirs_file.to_string_lossy(),
     ];
     match git::run_global(&args) {
         Ok(out) if out.status == 0 => MergeOutcome::Ok(out.stdout),
-        Ok(out) if out.status > 0 => {
-            MergeOutcome::Conflict(format!("{} merge conflict(s)", out.status))
-        }
+        Ok(out) if out.status > 0 => match resolve_whitespace_only_blocks(&out.stdout) {
+            Some(resolved) => MergeOutcome::Ok(resolved),
+            None => MergeOutcome::Conflict(format!("{} merge conflict(s)", out.status)),
+        },
         Ok(out) => MergeOutcome::Conflict(format!("git merge-file error (exit {})", out.status)),
         Err(err) => MergeOutcome::Conflict(format!("git merge-file failed to start: {err}")),
     }
+}
+
+/// Post-process `git merge-file --diff3` conflict output: `Some(merged)` when
+/// every conflict block is whitespace-only (resolved with the `ours` block
+/// bytes), `None` when any block differs by real content or the markers are
+/// malformed (fail safe: still a conflict).
+///
+/// Operates on raw bytes split at `\n`; reassembly is an exact round-trip, so
+/// resolved blocks keep the target's bytes verbatim (indentation, trailing
+/// newline state, everything outside the stripped whitespace comparison).
+fn resolve_whitespace_only_blocks(output: &[u8]) -> Option<Vec<u8>> {
+    let lines: Vec<&[u8]> = output.split(|b| *b == b'\n').collect();
+    // Fast path: no conflict markers at all. (merge-file only exits nonzero
+    // on conflicts, so this is defensive; treating marker-free output as a
+    // clean merge would risk silently accepting garbage.)
+    if !lines.iter().any(|l| l.starts_with(b"<<<<<<<")) {
+        return None;
+    }
+    let mut merged: Vec<&[u8]> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    let mut saw_block = false;
+    while i < lines.len() {
+        if !lines[i].starts_with(b"<<<<<<<") {
+            merged.push(lines[i]);
+            i += 1;
+            continue;
+        }
+        saw_block = true;
+        i += 1;
+        let mut ours_block: Vec<&[u8]> = Vec::new();
+        while i < lines.len() && !lines[i].starts_with(b"|||||||") {
+            ours_block.push(lines[i]);
+            i += 1;
+        }
+        if i >= lines.len() {
+            return None;
+        }
+        i += 1; // consume `||||||| base`
+        while i < lines.len() && lines[i] != b"=======" {
+            i += 1; // the base side never decides whitespace equivalence
+        }
+        if i >= lines.len() {
+            return None;
+        }
+        i += 1; // consume `=======`
+        let mut theirs_block: Vec<&[u8]> = Vec::new();
+        while i < lines.len() && !lines[i].starts_with(b">>>>>>>") {
+            theirs_block.push(lines[i]);
+            i += 1;
+        }
+        if i >= lines.len() {
+            return None;
+        }
+        i += 1; // consume `>>>>>>> theirs`
+        if !blocks_equal_ignoring_whitespace(&ours_block, &theirs_block) {
+            return None;
+        }
+        merged.extend(ours_block);
+    }
+    if !saw_block {
+        return None;
+    }
+    // `split`/`join` at `\n` round-trips the input exactly, so every kept
+    // byte (ours blocks, clean regions, trailing newline state) is verbatim.
+    Some(merged.join(&b'\n'))
+}
+
+/// Block equivalence ignoring whitespace: each line is trimmed and interior
+/// runs of ASCII whitespace collapse to a single space before comparing.
+/// Re-indentation (leading runs) and trailing whitespace vanish; `hello world`
+/// vs `helloworld` still differ (a run is not nothing).
+fn blocks_equal_ignoring_whitespace(ours: &[&[u8]], theirs: &[&[u8]]) -> bool {
+    if ours.len() != theirs.len() {
+        return false;
+    }
+    ours.iter()
+        .zip(theirs.iter())
+        .all(|(a, b)| normalise_ws_line(a) == normalise_ws_line(b))
+}
+
+fn normalise_ws_line(line: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(line.len());
+    let mut pending_space = false;
+    let mut started = false;
+    for &b in line {
+        if b.is_ascii_whitespace() {
+            if started {
+                pending_space = true;
+            }
+        } else {
+            if pending_space {
+                out.push(b' ');
+                pending_space = false;
+            }
+            started = true;
+            out.push(b);
+        }
+    }
+    out
 }
 
 pub fn apply_file_delta(
@@ -342,6 +465,18 @@ fn apply_entries(
                     record(set, ApplyOutcome::Deleted, None);
                     return Ok(());
                 }
+                if options.on_conflict == PromotionOnConflict::TakeSubsystem {
+                    delete_worktree_file(worktree_dir, rel_path)?;
+                    record(
+                        set,
+                        ApplyOutcome::Deleted,
+                        Some(
+                            "conflict resolved via on_conflict=take_subsystem: subsystem deletion applied",
+                        ),
+                    );
+                    set.taken_from_subsystem.push(rel_path.to_string());
+                    return Ok(());
+                }
                 return Err(ApplyConflict::new(
                     format!("Target file diverged from the source baseline; refusing to delete {rel_path}"),
                     Some(rel_path.to_string()),
@@ -389,6 +524,19 @@ fn apply_entries(
                     push_mode(set, rel_path, mode.as_deref());
                     return Ok(());
                 }
+                if options.on_conflict == PromotionOnConflict::TakeSubsystem {
+                    write_file(worktree_dir, rel_path, &theirs)?;
+                    record(
+                        set,
+                        ApplyOutcome::Written,
+                        Some(
+                            "conflict resolved via on_conflict=take_subsystem: subsystem version written over the existing target copy",
+                        ),
+                    );
+                    set.taken_from_subsystem.push(rel_path.to_string());
+                    push_mode(set, rel_path, mode.as_deref());
+                    return Ok(());
+                }
                 return Err(ApplyConflict::new(
                     format!("Target already contains a newer copy of {rel_path} (main system's copy is newer); cannot apply an add over it"),
                     Some(rel_path.to_string()),
@@ -410,16 +558,45 @@ fn apply_entries(
             push_mode(set, rel_path, mode.as_deref());
             return Ok(());
         }
+        // The source left the content unchanged (e.g. a mode-only delta): keep
+        // the target's bytes. Without this, a binary the target touched would
+        // hit `git merge-file`'s binary refusal and fake a conflict even
+        // though only one side actually changed the content.
+        if theirs_norm == base_norm {
+            record(
+                set,
+                ApplyOutcome::Unchanged,
+                Some("source left the content unchanged; target version kept"),
+            );
+            push_mode(set, rel_path, mode.as_deref());
+            return Ok(());
+        }
         // `base` (original bytes) is only kept for parity with the old
         // shape; comparisons and the merge use the normalised forms.
         let _ = (&_base, &_ours);
 
         match three_way_merge(scratch, rel_path, &ours_norm, &base_norm, &theirs_norm) {
-            MergeOutcome::Conflict(reason) => Err(ApplyConflict::new(
-                format!("Three-way merge failed for {rel_path}: {reason}"),
-                Some(rel_path.to_string()),
-                "merge-conflict",
-            )),
+            MergeOutcome::Conflict(reason) => {
+                if options.on_conflict == PromotionOnConflict::TakeSubsystem {
+                    write_file(worktree_dir, rel_path, &theirs)?;
+                    record(
+                        set,
+                        ApplyOutcome::Written,
+                        Some(
+                            "conflict resolved via on_conflict=take_subsystem: subsystem version written",
+                        ),
+                    );
+                    set.taken_from_subsystem.push(rel_path.to_string());
+                    push_mode(set, rel_path, mode.as_deref());
+                    Ok(())
+                } else {
+                    Err(ApplyConflict::new(
+                        format!("Three-way merge failed for {rel_path}: {reason}"),
+                        Some(rel_path.to_string()),
+                        "merge-conflict",
+                    ))
+                }
+            }
             MergeOutcome::Ok(content) => {
                 if normalised(&content) == ours_norm {
                     record(
@@ -492,5 +669,55 @@ mod tests {
         assert!(assert_real_path_within(&dir, "../evil.txt").is_err());
         assert!(assert_real_path_within(&dir, "/etc/passwd").is_err());
         assert!(assert_real_path_within(&dir, "src/app.ts").is_ok());
+    }
+
+    #[test]
+    fn whitespace_line_normalisation_collapses_runs_and_trims() {
+        assert_eq!(normalise_ws_line(b"        <div>"), b"<div>");
+        assert_eq!(normalise_ws_line(b"  <div>"), b"<div>");
+        assert_eq!(normalise_ws_line(b"a  =\t b;  "), b"a = b;");
+        assert_eq!(normalise_ws_line(b"   "), b"");
+        assert_eq!(normalise_ws_line(b""), b"");
+        // A run is not nothing: `hello world` and `helloworld` still differ.
+        assert_ne!(
+            normalise_ws_line(b"hello world"),
+            normalise_ws_line(b"helloworld")
+        );
+    }
+
+    #[test]
+    fn whitespace_only_diff3_block_resolves_to_ours_bytes() {
+        let output = b"head\n<<<<<<< ours\n  <div>\n    <p>x</p>\n||||||| base\n<div>\n<p>x</p>\n=======\n        <div>\n                <p>x</p>\n>>>>>>> theirs\ntail\n";
+        let resolved = resolve_whitespace_only_blocks(output).expect("whitespace-only resolves");
+        assert_eq!(
+            resolved,
+            b"head\n  <div>\n    <p>x</p>\ntail\n".to_vec(),
+            "the target's (ours) block bytes are kept verbatim"
+        );
+    }
+
+    #[test]
+    fn real_content_difference_stays_conflicting() {
+        let output =
+            b"<<<<<<< ours\nimport B;\n||||||| base\nbody\n=======\nimport C;\n>>>>>>> theirs\n";
+        assert!(
+            resolve_whitespace_only_blocks(output).is_none(),
+            "real content differences must stay conflicting"
+        );
+    }
+
+    #[test]
+    fn mixed_blocks_stay_conflicting_when_any_block_is_real() {
+        let output = b"<<<<<<< ours\n  <div>\n||||||| base\n<div>\n=======\n        <div>\n>>>>>>> theirs\n<<<<<<< ours\nimport B;\n||||||| base\nbody\n=======\nimport C;\n>>>>>>> theirs\n";
+        assert!(
+            resolve_whitespace_only_blocks(output).is_none(),
+            "one real block poisons the whole file"
+        );
+    }
+
+    #[test]
+    fn malformed_markers_fail_safe_to_conflict() {
+        assert!(resolve_whitespace_only_blocks(b"no markers here\n").is_none());
+        assert!(resolve_whitespace_only_blocks(b"<<<<<<< ours\nunterminated\n").is_none());
     }
 }

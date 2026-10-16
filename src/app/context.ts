@@ -17,6 +17,7 @@ import type {
   PromotionDelivery,
   PromotionDispatchResult,
   PromotionMode,
+  PromotionOnConflict,
   PromotionPreflight,
   SubsystemSummary,
   TargetBranchList,
@@ -88,6 +89,7 @@ export interface PromotionState {
   mode: PromotionMode;
   baseSha: string;
   delivery: PromotionDelivery;
+  onConflict: PromotionOnConflict;
   dispatching: boolean;
   error: ApiError | null;
   result: PromotionDispatchResult | null;
@@ -139,6 +141,7 @@ export interface AppContextValue {
   setPromotionMode: (mode: PromotionMode) => void;
   setPromotionBaseSha: (sha: string) => void;
   setPromotionDelivery: (delivery: PromotionDelivery) => void;
+  setPromotionOnConflict: (onConflict: PromotionOnConflict) => void;
   dispatchPromotion: () => void;
 }
 

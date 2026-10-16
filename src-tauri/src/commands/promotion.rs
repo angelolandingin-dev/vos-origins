@@ -112,6 +112,7 @@ pub async fn dispatch_promotion(
         base_sha: request.base_sha.clone(),
         target_branch: request.target_branch.clone(),
         delivery,
+        on_conflict: request.on_conflict,
     };
     let is_local = delivery == PromotionDelivery::Local;
     let local_dir_for_commands = target_repo_dir.clone();
@@ -309,6 +310,7 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
     let mode = request.mode;
     let base_sha = request.base_sha.clone();
     let target_branch = request.target_branch.clone();
+    let on_conflict = request.on_conflict;
     let report = tauri::async_runtime::spawn_blocking(move || {
         let scratch_root = std::env::temp_dir().join("vos-integration");
         let _ = std::fs::create_dir_all(&scratch_root);
@@ -318,6 +320,7 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
             mode,
             base_sha: base_sha.as_deref(),
             target_branch: &target_branch,
+            on_conflict,
         };
         crate::services::engine::preflight::compute_preflight(
             &source_repo_dir,
