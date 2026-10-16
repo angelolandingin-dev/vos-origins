@@ -35,8 +35,8 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
-    "shortDescription": "Commit-selective subsystem promotion control plane",
-    "longDescription": "Desktop control plane for promoting explicitly selected, already-approved subsystem commits into a chosen branch of the main-system repository through GitHub Actions, which opens an integration PR instead of pushing directly.",
+    "shortDescription": "Commit-selective, branch-scoped subsystem promotion",
+    "longDescription": "Desktop application for promoting explicitly selected, already-approved subsystem commits into a chosen branch of the main-system repository. The tool performs the promotion itself: it builds an integration branch from the target tip, applies only the selected commit deltas, regenerates the lockfile, and opens an integration pull request instead of pushing directly. It adds no files to the target repositories.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
