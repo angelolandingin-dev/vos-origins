@@ -2783,3 +2783,233 @@ fn plain_modify_over_different_content_still_three_way_merges() {
         report.changes
     );
 }
+
+// ===========================================================================
+// CRLF regression (core.autocrlf=true): worktree holds CRLF, blobs hold LF.
+// Line endings are irrelevant to the engine; only real content matters.
+// ===========================================================================
+
+fn crlf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + 8);
+    for &b in bytes {
+        if b == b'\n' {
+            out.push(b'\r');
+            out.push(b'\n');
+        } else {
+            out.push(b);
+        }
+    }
+    out
+}
+
+#[test]
+fn crlf_worktree_already_matching_source_is_unchanged() {
+    use subsystem_integration_manager_lib::services::engine::apply::ApplyOutcome;
+
+    let src_dir = make_temp_dir("src-crlf-unchanged");
+    init_repo(&src_dir, "master");
+    // Reproduce the real promotion setting: the target checks out CRLF while
+    // blobs stay LF.
+    git_out(&src_dir, &["config", "core.autocrlf", "true"]);
+    commit_files(
+        &src_dir,
+        "A: base",
+        &[("src/app.txt", b"line1\nline2\nline3\n")],
+        &[],
+    );
+    let base = sha(&src_dir, "HEAD");
+    let head = commit_files(
+        &src_dir,
+        "C: change line2",
+        &[("src/app.txt", b"line1\nline2 changed\nline3\n")],
+        &[],
+    );
+
+    // Target content is already identical to the commit's content (same blob
+    // SHA), but the worktree file carries CRLF from autocrlf.
+    let work = make_temp_dir("wt-crlf-unchanged");
+    write(
+        &work,
+        "src/app.txt",
+        &crlf(b"line1\nline2 changed\nline3\n"),
+    );
+
+    let entry = DeltaEntry {
+        status: 'M',
+        path: Some("src/app.txt".to_string()),
+        old_path: None,
+        new_path: None,
+        score: None,
+    };
+    let set = apply_file_delta(
+        &src_dir,
+        &work,
+        &head,
+        Some(&base),
+        &entry,
+        &sandbox_root(),
+        &ApplyOptions::default(),
+    )
+    .expect("CRLF-identical target must not conflict");
+    assert_eq!(set.results.len(), 1, "{:?}", set.results);
+    assert_eq!(set.results[0].outcome, ApplyOutcome::Unchanged);
+    assert_eq!(set.results[0].path, "src/app.txt");
+    // Unchanged leaves the worktree file alone (still CRLF, no rewrite).
+    assert_eq!(
+        std::fs::read(work.join("src").join("app.txt")).unwrap(),
+        crlf(b"line1\nline2 changed\nline3\n")
+    );
+}
+
+#[test]
+fn crlf_worktree_matching_base_writes_clean() {
+    use subsystem_integration_manager_lib::services::engine::apply::ApplyOutcome;
+
+    let src_dir = make_temp_dir("src-crlf-written");
+    init_repo(&src_dir, "master");
+    git_out(&src_dir, &["config", "core.autocrlf", "true"]);
+    commit_files(
+        &src_dir,
+        "A: base",
+        &[("src/app.txt", b"line1\nline2\nline3\n")],
+        &[],
+    );
+    let base = sha(&src_dir, "HEAD");
+    let head = commit_files(
+        &src_dir,
+        "C: change line2",
+        &[("src/app.txt", b"line1\nline2 changed\nline3\n")],
+        &[],
+    );
+
+    // Target equals the source base (modulo CRLF) → clean write, not a merge.
+    let work = make_temp_dir("wt-crlf-written");
+    write(&work, "src/app.txt", &crlf(b"line1\nline2\nline3\n"));
+
+    let entry = DeltaEntry {
+        status: 'M',
+        path: Some("src/app.txt".to_string()),
+        old_path: None,
+        new_path: None,
+        score: None,
+    };
+    let set = apply_file_delta(
+        &src_dir,
+        &work,
+        &head,
+        Some(&base),
+        &entry,
+        &sandbox_root(),
+        &ApplyOptions::default(),
+    )
+    .expect("CRLF base match must write cleanly");
+    assert_eq!(set.results.len(), 1, "{:?}", set.results);
+    assert_eq!(set.results[0].outcome, ApplyOutcome::Written);
+    // Written bytes are byte-identical to the source blob (LF).
+    assert_eq!(
+        std::fs::read(work.join("src").join("app.txt")).unwrap(),
+        b"line1\nline2 changed\nline3\n"
+    );
+}
+
+#[test]
+fn crlf_worktree_genuine_conflict_still_fails() {
+    let src_dir = make_temp_dir("src-crlf-conflict");
+    init_repo(&src_dir, "master");
+    git_out(&src_dir, &["config", "core.autocrlf", "true"]);
+    commit_files(
+        &src_dir,
+        "A: base",
+        &[("src/conflict.txt", b"a\nb\nc\nd\n")],
+        &[],
+    );
+    let base = sha(&src_dir, "HEAD");
+    let head = commit_files(
+        &src_dir,
+        "C: change last line to X",
+        &[("src/conflict.txt", b"a\nb\nc\nX\n")],
+        &[],
+    );
+
+    // Both sides changed the same line (target says Y); CRLF must not hide it.
+    let work = make_temp_dir("wt-crlf-conflict");
+    write(&work, "src/conflict.txt", &crlf(b"a\nb\nc\nY\n"));
+
+    let entry = DeltaEntry {
+        status: 'M',
+        path: Some("src/conflict.txt".to_string()),
+        old_path: None,
+        new_path: None,
+        score: None,
+    };
+    let err: ApplyConflict = apply_file_delta(
+        &src_dir,
+        &work,
+        &head,
+        Some(&base),
+        &entry,
+        &sandbox_root(),
+        &ApplyOptions::default(),
+    )
+    .expect_err("a genuine same-line change must still conflict");
+    assert_eq!(err.kind, "merge-conflict");
+    assert!(
+        err.message
+            .contains("Three-way merge failed for src/conflict.txt"),
+        "unexpected message: {}",
+        err.message
+    );
+}
+
+#[test]
+fn binary_with_crlf_bytes_written_byte_exact() {
+    use subsystem_integration_manager_lib::services::engine::apply::ApplyOutcome;
+
+    let src_dir = make_temp_dir("src-crlf-binary");
+    init_repo(&src_dir, "master");
+    git_out(&src_dir, &["config", "core.autocrlf", "true"]);
+    let base_bytes: &[u8] = b"BIN\x00\x01\r\n\xff\x00DATA\r\nEND";
+    let new_bytes: &[u8] = b"BIN\x00\x02\r\n\xfe\x00NEWDATA\r\nEND";
+    commit_files(
+        &src_dir,
+        "A: binary baseline",
+        &[("src/assets/bin.dat", base_bytes)],
+        &[],
+    );
+    let base = sha(&src_dir, "HEAD");
+    let head = commit_files(
+        &src_dir,
+        "C: modify binary",
+        &[("src/assets/bin.dat", new_bytes)],
+        &[],
+    );
+
+    // Target equals the binary base → clean overwrite, bytes never normalised.
+    let work = make_temp_dir("wt-crlf-binary");
+    write(&work, "src/assets/bin.dat", base_bytes);
+
+    let entry = DeltaEntry {
+        status: 'M',
+        path: Some("src/assets/bin.dat".to_string()),
+        old_path: None,
+        new_path: None,
+        score: None,
+    };
+    let set = apply_file_delta(
+        &src_dir,
+        &work,
+        &head,
+        Some(&base),
+        &entry,
+        &sandbox_root(),
+        &ApplyOptions::default(),
+    )
+    .expect("binary clean write must succeed");
+    assert_eq!(set.results.len(), 1, "{:?}", set.results);
+    assert_eq!(set.results[0].outcome, ApplyOutcome::Written);
+    assert_eq!(
+        std::fs::read(work.join("src").join("assets").join("bin.dat")).unwrap(),
+        new_bytes,
+        "binary must be written byte-exact, CRLF bytes preserved"
+    );
+}

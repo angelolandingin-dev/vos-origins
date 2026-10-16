@@ -77,6 +77,28 @@ fn is_binary(bytes: &[u8]) -> bool {
     bytes[..len].contains(&0)
 }
 
+/// CRLF→LF for text comparison and merge input so a `core.autocrlf=true`
+/// checkout (CRLF bytes in the worktree, LF bytes in blobs) never fakes a
+/// divergence. Only ever called when none of the inputs is binary; binaries
+/// keep exact byte semantics and are never normalised.
+fn strip_cr(bytes: &[u8]) -> Vec<u8> {
+    if !bytes.contains(&b'\r') {
+        return bytes.to_vec();
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            out.push(b'\n');
+            i += 2;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn is_reparse_or_symlink(path: &Path) -> bool {
     match std::fs::symlink_metadata(path) {
         Ok(meta) => {
@@ -277,9 +299,29 @@ fn apply_entries(
                 ));
             }
         }
-        let theirs = git::read_blob(objects_repo, source_sha, rel_path);
-        let base = base_sha.and_then(|sha| git::read_blob(objects_repo, sha, rel_path));
-        let ours = read_worktree_file(worktree_dir, rel_path)?;
+        let theirs_opt = git::read_blob(objects_repo, source_sha, rel_path);
+        let base_opt = base_sha.and_then(|sha| git::read_blob(objects_repo, sha, rel_path));
+        let ours_opt = read_worktree_file(worktree_dir, rel_path)?;
+
+        // Line endings are irrelevant to the engine: a `core.autocrlf=true`
+        // checkout holds CRLF worktree bytes while blobs hold LF, so every
+        // equality check and the merge itself compare CRLF→LF normalised
+        // text. Binaries (NUL in the first 8k) keep exact byte semantics and
+        // are never normalised; writes always use the original blob bytes so
+        // checkouts stay byte-identical to blobs.
+        let text_path = !theirs_opt.as_ref().is_some_and(|b| is_binary(b))
+            && !base_opt.as_ref().is_some_and(|b| is_binary(b))
+            && !ours_opt.as_ref().is_some_and(|b| is_binary(b));
+        let normalised = |bytes: &[u8]| -> Vec<u8> {
+            if text_path {
+                strip_cr(bytes)
+            } else {
+                bytes.to_vec()
+            }
+        };
+        let theirs_norm_opt = theirs_opt.as_ref().map(|b| normalised(b));
+        let base_norm_opt = base_opt.as_ref().map(|b| normalised(b));
+        let ours_norm_opt = ours_opt.as_ref().map(|b| normalised(b));
 
         let record = |set: &mut ApplyOutcomeSet, outcome: ApplyOutcome, reason: Option<&str>| {
             set.results.push(ApplyResult {
@@ -289,13 +331,13 @@ fn apply_entries(
             });
         };
 
-        let theirs = match theirs {
-            None => {
-                if ours.is_none() {
+        let (theirs, theirs_norm) = match (theirs_opt, theirs_norm_opt) {
+            (None, _) => {
+                if ours_opt.is_none() {
                     record(set, ApplyOutcome::Unchanged, Some("already absent"));
                     return Ok(());
                 }
-                if base.is_some() && ours == base {
+                if base_opt.is_some() && ours_norm_opt == base_norm_opt {
                     delete_worktree_file(worktree_dir, rel_path)?;
                     record(set, ApplyOutcome::Deleted, None);
                     return Ok(());
@@ -306,10 +348,11 @@ fn apply_entries(
                     "delete-diverge",
                 ));
             }
-            Some(bytes) => bytes,
+            (Some(bytes), Some(norm)) => (bytes, norm),
+            _ => unreachable!("normalised counterpart always exists with its source"),
         };
 
-        if ours.as_deref() == Some(theirs.as_slice()) {
+        if ours_norm_opt.as_deref() == Some(theirs_norm.as_slice()) {
             record(
                 set,
                 ApplyOutcome::Unchanged,
@@ -319,13 +362,13 @@ fn apply_entries(
             return Ok(());
         }
 
-        let ours = match ours {
-            None => {
+        let (_ours, ours_norm) = match (ours_opt, ours_norm_opt) {
+            (None, _) => {
                 write_file(worktree_dir, rel_path, &theirs)?;
                 record(
                     set,
                     ApplyOutcome::Written,
-                    Some(if base.is_none() {
+                    Some(if base_opt.is_none() {
                         "added"
                     } else {
                         "restored-add"
@@ -334,11 +377,12 @@ fn apply_entries(
                 push_mode(set, rel_path, mode.as_deref());
                 return Ok(());
             }
-            Some(existing) => existing,
+            (Some(existing), Some(norm)) => (existing, norm),
+            _ => unreachable!("normalised counterpart always exists with its source"),
         };
 
-        let base = match base {
-            None => {
+        let (_base, base_norm) = match (base_opt, base_norm_opt) {
+            (None, _) => {
                 if options.allowed_add_overwrite.contains(rel_path) {
                     write_file(worktree_dir, rel_path, &theirs)?;
                     record(set, ApplyOutcome::Written, Some(ADD_OVER_EXISTING_REASON));
@@ -351,11 +395,12 @@ fn apply_entries(
                     "add-over-diverge",
                 ));
             }
-            Some(bytes) => bytes,
+            (Some(bytes), Some(norm)) => (bytes, norm),
+            _ => unreachable!("normalised counterpart always exists with its source"),
         };
 
         // Covers binaries that `git merge-file` refuses.
-        if ours == base {
+        if ours_norm == base_norm {
             write_file(worktree_dir, rel_path, &theirs)?;
             record(
                 set,
@@ -365,15 +410,18 @@ fn apply_entries(
             push_mode(set, rel_path, mode.as_deref());
             return Ok(());
         }
+        // `base` (original bytes) is only kept for parity with the old
+        // shape; comparisons and the merge use the normalised forms.
+        let _ = (&_base, &_ours);
 
-        match three_way_merge(scratch, rel_path, &ours, &base, &theirs) {
+        match three_way_merge(scratch, rel_path, &ours_norm, &base_norm, &theirs_norm) {
             MergeOutcome::Conflict(reason) => Err(ApplyConflict::new(
                 format!("Three-way merge failed for {rel_path}: {reason}"),
                 Some(rel_path.to_string()),
                 "merge-conflict",
             )),
             MergeOutcome::Ok(content) => {
-                if content == ours {
+                if normalised(&content) == ours_norm {
                     record(
                         set,
                         ApplyOutcome::Unchanged,

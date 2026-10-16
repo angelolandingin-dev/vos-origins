@@ -395,9 +395,19 @@ pub fn worktree_add(
     start_point: &str,
 ) -> Result<(), GitError> {
     let worktree = worktree_dir.to_string_lossy().to_string();
-    run_ok(
-        repo_dir,
-        &[
+    // Force LF checkouts in the engine-owned worktree regardless of the
+    // user's `core.autocrlf` so worktree bytes stay identical to blobs.
+    // The `-c` flags only affect this invocation; the user's repository
+    // config is never mutated — only the new worktree's config below.
+    let mut command = base_command();
+    command
+        .arg("-c")
+        .arg("core.autocrlf=false")
+        .arg("-c")
+        .arg("core.eol=lf")
+        .arg("-C")
+        .arg(repo_dir)
+        .args([
             "worktree",
             "add",
             "-f",
@@ -405,8 +415,23 @@ pub fn worktree_add(
             branch,
             &worktree,
             start_point,
-        ],
-    )?;
+        ]);
+    let output = command.output().map_err(|err| GitError {
+        args: format!("worktree add -f -b {branch} {worktree} {start_point}"),
+        status: None,
+        stderr: err.to_string(),
+    })?;
+    if !output.status.success() {
+        return Err(GitError {
+            args: format!("worktree add -f -b {branch} {worktree} {start_point}"),
+            status: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        });
+    }
+    // Persist LF behaviour for later git operations inside this
+    // engine-owned worktree (checkout, commit, add). Never touches `repo_dir`.
+    let _ = run(worktree_dir, &["config", "core.autocrlf", "false"]);
+    let _ = run(worktree_dir, &["config", "core.eol", "lf"]);
     Ok(())
 }
 
@@ -416,10 +441,21 @@ pub fn worktree_remove(repo_dir: &Path, worktree_dir: &Path) {
 }
 
 pub fn clone_no_tags(url: &str, dest: &Path) -> Result<(), GitError> {
-    let dest = dest.to_string_lossy().to_string();
+    let dest_str = dest.to_string_lossy().to_string();
     let (clean_url, token) = split_credentials(url);
     let (mut command, mut display) = authed_command(None, token.as_deref());
-    let args = ["clone", "--no-tags", &clean_url, &dest];
+    // `-c` after `clone` persists into the new (engine-owned) clone's config
+    // so its checkouts stay LF regardless of the user's global autocrlf.
+    let args = [
+        "clone",
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.eol=lf",
+        "--no-tags",
+        &clean_url,
+        &dest_str,
+    ];
     command.args(args);
     display.extend(args.iter().map(|s| s.to_string()));
     let out = run_authed(command, &display).map_err(|err| GitError {
@@ -434,6 +470,10 @@ pub fn clone_no_tags(url: &str, dest: &Path) -> Result<(), GitError> {
             stderr: sanitize(&out.stderr),
         });
     }
+    // Backstop for servers/versions that ignore `clone -c`: enforce LF in the
+    // engine-owned clone only. Never touches any user repository.
+    let _ = run(dest, &["config", "core.autocrlf", "false"]);
+    let _ = run(dest, &["config", "core.eol", "lf"]);
     Ok(())
 }
 
