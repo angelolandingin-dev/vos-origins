@@ -53,9 +53,22 @@ impl std::fmt::Display for GitError {
 
 impl std::error::Error for GitError {}
 
+/// A git process that can never open an interactive credential prompt (Git Credential
+/// Manager, askpass, or the terminal): the engine always supplies its own token, so
+/// anything else must fail fast instead of popping a sign-in dialog.
+fn base_command() -> Command {
+    let mut command = Command::new("git");
+    command
+        .arg("-c")
+        .arg("credential.helper=")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never");
+    command
+}
+
 /// `Err` = spawn failure; non-zero exit is `Ok` with `status != 0`.
 pub fn run(repo_dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
-    let mut command = Command::new("git");
+    let mut command = base_command();
     command.arg("-C").arg(repo_dir).args(args);
     let output = command.output().map_err(|err| GitError {
         args: args.join(" "),
@@ -82,14 +95,11 @@ pub fn run_ok(repo_dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
 }
 
 pub fn run_global(args: &[&str]) -> Result<GitOutput, GitError> {
-    let output = Command::new("git")
-        .args(args)
-        .output()
-        .map_err(|err| GitError {
-            args: args.join(" "),
-            status: None,
-            stderr: err.to_string(),
-        })?;
+    let output = base_command().args(args).output().map_err(|err| GitError {
+        args: args.join(" "),
+        status: None,
+        stderr: err.to_string(),
+    })?;
     Ok(GitOutput {
         status: output.status.code().unwrap_or(-1),
         stdout: output.stdout,
@@ -517,7 +527,7 @@ fn split_credentials(url: &str) -> (String, Option<String>) {
 /// argv URL). Returns the command plus the redacted argv for error reports
 /// (the token itself is never part of `display`).
 fn authed_command(repo_dir: Option<&Path>, token: Option<&str>) -> (Command, Vec<String>) {
-    let mut command = Command::new("git");
+    let mut command = base_command();
     let mut display: Vec<String> = Vec::new();
     if let Some(dir) = repo_dir {
         command.arg("-C").arg(dir);
@@ -631,6 +641,25 @@ mod tests {
         let clean = sanitize(url);
         assert!(!clean.contains("ghs_secret"), "{clean}");
         assert!(clean.contains("x-access-token:***@"), "{clean}");
+    }
+
+    #[test]
+    fn git_commands_never_open_a_credential_prompt() {
+        let command = base_command();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            args.iter().any(|arg| arg == "credential.helper="),
+            "expected a credential.helper reset, got {args:?}"
+        );
+        let env_keys: Vec<String> = command
+            .get_envs()
+            .map(|(key, _)| key.to_string_lossy().to_string())
+            .collect();
+        assert!(env_keys.iter().any(|key| key == "GIT_TERMINAL_PROMPT"));
+        assert!(env_keys.iter().any(|key| key == "GCM_INTERACTIVE"));
     }
 
     #[test]
