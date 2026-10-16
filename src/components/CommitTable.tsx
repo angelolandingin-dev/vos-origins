@@ -190,7 +190,7 @@ export function CommitTable({
         <div className="ml-auto flex items-center gap-2">
           {selectedShas.length > 0 ? (
             <>
-              <span className="chip text-accent-ink tabular-nums">
+              <span className="meta text-accent-ink tabular-nums">
                 <SquareCheck className="h-2.5 w-2.5" aria-hidden="true" />
                 {selectedShas.length} selected
               </span>

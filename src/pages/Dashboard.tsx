@@ -297,7 +297,7 @@ export function Dashboard() {
                     <span className="min-w-0 flex-1 truncate text-xs text-fg">
                       {run.displayTitle}
                     </span>
-                    <span className="chip">{run.subsystemId}</span>
+                    <span className="meta">{run.subsystemId}</span>
                     <span className="mono truncate text-disabled">{run.targetBranch}</span>
                     <span className="truncate text-[11px] text-muted">
                       {formatDateTime(run.updatedAt)}
@@ -348,9 +348,9 @@ export function Dashboard() {
                         kind={HISTORY_LABEL[entry.kind].kind}
                         label={HISTORY_LABEL[entry.kind].label}
                       />
-                      <span className="chip">{entry.subsystemId}</span>
+                      <span className="meta">{entry.subsystemId}</span>
                       {entry.inheritedFromBranch ? (
-                        <span className="chip text-status-unknown-ink">
+                        <span className="meta text-status-unknown-ink">
                           inherited from {entry.inheritedFromBranch}
                         </span>
                       ) : null}

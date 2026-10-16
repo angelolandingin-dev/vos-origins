@@ -101,7 +101,7 @@ export function Settings() {
                   <KeyValue label="Data source">
                     <span
                       className={cx(
-                        'chip',
+                        'meta',
                         status?.dataSource === 'fixture'
                           ? 'text-status-unknown-ink'
                           : 'text-status-applied-ink',

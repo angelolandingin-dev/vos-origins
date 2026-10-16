@@ -256,7 +256,7 @@ export function CommitDetailsPanel({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="mono truncate text-fg">{dependency.name}</span>
-                    <span className="chip">{dependency.section}</span>
+                    <span className="meta">{dependency.section}</span>
                   </div>
                   <p className="mono mt-1 flex items-center gap-1.5 truncate tabular-nums">
                     <span className="text-disabled">{dependency.fromRange ?? '(absent)'}</span>
@@ -289,7 +289,7 @@ export function CommitDetailsPanel({
               <FileText className="h-3.5 w-3.5" aria-hidden="true" />
               Files Changed
             </h3>
-            <span className="chip tabular-nums">{details.filesChanged}</span>
+            <span className="meta tabular-nums">{details.filesChanged}</span>
           </div>
 
           {details.files.length === 0 ? (
@@ -308,7 +308,7 @@ export function CommitDetailsPanel({
                       title={`${file.path}\n${policy.note}`}
                       className={cx(
                         'flex h-[29px] w-full items-center gap-2 rounded-md px-2.5 text-left transition-colors',
-                        active ? 'bg-selection ring-1 ring-accent/40 ring-inset' : 'hover:bg-hover',
+                        active ? 'bg-selection' : 'hover:bg-hover',
                       )}
                     >
                       <span
@@ -330,7 +330,7 @@ export function CommitDetailsPanel({
                         -{file.deletions}
                       </span>
                       {file.policy !== 'apply' ? (
-                        <span className={cx('chip shrink-0', policy.className)}>
+                        <span className={cx('meta shrink-0', policy.className)}>
                           {policy.label}
                         </span>
                       ) : null}

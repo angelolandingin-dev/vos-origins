@@ -38,7 +38,7 @@ function runBadge(run: WorkflowRun) {
   if (run.conclusion === 'success')
     return (
       <span
-        className="chip text-status-applied-ink"
+        className="meta text-status-applied-ink"
         title="A successful run is not an integration — only a merged provenance commit counts."
       >
         <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-status-applied" />
@@ -203,9 +203,9 @@ export function WorkflowRuns() {
             <div className="space-y-4 p-4">
               <div className="flex flex-wrap items-center gap-2">
                 {runBadge(details.data.run)}
-                <span className="chip">target {details.data.run.targetBranch}</span>
-                <span className="chip">mode {details.data.run.mode}</span>
-                <span className="chip">{details.data.run.event}</span>
+                <span className="meta">target {details.data.run.targetBranch}</span>
+                <span className="meta">mode {details.data.run.mode}</span>
+                <span className="meta">{details.data.run.event}</span>
               </div>
 
               <dl className="rounded-md border border-line bg-raised px-3 py-1">
@@ -302,7 +302,7 @@ export function WorkflowRuns() {
                     Logs
                   </h3>
                   {details.data.logsTruncated ? (
-                    <span className="chip text-status-unknown-ink">bounded</span>
+                    <span className="meta text-status-unknown-ink">bounded</span>
                   ) : null}
                 </div>
                 {details.data.logs.length === 0 ? (

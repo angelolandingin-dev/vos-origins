@@ -51,13 +51,13 @@ function runChip(run: WorkflowRun) {
     return <StatusBadge kind="failed" label={`Run #${run.runNumber} failed`} />;
   if (run.conclusion === 'success')
     return (
-      <span className="chip text-status-applied-ink" title="Workflow succeeded">
+      <span className="meta text-status-applied-ink" title="Workflow succeeded">
         <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-status-applied" />
         Run #{run.runNumber} succeeded
       </span>
     );
   return (
-    <span className="chip" title={`Conclusion: ${run.conclusion ?? run.status}`}>
+    <span className="meta" title={`Conclusion: ${run.conclusion ?? run.status}`}>
       Run #{run.runNumber} {run.conclusion ?? run.status}
     </span>
   );
@@ -381,7 +381,7 @@ function CommitWorkspacePanel({
                         <span className="mono min-w-0 flex-1 truncate text-fg tabular-nums">
                           {file.path}
                         </span>
-                        <span className="chip">{file.change}</span>
+                        <span className="meta">{file.change}</span>
                         <span className="mono w-12 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                           +{file.additions}
                         </span>
@@ -427,7 +427,7 @@ function CommitWorkspacePanel({
                       <div className="flex items-center gap-2">
                         <Package className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
                         <span className="mono truncate text-fg">{dependency.name}</span>
-                        <span className="chip">{dependency.section}</span>
+                        <span className="meta">{dependency.section}</span>
                         <span className="ml-auto tracking-wide text-disabled uppercase">
                           {dependency.change}
                         </span>
@@ -476,7 +476,7 @@ function CommitWorkspacePanel({
                       <span className="min-w-0 flex-1 truncate text-xs text-fg">
                         {run.displayTitle}
                       </span>
-                      <span className="chip">target {run.targetBranch}</span>
+                      <span className="meta">target {run.targetBranch}</span>
                       <span className="mono text-right text-[11px] text-disabled tabular-nums">
                         {formatDateTime(run.updatedAt)}
                       </span>
@@ -630,7 +630,7 @@ function CommitWorkspacePanel({
                       />
                       <span className="min-w-0 flex-1 truncate text-xs text-fg">{pr.title}</span>
                       <span className="mono text-disabled">{pr.repository}</span>
-                      <span className="chip">base {pr.baseBranch}</span>
+                      <span className="meta">base {pr.baseBranch}</span>
                       <IconButton
                         icon={ExternalLink}
                         label="Open pull request"

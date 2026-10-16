@@ -457,7 +457,7 @@ function PromotionDialogContent({
                       />
                     ) : null}
                     <span className="mono truncate text-fg">{dependency.name}</span>
-                    <span className="chip shrink-0">{dependency.section}</span>
+                    <span className="meta shrink-0">{dependency.section}</span>
                     <span className="mono truncate text-muted">
                       {dependency.fromRange ?? '(absent)'} → {dependency.toRange ?? '(removed)'}
                     </span>

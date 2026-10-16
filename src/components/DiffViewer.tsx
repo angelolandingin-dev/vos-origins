@@ -159,14 +159,14 @@ export function DiffViewer({
           </span>
         )}
 
-        <span className="chip">{diff.language}</span>
+        <span className="meta">{diff.language}</span>
         <span className="mono text-right text-[11px] text-status-applied-ink tabular-nums">
           +{diff.additions}
         </span>
         <span className="mono text-right text-[11px] text-status-blocked-ink tabular-nums">
           -{diff.deletions}
         </span>
-        {diff.binary ? <span className="chip text-status-unknown-ink">binary</span> : null}
+        {diff.binary ? <span className="meta text-status-unknown-ink">binary</span> : null}
 
         <div className="ml-auto flex items-center gap-2">
           <span className="mono text-right text-[11px] text-disabled tabular-nums">

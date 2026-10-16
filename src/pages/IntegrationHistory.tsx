@@ -228,7 +228,7 @@ export function IntegrationHistory() {
                     {prStateBadge(pr)}
                     <span className="mono text-right text-fg tabular-nums">#{pr.number}</span>
                     <span className="min-w-0 flex-1 truncate text-xs text-fg">{pr.title}</span>
-                    <span className="chip">{pr.subsystemId}</span>
+                    <span className="meta">{pr.subsystemId}</span>
                     <span className="mono truncate text-disabled">base {pr.baseBranch}</span>
                     <IconButton
                       icon={ExternalLink}

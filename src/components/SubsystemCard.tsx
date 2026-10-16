@@ -57,7 +57,7 @@ export function SubsystemCard({ subsystem, selected, onSelect, commitCount }: Su
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
           <span className="truncate text-xs font-semibold text-fg">{subsystem.name}</span>
-          {!subsystem.enabled ? <span className="chip text-disabled">disabled</span> : null}
+          {!subsystem.enabled ? <span className="meta text-disabled">disabled</span> : null}
         </span>
         <span className="mono mt-px block truncate text-disabled" title={subsystem.repository}>
           {subsystem.repository}

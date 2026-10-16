@@ -338,7 +338,7 @@
   @apply input cursor-pointer appearance-none pr-7;
 }
 
-@utility chip {
+@utility meta {
   @apply inline-flex items-center gap-1 text-[11px] whitespace-nowrap text-muted;
 }
 
