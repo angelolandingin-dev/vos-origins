@@ -2278,14 +2278,14 @@ fn push_pr_mode_still_pushes_and_creates_pr() {
 }
 
 #[test]
-fn delivery_omitted_on_the_wire_defaults_to_local() {
+fn delivery_omitted_on_the_wire_defaults_to_local_direct() {
     use subsystem_integration_manager_lib::github::models::{PromotionDelivery, PromotionRequest};
 
     let without: PromotionRequest = serde_json::from_str(
         r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true}"#,
     )
     .expect("wire without delivery parses");
-    assert_eq!(without.delivery, PromotionDelivery::Local);
+    assert_eq!(without.delivery, PromotionDelivery::LocalDirect);
 
     let explicit: PromotionRequest = serde_json::from_str(
         r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true,"delivery":"push_pr"}"#,
@@ -2298,6 +2298,12 @@ fn delivery_omitted_on_the_wire_defaults_to_local() {
     )
     .expect("wire with local parses");
     assert_eq!(local.delivery, PromotionDelivery::Local);
+
+    let direct: PromotionRequest = serde_json::from_str(
+        r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true,"delivery":"local_direct"}"#,
+    )
+    .expect("wire with local_direct parses");
+    assert_eq!(direct.delivery, PromotionDelivery::LocalDirect);
 }
 
 #[test]
@@ -2403,6 +2409,400 @@ fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
         ref_in(&main2.dir, &format!("refs/heads/{branch}")).is_some(),
         "the pre-existing branch must not be deleted by the failed re-run"
     );
+}
+
+// ===========================================================================
+// `local_direct` delivery: the commit lands on the local target branch
+// ===========================================================================
+
+#[test]
+fn local_direct_checked_out_target_advances_branch_and_worktree() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+
+    let src_dir = make_temp_dir("src-direct-clean");
+    let main_dir = make_temp_dir("main-direct-clean");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    git_out(&main.dir, &["checkout", "-q", "staging"]);
+    let staging_before = sha(&main.dir, "staging");
+    assert_eq!(status_porcelain(&main.dir), "", "target clone starts clean");
+
+    // Even with push/create_pr requested, `local_direct` must not call them.
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::LocalDirect,
+            push: true,
+            create_pr: true,
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let commit = report.commit_sha.clone().expect("commit");
+
+    // The target branch advanced to the provenance commit; no temp branch.
+    assert_eq!(sha(&main.dir, "staging"), commit, "staging advanced");
+    assert!(
+        report.integration_branch.is_none(),
+        "no temp branch may be advertised"
+    );
+    let message = git_out(&main.dir, &["log", "-1", "--format=%B", "staging"]);
+    assert!(message.contains("Subsystem-ID: hr-management"), "{message}");
+    assert!(message.contains(&src.c), "{message}");
+    assert!(is_ancestor(&main.dir, &staging_before, &commit));
+
+    // The checkout followed: still on staging, at the new commit, tree clean.
+    assert_eq!(
+        git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "staging",
+        "current branch unchanged"
+    );
+    assert_eq!(sha(&main.dir, "HEAD"), commit);
+    assert_eq!(
+        status_porcelain(&main.dir),
+        "",
+        "working tree matches the new commit"
+    );
+    assert!(
+        main.dir.join("src/modules/hr/c.txt").exists(),
+        "promoted file present in the working tree"
+    );
+
+    // No push, no PR — stub records zero calls, report carries none.
+    assert!(
+        github.calls_named("pushBranch").is_empty(),
+        "local_direct must not push: {:?}",
+        github.calls()
+    );
+    assert!(
+        github.create_pr_calls().is_empty(),
+        "local_direct must not open a PR"
+    );
+    assert!(report.push.is_none());
+    assert!(report.pull_request.is_none());
+
+    // No temp worktree and no integration branch left behind.
+    let worktrees = git_out(&main.dir, &["worktree", "list"]);
+    assert!(
+        !worktrees.contains("vos-integration-"),
+        "temp worktree must be removed: {worktrees}"
+    );
+    let branches = git_out(&main.dir, &["branch", "--format=%(refname:short)"]);
+    assert!(
+        !branches
+            .lines()
+            .any(|b| b.trim().starts_with("integration/")),
+        "no integration branch may be created: {branches}"
+    );
+}
+
+#[test]
+fn local_direct_other_branch_checked_out_moves_ref_only() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+
+    let src_dir = make_temp_dir("src-direct-detached");
+    let main_dir = make_temp_dir("main-direct-detached");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    // HEAD stays on master; staging is the promotion target.
+    assert_eq!(
+        git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "master"
+    );
+    let master_before = sha(&main.dir, "master");
+    let index_before =
+        std::fs::read(main.dir.join("src/modules/hr/index.ts")).expect("read worktree file");
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::LocalDirect,
+            target_branch: "staging".to_string(),
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let commit = report.commit_sha.clone().expect("commit");
+
+    // The target ref moved to the provenance commit.
+    assert_eq!(sha(&main.dir, "staging"), commit);
+    let message = git_out(&main.dir, &["log", "-1", "--format=%B", "staging"]);
+    assert!(message.contains("Subsystem-ID: hr-management"), "{message}");
+
+    // The checked-out branch and the working-tree files are unchanged.
+    assert_eq!(
+        git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "master",
+        "current branch untouched"
+    );
+    assert_eq!(
+        sha(&main.dir, "master"),
+        master_before,
+        "master ref untouched"
+    );
+    assert_eq!(sha(&main.dir, "HEAD"), master_before);
+    assert_eq!(
+        std::fs::read(main.dir.join("src/modules/hr/index.ts")).expect("read worktree file"),
+        index_before,
+        "working-tree files unchanged"
+    );
+    assert!(
+        !main.dir.join("src/modules/hr/c.txt").exists(),
+        "promoted file must not leak into the other checkout"
+    );
+    assert_eq!(status_porcelain(&main.dir), "");
+
+    assert!(report.push.is_none());
+    assert!(report.pull_request.is_none());
+    let branches = git_out(&main.dir, &["branch", "--format=%(refname:short)"]);
+    assert!(
+        !branches
+            .lines()
+            .any(|b| b.trim().starts_with("integration/")),
+        "no integration branch may be created: {branches}"
+    );
+}
+
+#[test]
+fn local_direct_dirty_worktree_fails_closed() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+
+    let src_dir = make_temp_dir("src-direct-dirty");
+    let main_dir = make_temp_dir("main-direct-dirty");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    git_out(&main.dir, &["checkout", "-q", "staging"]);
+    let staging_before = sha(&main.dir, "staging");
+    write(&main.dir, "uncommitted.txt", b"dirty\n");
+    assert!(
+        !status_porcelain(&main.dir).is_empty(),
+        "working tree must be dirty for this test"
+    );
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::LocalDirect,
+            ..Default::default()
+        },
+    );
+    assert!(!report.ok);
+    assert!(
+        codes(&report).contains(&"DIRTY_WORKTREE".to_string()),
+        "{:?}",
+        codes(&report)
+    );
+    assert_eq!(sha(&main.dir, "staging"), staging_before, "nothing moved");
+    assert!(
+        main.dir.join("uncommitted.txt").exists(),
+        "user work untouched"
+    );
+    assert!(github.create_pr_calls().is_empty());
+    let branches = git_out(&main.dir, &["branch", "--format=%(refname:short)"]);
+    assert!(
+        !branches
+            .lines()
+            .any(|b| b.trim().starts_with("integration/")),
+        "failed promotion must not leave an integration/* ref: {branches}"
+    );
+    let worktrees = git_out(&main.dir, &["worktree", "list"]);
+    assert!(
+        !worktrees.contains("vos-integration-"),
+        "temp worktree must be removed: {worktrees}"
+    );
+}
+
+#[test]
+fn local_direct_target_tip_moved_fails_closed() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use subsystem_integration_manager_lib::services::engine::lockfile::{
+        LockfileGenerator, LockfileOutcome,
+    };
+
+    /// Simulates a concurrent advance of the target branch between compute
+    /// and apply: a fresh empty commit parented on the tip, made with
+    /// plumbing only (no checkout is touched).
+    struct MoveTipLockfile {
+        repo: PathBuf,
+        branch: String,
+    }
+
+    impl LockfileGenerator for MoveTipLockfile {
+        fn generate(&self, _worktree_dir: &Path) -> LockfileOutcome {
+            let tip = git_out(&self.repo, &["rev-parse", &self.branch]);
+            let tree = git_out(&self.repo, &["rev-parse", &format!("{tip}^{{tree}}")]);
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&self.repo)
+                .args(["commit-tree", &tree, "-p", &tip, "-m", "concurrent advance"])
+                .output()
+                .expect("spawn git commit-tree");
+            assert!(
+                output.status.success(),
+                "commit-tree failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let moved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            git_out(
+                &self.repo,
+                &[
+                    "update-ref",
+                    &format!("refs/heads/{}", self.branch),
+                    &moved,
+                    &tip,
+                ],
+            );
+            LockfileOutcome {
+                manager: Some("npm".to_string()),
+                command: None,
+                ok: true,
+                skipped: false,
+                supported: true,
+                stubbed: true,
+                reason: None,
+                output: None,
+            }
+        }
+    }
+
+    let src_dir = make_temp_dir("src-direct-moved");
+    let main_dir = make_temp_dir("main-direct-moved");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let staging_before = sha(&main.dir, "staging");
+
+    let request = EngineRequest {
+        subsystem_id: "hr-management".to_string(),
+        commits: vec![src.c.clone()],
+        mode: PromotionMode::Individual,
+        base_sha: None,
+        target_branch: "staging".to_string(),
+        delivery: PromotionDelivery::LocalDirect,
+        on_conflict: PromotionOnConflict::Fail,
+    };
+    let engine_options = EngineOptions {
+        target_repo_dir: main.dir.clone(),
+        temp_root: sandbox_root(),
+        push_remote_url: None,
+        token: None,
+        allow_shared_config: false,
+        allow_removals: false,
+        nonce: format!(
+            "test-direct-moved-{}-{}",
+            std::process::id(),
+            make_temp_dir("nonce")
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        ),
+        push: false,
+        create_pr: false,
+    };
+    let source_dir = src_dir.clone();
+    let source_url =
+        move |_e: &subsystem_integration_manager_lib::services::registry::SubsystemEntry| {
+            Some(source_dir.to_string_lossy().replace('\\', "/"))
+        };
+    let lockfile = MoveTipLockfile {
+        repo: main.dir.clone(),
+        branch: "staging".to_string(),
+    };
+    let deps = EngineDeps {
+        github: &github,
+        lockfile: &lockfile,
+        source_url: &source_url,
+    };
+    let report = run_promotion(&registry, &request, &engine_options, &deps);
+    assert!(!report.ok);
+    assert!(
+        codes(&report).contains(&"TARGET_MOVED".to_string()),
+        "{:?}",
+        codes(&report)
+    );
+
+    // The tip is the concurrent move — the promotion commit never landed.
+    let staging_now = sha(&main.dir, "staging");
+    assert_ne!(staging_now, staging_before, "hook must have moved the tip");
+    let message = git_out(&main.dir, &["log", "-1", "--format=%B", "staging"]);
+    assert!(
+        !message.contains("Subsystem-ID"),
+        "promotion commit must not be on the target: {message}"
+    );
+    let branches = git_out(&main.dir, &["branch", "--format=%(refname:short)"]);
+    assert!(
+        !branches
+            .lines()
+            .any(|b| b.trim().starts_with("integration/")),
+        "failed promotion must not leave an integration/* ref: {branches}"
+    );
+    let worktrees = git_out(&main.dir, &["worktree", "list"]);
+    assert!(
+        !worktrees.contains("vos-integration-"),
+        "temp worktree must be removed: {worktrees}"
+    );
+}
+
+#[test]
+fn local_direct_next_commands_carry_cd_and_push() {
+    use subsystem_integration_manager_lib::commands::promotion::build_direct_next_commands;
+
+    let dir = if cfg!(windows) {
+        PathBuf::from(r"C:\repos\main-system")
+    } else {
+        PathBuf::from("/tmp/main-system")
+    };
+    let commands = build_direct_next_commands(&dir, "staging");
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(
+        commands[0].starts_with("cd "),
+        "first command cds into the clone: {commands:?}"
+    );
+    assert!(
+        commands[0].contains(&dir.to_string_lossy().to_string()),
+        "{commands:?}"
+    );
+    assert_eq!(commands[1], "git push origin staging", "{commands:?}");
+
+    // Result shape: local_direct carries commands and no PR.
+    use subsystem_integration_manager_lib::github::models::{
+        PromotionDelivery, PromotionDispatchResult,
+    };
+    let direct_json = serde_json::json!({
+        "accepted": true, "prUrl": null, "prNumber": null,
+        "branch": "staging", "commitSha": "a".repeat(40),
+        "targetBranch": "staging", "message": "m", "requestedAt": "t",
+        "findings": [], "delivery": "local_direct",
+        "nextCommands": commands,
+    });
+    let direct: PromotionDispatchResult =
+        serde_json::from_value(direct_json).expect("local_direct result parses");
+    assert_eq!(direct.delivery, PromotionDelivery::LocalDirect);
+    assert!(!direct.next_commands.is_empty());
+    assert!(direct.pr_url.is_none());
+    assert!(direct.pr_number.is_none());
 }
 
 #[test]

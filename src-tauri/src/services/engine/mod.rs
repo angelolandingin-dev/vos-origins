@@ -58,8 +58,10 @@ pub struct EngineRequest {
     pub base_sha: Option<String>,
     pub target_branch: String,
     /// `local` builds the branch + commit in the target clone and stops
-    /// (no push, no PR); `push_pr` is today's push-then-PR behaviour.
-    /// Defaults to `local` when omitted on the wire.
+    /// (no push, no PR); `local_direct` commits the same delta straight onto
+    /// the local target branch (no push, no PR — pushing stays manual);
+    /// `push_pr` is today's push-then-PR behaviour.
+    /// Defaults to `local_direct` when omitted on the wire.
     pub delivery: PromotionDelivery,
     /// `fail` (default) refuses every unmergeable path; `take_subsystem`
     /// resolves merge conflicts, both-sides-touched binaries, delete-vs-diverge,
@@ -342,8 +344,10 @@ fn run_inner(
         seen.push(sha);
     }
 
-    if request.delivery == PromotionDelivery::Local
-        && !git::is_git_repository(&options.target_repo_dir)
+    if matches!(
+        request.delivery,
+        PromotionDelivery::Local | PromotionDelivery::LocalDirect
+    ) && !git::is_git_repository(&options.target_repo_dir)
     {
         report.blockers.push(Blocker::new(
             "LOCAL_REPO_INVALID",
@@ -383,6 +387,21 @@ fn run_inner(
         return Err(Bail);
     };
     report.start_point = Some(target_tip.clone());
+
+    // `local_direct` commits straight onto `refs/heads/<target>`, so the
+    // local ref must exist now: a remote-only tip has nowhere to land.
+    if request.delivery == PromotionDelivery::LocalDirect
+        && git::local_tip(&options.target_repo_dir, &request.target_branch).is_none()
+    {
+        report.blockers.push(Blocker::new(
+            "TARGET_NOT_LOCAL",
+            format!(
+                "Target branch \"{}\" has no local ref for a direct commit; check it out (or fetch it) in the local clone first, then re-promote.",
+                request.target_branch
+            ),
+        ));
+        return Err(Bail);
+    }
 
     let duplicates = history::detect_branch_duplicates(
         &options.target_repo_dir,
@@ -853,6 +872,101 @@ fn run_inner(
             "Integration commit is not descended from the target tip; aborting.",
         ));
         return Err(Bail);
+    }
+
+    // `local_direct` delivery: the commit built above (identical delta
+    // application, provenance trailers, conflict handling, and `on_conflict`
+    // policy) lands straight onto the local target branch. Never pushes,
+    // never opens a PR. Fail-closed: the target tip is re-checked against
+    // the pinned tip, a dirty checkout of the target refuses, and the
+    // temporary branch is always removed.
+    if request.delivery == PromotionDelivery::LocalDirect {
+        let repo = &options.target_repo_dir;
+        let refname = format!("refs/heads/{}", request.target_branch);
+        match git::local_tip(repo, &request.target_branch) {
+            Some(current) if current == target_tip => {}
+            Some(current) => {
+                report.blockers.push(Blocker::new(
+                    "TARGET_MOVED",
+                    format!(
+                        "Target branch \"{}\" moved while the promotion was being built (expected {}, now {}); nothing was committed to it. Retry the promotion to rebuild against the new tip.",
+                        request.target_branch,
+                        short(&target_tip),
+                        short(&current),
+                    ),
+                ));
+                return Err(Bail);
+            }
+            None => {
+                report.blockers.push(Blocker::new(
+                    "TARGET_MOVED",
+                    format!(
+                        "Target branch \"{}\" lost its local ref while the promotion was being built; nothing was committed to it. Retry the promotion to rebuild against the current state.",
+                        request.target_branch,
+                    ),
+                ));
+                return Err(Bail);
+            }
+        }
+
+        let checked_out =
+            git::current_branch(repo).is_some_and(|current| current == request.target_branch);
+        if checked_out {
+            if !git::status_porcelain(repo).trim().is_empty() {
+                report.blockers.push(Blocker::new(
+                    "DIRTY_WORKTREE",
+                    format!(
+                        "Your checkout of \"{}\" has uncommitted changes; refusing to fast-forward it. Commit or stash them first (`git status` in '{}'), then re-promote. Nothing was committed.",
+                        request.target_branch,
+                        repo.display(),
+                    ),
+                ));
+                return Err(Bail);
+            }
+            if let Err(err) = git::merge_ff_only(repo, &commit_sha) {
+                report.blockers.push(Blocker::new(
+                    "TARGET_MOVED",
+                    format!(
+                        "Could not fast-forward the \"{}\" checkout to the new commit ({}); the target may have moved. Nothing further was changed — retry the promotion.",
+                        request.target_branch,
+                        git::sanitize(&err.to_string()),
+                    ),
+                ));
+                return Err(Bail);
+            }
+        } else if let Err(err) = git::update_ref(repo, &refname, &commit_sha, &target_tip) {
+            report.blockers.push(Blocker::new(
+                "TARGET_MOVED",
+                format!(
+                    "Target branch \"{}\" moved while the promotion was being built ({}); nothing was committed to it. Retry the promotion to rebuild against the new tip.",
+                    request.target_branch,
+                    git::sanitize(&err.to_string()),
+                ),
+            ));
+            return Err(Bail);
+        }
+
+        // The commit is on the target: drop the temporary branch and worktree
+        // so no `integration/*` ref is left behind. The worktree goes first
+        // (a branch checked out in a linked worktree cannot be deleted), and
+        // `*worktree` is cleared so the outer cleanup does not redo it.
+        git::worktree_remove(repo, &worktree_dir);
+        let _ = std::fs::remove_dir_all(&worktree_dir);
+        *worktree = None;
+        if git::run(repo, &["branch", "--delete", "--force", &branch_name])
+            .map(|out| out.status != 0)
+            .unwrap_or(true)
+        {
+            report.warnings.push(Blocker::new(
+                "TEMP_BRANCH_LEFTOVER",
+                format!(
+                    "The promotion commit landed on \"{}\" but the temporary branch '{branch_name}' could not be deleted; remove it manually (`git branch -D {branch_name}`).",
+                    request.target_branch,
+                ),
+            ));
+        }
+        report.integration_branch = None;
+        return Ok(());
     }
 
     // `local` delivery stops here: the branch + provenance commit stay in the

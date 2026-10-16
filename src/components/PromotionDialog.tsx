@@ -122,7 +122,14 @@ function PromotionDialogContent({
   const conflicting = dependencies.filter((dependency) => dependency.conflict);
   const cumulative = mode === 'cumulative';
   const multiManifest = commits.filter((commit) => commit.touchesManifest).length > 1;
+  const isDirect = delivery === 'local_direct';
   const isLocal = delivery === 'local';
+  const isPushPr = delivery === 'push_pr';
+  const deliveryHint = isDirect
+    ? `The commit lands on your local ${targetBranch}; pushing is yours to do.`
+    : isLocal
+      ? 'Creates a branch + commit in your clone (you push it yourself).'
+      : 'Pushes the integration branch and opens a PR (explicit opt-in).';
 
   const canDispatch =
     !dispatching &&
@@ -158,7 +165,7 @@ function PromotionDialogContent({
             <Button variant="secondary" onClick={onClose}>
               Close
             </Button>
-            {result.delivery !== 'local' ? (
+            {result.delivery === 'push_pr' ? (
               <Button variant="primary" icon={GitPullRequestArrow} onClick={onViewRuns}>
                 View workflow runs
               </Button>
@@ -171,16 +178,18 @@ function PromotionDialogContent({
             </Button>
             <Button
               variant="primary"
-              icon={isLocal ? GitBranch : GitPullRequestArrow}
+              icon={isPushPr ? GitPullRequestArrow : GitBranch}
               loading={dispatching}
               disabled={!canDispatch}
               onClick={onDispatch}
             >
               {dispatching
                 ? 'Dispatching…'
-                : isLocal
-                  ? 'Create local branch + commit'
-                  : 'Create integration PR request'}
+                : isDirect
+                  ? `Commit to ${targetBranch} locally`
+                  : isLocal
+                    ? 'Create local branch + commit'
+                    : 'Create integration PR request'}
             </Button>
           </>
         )
@@ -191,11 +200,13 @@ function PromotionDialogContent({
           <InlineAlert
             tone="success"
             title={
-              result.delivery === 'local'
-                ? 'Local branch + commit created'
-                : result.prUrl
-                  ? `Integration PR #${result.prNumber ?? '?'} opened`
-                  : 'Promotion request accepted'
+              result.delivery === 'local_direct'
+                ? `Committed to ${result.targetBranch} locally — push when ready`
+                : result.delivery === 'local'
+                  ? 'Local branch + commit created'
+                  : result.prUrl
+                    ? `Integration PR #${result.prNumber ?? '?'} opened`
+                    : 'Promotion request accepted'
             }
           >
             <p>{result.message}</p>
@@ -204,7 +215,7 @@ function PromotionDialogContent({
           <dl className="grid gap-2 sm:grid-cols-2">
             <div className="rounded-lg border border-ink-700/60 bg-ink-850/60 p-3">
               <dt className="text-2xs uppercase tracking-wide text-slate-500">
-                Integration branch
+                {result.delivery === 'local_direct' ? 'Target branch' : 'Integration branch'}
               </dt>
               <dd className="mono mt-1 text-xs text-slate-200">{result.branch}</dd>
             </div>
@@ -214,7 +225,8 @@ function PromotionDialogContent({
             </div>
           </dl>
 
-          {result.delivery === 'local' && result.nextCommands.length > 0 ? (
+          {(result.delivery === 'local' || result.delivery === 'local_direct') &&
+          result.nextCommands.length > 0 ? (
             <section className="space-y-2 rounded-lg border border-ink-700/60 bg-ink-850/50 p-3">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
@@ -228,7 +240,9 @@ function PromotionDialogContent({
                 {result.nextCommands.join('\n')}
               </pre>
               <p className="text-2xs text-slate-500">
-                Nothing was pushed and no PR was opened — you push the branch yourself.
+                {result.delivery === 'local_direct'
+                  ? 'Nothing was pushed and no PR was opened — the commit is on your local branch; push when ready.'
+                  : 'Nothing was pushed and no PR was opened — you push the branch yourself.'}
               </p>
             </section>
           ) : null}
@@ -321,17 +335,15 @@ function PromotionDialogContent({
           </section>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field
-              label="Delivery"
-              hint="Local creates a branch + commit in your clone (you push it yourself). Push + PR is an explicit opt-in."
-            >
+            <Field label="Delivery" hint={deliveryHint}>
               <Select
                 aria-label="Promotion delivery"
                 value={delivery}
                 onChange={(event) => onDeliveryChange(event.target.value as PromotionDelivery)}
                 options={[
-                  { value: 'local', label: 'Local commit (recommended)' },
-                  { value: 'push_pr', label: 'Push + open PR (opt-in)' },
+                  { value: 'local_direct', label: `Commit to local ${targetBranch} (recommended)` },
+                  { value: 'local', label: 'Local integration branch' },
+                  { value: 'push_pr', label: 'Push + PR' },
                 ]}
               />
             </Field>
@@ -525,7 +537,16 @@ function PromotionDialogContent({
           <section className="space-y-2 rounded-lg border border-brand-700/50 bg-brand-950/30 p-3">
             <p className="flex items-start gap-2 text-xs leading-relaxed text-brand-100">
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-brand-300" aria-hidden="true" />
-              {isLocal ? (
+              {isDirect ? (
+                <span>
+                  Confirming this commits the delta{' '}
+                  <strong>straight onto your local {targetBranch}</strong>; pushing is yours to do (
+                  <strong>no push, no PR</strong>). The tool builds the commit from the target tip
+                  in a temporary worktree and fast-forwards your local branch — uncommitted work is
+                  never touched (a dirty checkout refuses instead, and a moved target tip fails
+                  closed).
+                </span>
+              ) : isLocal ? (
                 <span>
                   Confirming this creates a <strong>local branch + commit in your clone</strong>;
                   you push it yourself (<strong>no push, no PR</strong>). The tool builds the
@@ -551,13 +572,23 @@ function PromotionDialogContent({
                 checked={acknowledged}
                 onChange={(event) => setAcknowledged(event.target.checked)}
                 label={
-                  isLocal
-                    ? 'Acknowledge that this creates a local branch + commit (no push, no PR)'
-                    : 'Acknowledge that this creates an integration PR against the selected main-system branch'
+                  isDirect
+                    ? 'Acknowledge that this commits directly onto my local target branch (no push, no PR)'
+                    : isLocal
+                      ? 'Acknowledge that this creates a local branch + commit (no push, no PR)'
+                      : 'Acknowledge that this creates an integration PR against the selected main-system branch'
                 }
                 className="mt-0.5"
               />
-              {isLocal ? (
+              {isDirect ? (
+                <span>
+                  I understand this commits the delta onto my local{' '}
+                  <span className="mono text-slate-100">
+                    {targetBranches?.mainRepository ?? 'main-system'}/{targetBranch}
+                  </span>
+                  , with no push and no PR — I push it myself.
+                </span>
+              ) : isLocal ? (
                 <span>
                   I understand this creates a local branch + commit in my clone for{' '}
                   <span className="mono text-slate-100">
@@ -590,9 +621,11 @@ function PromotionDialogContent({
 
           <p className="flex items-center gap-1.5 text-2xs text-slate-500">
             <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
-            {isLocal
-              ? `The integration branch is created from the target branch tip (${targetBranch}) in your local clone; you push it yourself.`
-              : `The integration branch is created from the target branch tip and the PR is opened with base (${targetBranch}).`}
+            {isDirect
+              ? `The commit lands on your local ${targetBranch}; pushing is yours to do.`
+              : isLocal
+                ? `The integration branch is created from the target branch tip (${targetBranch}) in your local clone; you push it yourself.`
+                : `The integration branch is created from the target branch tip and the PR is opened with base (${targetBranch}).`}
           </p>
 
           {commits.some((commit) => commit.status.kind === 'selected') ? (

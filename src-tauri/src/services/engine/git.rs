@@ -351,6 +351,53 @@ pub fn local_branch_exists(repo_dir: &Path, branch: &str) -> bool {
     rev_parse(repo_dir, &format!("refs/heads/{branch}")).is_some()
 }
 
+/// Short name of the currently checked-out branch (`None` when detached or
+/// unresolvable). `local_direct` delivery uses it to decide between a
+/// checkout fast-forward and a ref-only move.
+pub fn current_branch(repo_dir: &Path) -> Option<String> {
+    let out = run(repo_dir, &["symbolic-ref", "--short", "HEAD"]).ok()?;
+    if out.status != 0 {
+        return None;
+    }
+    let name = out.stdout_trimmed();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Current tip of the *local* branch ref (`refs/heads/<branch>`), ignoring
+/// remote-tracking refs. `local_direct` delivery pins this before building
+/// the commit and re-checks it before moving the ref, so the target can only
+/// ever advance fast-forward underneath the new commit.
+pub fn local_tip(repo_dir: &Path, branch: &str) -> Option<String> {
+    rev_parse(repo_dir, &format!("refs/heads/{branch}"))
+}
+
+/// Atomic compare-and-swap of a branch ref: moves `refname` to `new_sha`
+/// only when it still points at `old_sha`. Used by `local_direct` delivery
+/// when the target is not checked out, so the working tree and the current
+/// branch are left completely untouched.
+pub fn update_ref(
+    repo_dir: &Path,
+    refname: &str,
+    new_sha: &str,
+    old_sha: &str,
+) -> Result<(), GitError> {
+    run_ok(repo_dir, &["update-ref", refname, new_sha, old_sha])?;
+    Ok(())
+}
+
+/// Fast-forward the checked-out branch to `commit`. Used by `local_direct`
+/// delivery when the target is the checked-out branch (a clean tree is
+/// asserted first). `--ff-only` by construction: never `--hard`, never
+/// discards user work.
+pub fn merge_ff_only(repo_dir: &Path, commit: &str) -> Result<(), GitError> {
+    run_ok(repo_dir, &["merge", "--ff-only", commit])?;
+    Ok(())
+}
+
 /// Quarantine ref, so selected SHAs are present in this object DB.
 ///
 /// The bearer token never lands in argv: any `user:token@` credentials are

@@ -561,12 +561,13 @@ impl PromotionMode {
 }
 
 /// Delivery mode for a promotion (wire `delivery`, camelCase field).
-/// Omitted on the wire defaults to [`PromotionDelivery::Local`].
+/// Omitted on the wire defaults to [`PromotionDelivery::LocalDirect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PromotionDelivery {
-    #[default]
     Local,
+    #[default]
+    LocalDirect,
     PushPr,
 }
 
@@ -574,6 +575,7 @@ impl PromotionDelivery {
     pub fn as_str(self) -> &'static str {
         match self {
             PromotionDelivery::Local => "local",
+            PromotionDelivery::LocalDirect => "local_direct",
             PromotionDelivery::PushPr => "push_pr",
         }
     }
@@ -609,7 +611,7 @@ pub struct PromotionRequest {
     pub target_branch: String,
     #[serde(default)]
     pub confirmation_acknowledged: bool,
-    /// `"local" | "push_pr"`; omitted ⇒ `local`.
+    /// `"local" | "local_direct" | "push_pr"`; omitted ⇒ `local_direct`.
     #[serde(default)]
     pub delivery: PromotionDelivery,
     /// `"fail" | "take_subsystem"`; omitted ⇒ `fail`.

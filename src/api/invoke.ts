@@ -142,7 +142,7 @@ export const api = {
 
   dispatchPromotion: (request: PromotionRequest) =>
     call<PromotionDispatchResult>('dispatch_promotion', {
-      request: { ...request, delivery: request.delivery ?? 'local' },
+      request: { ...request, delivery: request.delivery ?? 'local_direct' },
     }),
 
   preflightPromotion: (request: PromotionRequest) =>

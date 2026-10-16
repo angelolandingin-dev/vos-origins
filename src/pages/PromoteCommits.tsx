@@ -167,8 +167,8 @@ function PromoteCommitsPanel({
         <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight text-white">Promote Commits</h1>
           <p className="mt-0.5 text-xs text-slate-400">
-            Opens an integration PR against a chosen main-system branch — never a direct push, never
-            a production deploy
+            Promote Commits onto a chosen main-system branch — by default locally in your clone
+            (pushing stays manual), never a production deploy
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

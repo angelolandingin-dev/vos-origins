@@ -39,7 +39,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     commits: [],
     mode: 'individual',
     baseSha: '',
-    delivery: 'local',
+    delivery: 'local_direct',
     onConflict: 'fail',
     dispatching: false,
     error: null,
@@ -150,7 +150,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       commits,
       mode: 'individual',
       baseSha: '',
-      delivery: 'local',
+      delivery: 'local_direct',
       onConflict: 'fail',
       dispatching: false,
       error: null,
@@ -203,7 +203,13 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       })
       .then((result) => {
         setPromotion((current) => ({ ...current, dispatching: false, result }));
-        if (result.delivery === 'local') {
+        if (result.delivery === 'local_direct') {
+          pushNotice({
+            tone: 'success',
+            title: `Committed to ${targetBranch} locally — push when ready`,
+            message: `${result.branch} · commit ${result.commitSha ?? '?'}. No push, no PR — run the listed push command to push it yourself.`,
+          });
+        } else if (result.delivery === 'local') {
           pushNotice({
             tone: 'success',
             title: 'Local branch + commit created',

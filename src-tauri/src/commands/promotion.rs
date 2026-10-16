@@ -1,8 +1,9 @@
 //! Promotion dispatch via the in-tool engine (§4/§9.2).
 //! Fixture mode returns a labelled simulation naming the missing prerequisites.
-//! Delivery is local-first: `local` builds a branch + commit in the user's
-//! clone (no push, no PR); `push_pr` is the explicit opt-in that pushes and
-//! opens a PR.
+//! Delivery is local-first: `local_direct` (default) commits the delta straight
+//! onto the local target branch (no push, no PR — pushing stays manual);
+//! `local` builds a branch + commit in the user's clone (no push, no PR);
+//! `push_pr` is the explicit opt-in that pushes and opens a PR.
 
 use std::path::{Path, PathBuf};
 
@@ -85,12 +86,12 @@ pub async fn dispatch_promotion(
 
     let delivery = request.delivery;
 
-    // Target checkout resolution. `local` prefers the user's own clone:
+    // Target checkout resolution. `local*` prefers the user's own clone:
     // registry `localMainRepositoryPath` → `VOS_TARGET_REPO_DIR` → the
     // tool-managed checkout cache. `push_pr` keeps today's behaviour
     // (`VOS_TARGET_REPO_DIR` else a disposable temp clone).
     let (target_repo_dir, cloned_dir, used_managed_fallback) = match delivery {
-        PromotionDelivery::Local => {
+        PromotionDelivery::Local | PromotionDelivery::LocalDirect => {
             let (dir, fallback) = resolve_local_target(&registry, &token)?;
             (dir, None, fallback)
         }
@@ -114,7 +115,7 @@ pub async fn dispatch_promotion(
         delivery,
         on_conflict: request.on_conflict,
     };
-    let is_local = delivery == PromotionDelivery::Local;
+    let is_push_pr = delivery == PromotionDelivery::PushPr;
     let local_dir_for_commands = target_repo_dir.clone();
     let subsystem_for_title = request.subsystem_id.clone();
     let commit_count = request.source_commit_shas.len();
@@ -139,8 +140,8 @@ pub async fn dispatch_promotion(
             allow_shared_config: false,
             allow_removals: false,
             nonce: format!("{}-{}", std::process::id(), now_rfc3339()),
-            push: !is_local,
-            create_pr: !is_local,
+            push: is_push_pr,
+            create_pr: is_push_pr,
         };
         let deps = EngineDeps {
             github: &github as &dyn GitHubOps,
@@ -172,7 +173,43 @@ pub async fn dispatch_promotion(
     let mut cloned = cloned_dir;
     cleanup_clone(&mut cloned);
 
-    if is_local {
+    // `local_direct`: the commit already landed on the local target branch —
+    // report it there (never an integration branch), with the literal push
+    // command as the only manual step. Never a push, never a PR.
+    if delivery == PromotionDelivery::LocalDirect {
+        let next_commands =
+            build_direct_next_commands(&local_dir_for_commands, &target_for_message);
+        let where_note = if used_managed_fallback {
+            format!(
+                " in the tool-managed checkout '{}' (your local clone was not configured, so the managed checkout under the checkouts cache was used — this is not your personal clone)",
+                local_dir_for_commands.display()
+            )
+        } else {
+            format!(
+                " in your local clone '{}'",
+                local_dir_for_commands.display()
+            )
+        };
+        let short_sha = commit_sha.clone().unwrap_or_default();
+        return Ok(PromotionDispatchResult {
+            accepted: true,
+            pr_url: None,
+            pr_number: None,
+            branch: target_for_message.clone(),
+            commit_sha: commit_sha.clone(),
+            target_branch: request.target_branch.clone(),
+            message: format!(
+                "The selected delta was committed onto your local '{target}'{where_note} (commit {short_sha}). No push, no PR — committed to {target} locally, push when ready with the listed push command.",
+                target = target_for_message,
+            ),
+            requested_at: now_rfc3339(),
+            findings: engine_findings_local_direct(&report, used_managed_fallback),
+            delivery: PromotionDelivery::LocalDirect,
+            next_commands,
+        });
+    }
+
+    if delivery == PromotionDelivery::Local {
         let next_commands = build_next_commands(
             &local_dir_for_commands,
             &branch,
@@ -486,7 +523,15 @@ async fn resolve_push_pr_target(
     }
 }
 
-/// Literal next steps for a local promotion (copyable in the UI).
+/// Literal push step for a `local_direct` promotion (copyable in the UI):
+/// the commit is already on the local target branch, so only the push is
+/// manual.
+pub fn build_direct_next_commands(local_path: &Path, target: &str) -> Vec<String> {
+    vec![
+        format!("cd {}", local_path.display()),
+        format!("git push origin {target}"),
+    ]
+}
 pub fn build_next_commands(
     local_path: &Path,
     branch: &str,
@@ -580,6 +625,33 @@ fn simulate(
         delivery: request.delivery,
         next_commands: Vec::new(),
     })
+}
+
+fn engine_findings_local_direct(
+    report: &PromotionReport,
+    used_managed_fallback: bool,
+) -> Vec<ValidationFinding> {
+    let mut findings = Vec::new();
+    findings.push(ValidationFinding::info(
+        "local_direct",
+        "Committed directly onto the local target branch; nothing was pushed and no PR was opened. Push when ready.",
+    ));
+    if used_managed_fallback {
+        findings.push(ValidationFinding::warning(
+            "managed_checkout_fallback",
+            "No local clone was configured, so the tool-managed checkout under the checkouts cache was used instead of your personal clone.",
+            "Set the local clone in Settings (localMainRepositoryPath) or VOS_TARGET_REPO_DIR to promote inside your own clone.",
+        ));
+    }
+    findings.push(ValidationFinding::info(
+        "selection_scope",
+        format!(
+            "Applied only the first-parent delta of {} selected SHA(s). Unselected commits were never imported.",
+            report.verification.order.len()
+        ),
+    ));
+    append_shared_findings(report, &mut findings);
+    findings
 }
 
 fn engine_findings(report: &PromotionReport) -> Vec<ValidationFinding> {
@@ -694,6 +766,14 @@ fn map_blocker(report: &PromotionReport) -> AppError {
         "LOCAL_REPO_INVALID" => (
             ErrorCode::RepositoryInaccessible,
             "Set the local clone in Settings (localMainRepositoryPath) to the absolute path of your local main-system git clone, or set VOS_TARGET_REPO_DIR to such a clone.",
+        ),
+        "TARGET_MOVED" => (
+            ErrorCode::BranchNotPermitted,
+            "The target branch moved while the promotion was being built. Retry the promotion to rebuild against the new tip; nothing was committed.",
+        ),
+        "DIRTY_WORKTREE" => (
+            ErrorCode::InvalidRequest,
+            "Commit or stash your working-tree changes in the local clone first (`git status` to inspect them), then re-promote. The promotion never fast-forwards a dirty checkout.",
         ),
         "BRANCH_ALREADY_EXISTS" => (
             ErrorCode::DuplicateIntegration,
