@@ -86,7 +86,7 @@ const APPEARANCE: Record<CommitStatusKind, Appearance> = {
     className: 'bg-amber-900/60 text-amber-200 ring-1 ring-inset ring-amber-700/60',
     icon: TriangleAlert,
     meaning:
-      'The target branch already contains a different version of at least one of these files; promoting would overwrite it.',
+      'This commit adds a file the target branch already has with different content; an add cannot be applied over an existing file.',
   },
   reverted: {
     label: 'Reverted',

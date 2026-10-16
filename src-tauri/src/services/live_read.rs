@@ -1094,17 +1094,25 @@ fn classify_delta(
     deltas: &[(String, String, char)],
     target: &HashMap<String, String>,
 ) -> DeltaState {
-    let (mut applied, mut divergent, mut pending) = (0usize, 0usize, 0usize);
+    let (mut applied, mut conflicts, mut pending) = (0usize, 0usize, 0usize);
     for (path, new_blob, kind) in deltas {
         match (kind, target.get(path)) {
             ('D', None) => applied += 1,
             ('D', Some(_)) => pending += 1,
+            // An add whose path already exists with different content is the one
+            // case the engine cannot apply: two independent creations.
+            ('A', None) => pending += 1,
+            ('A', Some(blob)) if blob == new_blob => applied += 1,
+            ('A', Some(_)) => conflicts += 1,
             (_, None) => pending += 1,
             (_, Some(blob)) if blob == new_blob => applied += 1,
-            (_, Some(_)) => divergent += 1,
+            // A modify over differing content is normal — the engine three-way
+            // merges it (base = the version before this commit), so it stays
+            // promotable; a real merge conflict is reported at apply time.
+            (_, Some(_)) => pending += 1,
         }
     }
-    if divergent > 0 {
+    if conflicts > 0 {
         DeltaState::Divergent
     } else if pending == 0 && applied > 0 {
         DeltaState::Applied
@@ -1249,7 +1257,7 @@ pub fn commit_page_live(
                         CommitStatusKind::Divergent,
                         &target_branch,
                         Some(
-                            "The target branch already has a different version of at least one of these files; promoting would overwrite it."
+                            "This commit adds a file the target branch already has with different content; applying an add over an existing file is not possible."
                                 .to_string(),
                         ),
                         None,
