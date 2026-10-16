@@ -74,7 +74,11 @@ function CommitWorkspaceView() {
   const [statusFilter, setStatusFilter] = useState<CommitStatusKind | 'all'>('all');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [pageSize, setPageSize] = useState(10);
-  const [detailsVisible, setDetailsVisible] = useState(true);
+  // Closed by default below the compact breakpoint, where the panel renders as an
+  // overlay that would cover the tab bar and half the workspace on arrival.
+  const [detailsVisible, setDetailsVisible] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches,
+  );
   const [sourceTab, setSourceTab] = useState<SourceTab>('commits');
 
   return (

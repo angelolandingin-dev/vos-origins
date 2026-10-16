@@ -3,7 +3,7 @@
 //! Before this module every live command performed a full `git clone` into a
 //! fresh temp dir and deleted it on return, so each tab switch re-cloned the
 //! target and/or source repository. Checkouts now live at
-//! `%APPDATA%\vos-origin\checkouts\<key>` (XDG/temp
+//! `%APPDATA%\vos-origins\checkouts\<key>` (XDG/temp
 //! fallback, `VOS_CHECKOUTS_DIR` override for tests): the first use clones
 //! with `--no-tags`, later uses `git fetch` the existing clone, and the
 //! directory is never deleted by readers. One process-wide mutex per key
@@ -33,7 +33,7 @@ fn lock_for(key: &str) -> Arc<Mutex<()>> {
 }
 
 /// Root of the checkout cache. Production uses
-/// `%APPDATA%\vos-origin\checkouts` (XDG config home when
+/// `%APPDATA%\vos-origins\checkouts` (XDG config home when
 /// `APPDATA` is unset, temp dir as a last resort); tests point
 /// `VOS_CHECKOUTS_DIR` at a disposable dir.
 pub fn checkouts_root() -> PathBuf {
@@ -46,9 +46,9 @@ pub fn checkouts_root() -> PathBuf {
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
         .map(PathBuf::from)
     {
-        return base.join("vos-origin").join("checkouts");
+        return base.join("vos-origins").join("checkouts");
     }
-    std::env::temp_dir().join("vos-origin").join("checkouts")
+    std::env::temp_dir().join("vos-origins").join("checkouts")
 }
 
 fn force_refresh_requested() -> bool {

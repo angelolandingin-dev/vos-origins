@@ -96,7 +96,7 @@ fn missing_subsystem(subsystem_id: &str) -> AppError {
     AppError::invalid_registry(format!(
         "'{subsystem_id}' is not present in the tool registry."
     ))
-    .with_remedy("Register the subsystem first in %APPDATA%\\vos-origin\\registry.json.")
+    .with_remedy("Register the subsystem first in %APPDATA%\\vos-origins\\registry.json.")
 }
 
 #[tauri::command]

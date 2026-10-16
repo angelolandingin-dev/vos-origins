@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "VOS Origin",
+  "productName": "VOS Origins",
   "version": "0.1.0",
-  "identifier": "com.vos.origin",
+  "identifier": "com.vos.origins",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "VOS Origin",
+        "title": "VOS Origins",
         "width": 1440,
         "height": 920,
         "minWidth": 880,

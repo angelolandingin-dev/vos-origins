@@ -283,11 +283,11 @@ export function AppShell({
         data-tauri-drag-region
         className="flex h-7 shrink-0 items-center justify-between gap-2 border-b border-line bg-surface pr-1 pl-2.5"
       >
-        <div className="flex min-w-0 items-center gap-2" data-tauri-drag-region title="VOS Origin">
+        <div className="flex min-w-0 items-center gap-2" data-tauri-drag-region title="VOS Origins">
           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] bg-accent">
             <GridMark />
           </span>
-          <h1 className="truncate text-[11px] font-semibold text-fg">VOS Origin</h1>
+          <h1 className="truncate text-[11px] font-semibold text-fg">VOS Origins</h1>
         </div>
         <WindowsControls />
       </header>
@@ -417,7 +417,7 @@ export function AppShell({
       </main>
 
       {notice ? (
-        <div className="pointer-events-none fixed bottom-4 left-1/2 z-50 w-full max-w-2xl -translate-x-1/2 px-4">
+        <div className="pointer-events-none fixed right-4 bottom-4 z-50 w-96 max-w-[calc(100vw-2rem)]">
           <div className="pointer-events-auto flex items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2 text-xs text-fg animate-fade-in">
             <p className="min-w-0 flex-1 truncate" title={notice.title}>
               <span className="font-semibold">{notice.title}</span>

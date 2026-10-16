@@ -144,7 +144,7 @@ impl Registry {
         let base = std::env::var_os("APPDATA")
             .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
             .map(PathBuf::from)?;
-        Some(base.join("vos-origin").join("registry.json"))
+        Some(base.join("vos-origins").join("registry.json"))
     }
 
     pub fn find(&self, subsystem_id: &str) -> Option<&SubsystemEntry> {

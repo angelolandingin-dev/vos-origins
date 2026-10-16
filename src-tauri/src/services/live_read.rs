@@ -137,7 +137,7 @@ fn subsystem_not_found(id: &str, main_repo: &str) -> AppError {
         "'{id}' is not present in the tool registry (main repository {main_repo})."
     ))
     .with_remedy(
-        "Register the subsystem first; the registry override lives at %APPDATA%\\vos-origin\\registry.json.",
+        "Register the subsystem first; the registry override lives at %APPDATA%\\vos-origins\\registry.json.",
     )
 }
 

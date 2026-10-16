@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 
-const STORAGE_KEY = 'vos-origin.theme-mode';
+const STORAGE_KEY = 'vos-origins.theme-mode';
 
 function systemDark(): boolean {
   if (typeof window === 'undefined' || !window.matchMedia) return true;

@@ -46,7 +46,7 @@ export function Settings() {
   };
 
   const diagnostics = [
-    `app: VOS Origin 0.1.0`,
+    `app: VOS Origins 0.1.0`,
     `runtime: ${isTauriRuntime() ? 'Tauri v2 (desktop webview)' : 'browser preview (backend unavailable)'}`,
     `platform: ${typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown'}`,
     `data source: ${status?.dataSource ?? 'unknown'}`,

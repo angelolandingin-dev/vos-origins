@@ -861,7 +861,7 @@ fn map_blocker(report: &PromotionReport) -> AppError {
     let (code, remedy) = match blocker.code.as_str() {
         "SUBSYSTEM_NOT_REGISTERED" | "SUBSYSTEM_DISABLED" | "SUBSYSTEM_INVALID" | "REGISTRY_INVALID" => (
             ErrorCode::InvalidRegistry,
-            "Register or enable the subsystem in %APPDATA%\\vos-origin\\registry.json.",
+            "Register or enable the subsystem in %APPDATA%\\vos-origins\\registry.json.",
         ),
         "TARGET_INVALID" | "TARGET_NOT_ALLOWED" | "TARGET_NOT_FOUND" | "TARGET_NOT_LOCAL" => (
             ErrorCode::BranchNotPermitted,
