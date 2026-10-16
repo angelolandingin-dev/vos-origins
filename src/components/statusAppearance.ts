@@ -80,14 +80,14 @@ const APPEARANCE: Record<CommitStatusKind, Appearance> = {
     className: 'bg-teal-950/70 text-teal-300 ring-1 ring-inset ring-teal-800/70',
     icon: CheckCheck,
     meaning:
-      'Every file this commit changes already has identical content on the target branch — there is nothing to promote.',
+      'Everything this commit changes already matches the target branch byte for byte — there is nothing to promote.',
   },
   divergent: {
     label: 'Divergent',
     className: 'bg-amber-900/60 text-amber-200 ring-1 ring-inset ring-amber-700/60',
     icon: TriangleAlert,
     meaning:
-      'This commit adds a file the target branch already has with different content; an add cannot be applied over an existing file.',
+      "The main system's copies of every file this commit changes were themselves changed more recently; promoting would revert newer work.",
   },
   superseded: {
     label: 'Superseded',

@@ -1,6 +1,7 @@
 //! Three-way apply of selected deltas (spec §6); fail closed on divergence.
 //! Scratch stays outside the worktree so no merge junk is ever staged.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::git;
@@ -55,6 +56,20 @@ pub struct ModeOp {
 pub struct ApplyOutcomeSet {
     pub results: Vec<ApplyResult>,
     pub mode_ops: Vec<ModeOp>,
+}
+
+/// Reason recorded when an add overwrites an existing target file whose
+/// copy is not newer than the source commit (subsystem repos were split
+/// from the main system, so shared files appear as adds in fresh history).
+pub const ADD_OVER_EXISTING_REASON: &str =
+    "updated: add over existing (subsystem version is newer)";
+
+#[derive(Debug, Clone, Default)]
+pub struct ApplyOptions {
+    /// Paths where an add may overwrite an existing divergent target file.
+    /// Membership is decided by the promotion engine's recency guard;
+    /// `apply` only consults it, never computes it.
+    pub allowed_add_overwrite: HashSet<String>,
 }
 
 fn is_binary(bytes: &[u8]) -> bool {
@@ -217,6 +232,7 @@ pub fn apply_file_delta(
     base_sha: Option<&str>,
     entry: &git::DeltaEntry,
     scratch_root: &Path,
+    options: &ApplyOptions,
 ) -> Result<ApplyOutcomeSet, ApplyConflict> {
     let mut set = ApplyOutcomeSet::default();
     let scratch = unique_dir(scratch_root, "vos-merge");
@@ -231,12 +247,14 @@ pub fn apply_file_delta(
         entry,
         &scratch,
         &mut set,
+        options,
     );
     let _ = std::fs::remove_dir_all(&scratch);
     result?;
     Ok(set)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_entries(
     objects_repo: &Path,
     worktree_dir: &Path,
@@ -245,6 +263,7 @@ fn apply_entries(
     entry: &git::DeltaEntry,
     scratch: &Path,
     set: &mut ApplyOutcomeSet,
+    options: &ApplyOptions,
 ) -> Result<(), ApplyConflict> {
     let mut apply_one = |rel_path: &str| -> Result<(), ApplyConflict> {
         assert_real_path_within(worktree_dir, rel_path)?;
@@ -320,8 +339,14 @@ fn apply_entries(
 
         let base = match base {
             None => {
+                if options.allowed_add_overwrite.contains(rel_path) {
+                    write_file(worktree_dir, rel_path, &theirs)?;
+                    record(set, ApplyOutcome::Written, Some(ADD_OVER_EXISTING_REASON));
+                    push_mode(set, rel_path, mode.as_deref());
+                    return Ok(());
+                }
                 return Err(ApplyConflict::new(
-                    format!("Target already contains a different file at {rel_path}; cannot apply an add over divergent content"),
+                    format!("Target already contains a newer copy of {rel_path} (main system's copy is newer); cannot apply an add over it"),
                     Some(rel_path.to_string()),
                     "add-over-diverge",
                 ));

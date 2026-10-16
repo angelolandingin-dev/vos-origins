@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use subsystem_integration_manager_lib::github::models::PromotionDelivery;
 use subsystem_integration_manager_lib::github::models::PromotionMode;
-use subsystem_integration_manager_lib::services::engine::apply::{apply_file_delta, ApplyConflict};
+use subsystem_integration_manager_lib::services::engine::apply::{
+    apply_file_delta, ApplyConflict, ApplyOptions,
+};
 use subsystem_integration_manager_lib::services::engine::git::DeltaEntry;
 use subsystem_integration_manager_lib::services::engine::github_ops::{
     CreatePrRequest, GitHubMode, GitHubOps, PullRequestInfo, PushOutcome, StubGitHubOps,
@@ -149,6 +151,68 @@ mod sandbox {
             ],
         );
         git_out(dir, &["rev-parse", "HEAD"])
+    }
+
+    pub fn commit_dated(dir: &Path, message: &str, date: &str) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=Sandbox Bot",
+                "-c",
+                "user.email=sandbox-bot@example.com",
+                "commit",
+                "--no-verify",
+                "-q",
+                "-m",
+                message,
+            ])
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .output()
+            .expect("spawn git dated commit");
+        assert!(
+            output.status.success(),
+            "git dated commit failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    pub fn commit_files_dated(
+        dir: &Path,
+        message: &str,
+        files: &[(&str, &[u8])],
+        date: &str,
+    ) -> String {
+        for (rel, content) in files {
+            write(dir, rel, content);
+        }
+        git_out(dir, &["add", "-A"]);
+        commit_dated(dir, message, date);
+        git_out(dir, &["rev-parse", "HEAD"])
+    }
+
+    /// Re-touch files on `branch` with an explicit committer date, then
+    /// restore the previous HEAD. Used to pin the target copy as
+    /// deterministically newer (or older) than a source commit for the
+    /// add-over-existing recency guard, which compares committer dates at
+    /// second resolution.
+    pub fn retouch_with_date(
+        dir: &Path,
+        branch: &str,
+        message: &str,
+        files: &[(&str, &[u8])],
+        date: &str,
+    ) {
+        let current = git_out(dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        git_out(dir, &["checkout", "-q", branch]);
+        for (rel, content) in files {
+            write(dir, rel, content);
+        }
+        git_out(dir, &["add", "-A"]);
+        commit_dated(dir, message, date);
+        git_out(dir, &["checkout", "-q", &current]);
     }
 
     pub fn sha(dir: &Path, rev: &str) -> String {
@@ -1145,10 +1209,17 @@ fn case11_patch_conflict_leaves_the_target_untouched() {
     let src_dir = make_temp_dir("src");
     let main_dir = make_temp_dir("main");
     let src = create_source_chain(&src_dir);
-    let main = create_main_repo(
-        &main_dir,
-        &[],
+    let main = create_main_repo(&main_dir, &[], &[]);
+    // Pin the target copy as deterministically newer than the source commit:
+    // the recency guard compares committer dates at second resolution, and a
+    // fast machine can otherwise land both sides in the same second (where
+    // `source >= target` would allow the overwrite).
+    retouch_with_date(
+        &main.dir,
+        "staging",
+        "staging: divergent copy",
         &[("src/modules/hr/c.txt", b"divergent target content\n")],
+        "2030-01-01T00:00:00+00:00",
     );
     let staging_tip = sha(&main.dir, "staging");
     let github = StubGitHubOps::new();
@@ -1751,9 +1822,16 @@ fn oracle_finding7_symlinked_target_parent_is_rejected() {
         new_path: None,
         score: None,
     };
-    let conflict: ApplyConflict =
-        apply_file_delta(&src_dir, &worktree, &c, Some(&a), &entry, &sandbox_root())
-            .expect_err("a symlinked parent directory must be refused");
+    let conflict: ApplyConflict = apply_file_delta(
+        &src_dir,
+        &worktree,
+        &c,
+        Some(&a),
+        &entry,
+        &sandbox_root(),
+        &ApplyOptions::default(),
+    )
+    .expect_err("a symlinked parent directory must be refused");
     assert_eq!(conflict.kind, "symlink-traversal");
     assert!(
         std::fs::read_dir(&outside).unwrap().next().is_none(),
@@ -1987,8 +2065,16 @@ fn oracle_p1_copy_applies_new_path_only() {
         new_path: Some("src/new.txt".to_string()),
         score: None,
     };
-    let set = apply_file_delta(&src_dir, &work, &head, None, &entry, &sandbox_root())
-        .expect("copy applies cleanly");
+    let set = apply_file_delta(
+        &src_dir,
+        &work,
+        &head,
+        None,
+        &entry,
+        &sandbox_root(),
+        &ApplyOptions::default(),
+    )
+    .expect("copy applies cleanly");
     assert_eq!(
         std::fs::read(work.join("src").join("old.txt")).unwrap(),
         b"worktree divergent content\n",
@@ -2012,11 +2098,16 @@ fn oracle_watchout_failed_promotion_deletes_integration_ref() {
     let main_dir = make_temp_dir("main");
     let src = create_source_chain(&src_dir);
     // Divergent target content forces PATCH_CONFLICT after the temporary
-    // integration branch has been created.
-    let main = create_main_repo(
-        &main_dir,
-        &[],
+    // integration branch has been created. The target copy is pinned as
+    // deterministically newer than the source commit (see case11) so the
+    // recency guard keeps blocking regardless of same-second commit dates.
+    let main = create_main_repo(&main_dir, &[], &[]);
+    retouch_with_date(
+        &main.dir,
+        "staging",
+        "staging: divergent copy",
         &[("src/modules/hr/c.txt", b"divergent target content\n")],
+        "2030-01-01T00:00:00+00:00",
     );
     let github = StubGitHubOps::new();
     let registry = test_registry();
@@ -2391,4 +2482,304 @@ fn local_next_commands_carry_cd_push_and_pr_create() {
     assert!(!local.next_commands.is_empty());
     assert!(local.pr_url.is_none());
     assert!(local.pr_number.is_none());
+}
+
+// ===========================================================================
+// Add-over-existing recency guard (subsystem split history)
+// ===========================================================================
+
+#[test]
+fn add_over_existing_with_older_target_applies_as_update() {
+    let src_dir = make_temp_dir("src-addupdate");
+    let main_dir = make_temp_dir("main-addupdate");
+
+    // The file is new in the subsystem's fresh history (an add), committed
+    // after the main system's copy.
+    init_repo(&src_dir, "master");
+    commit_files_dated(
+        &src_dir,
+        "A: base",
+        &[
+            ("package.json", b"{\"name\":\"hr-management\"}\n".as_slice()),
+            (
+                "src/modules/hr/index.ts",
+                b"export const a = 1;\n".as_slice(),
+            ),
+        ],
+        "2020-01-01T00:00:00+00:00",
+    );
+    let add = commit_files_dated(
+        &src_dir,
+        "B: add shared file",
+        &[(
+            "src/modules/hr/shared.txt",
+            b"subsystem newer version\n".as_slice(),
+        )],
+        "2024-01-01T00:00:00+00:00",
+    );
+
+    // The main system already carries a divergent, OLDER copy.
+    init_repo(&main_dir, "master");
+    commit_files_dated(
+        &main_dir,
+        "main: base",
+        &[
+            ("package.json", BASE_MAIN_PKG.as_bytes()),
+            ("package-lock.json", LOCKFILE.as_bytes()),
+            (
+                "src/modules/hr/index.ts",
+                b"export const a = 1;\n".as_slice(),
+            ),
+            (
+                "src/modules/hr/shared.txt",
+                b"main older version\n".as_slice(),
+            ),
+        ],
+        "2020-06-01T00:00:00+00:00",
+    );
+    git_out(&main_dir, &["branch", "staging"]);
+
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let report = promote(
+        &src_dir,
+        &main_dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![add],
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main_dir, &branch, "src/modules/hr/shared.txt"),
+        "subsystem newer version\n"
+    );
+    assert!(
+        report
+            .changes
+            .updated
+            .iter()
+            .any(|p| p == "src/modules/hr/shared.txt"),
+        "the overwrite must be reported as an update: {:?}",
+        report.changes
+    );
+    assert!(
+        !report
+            .changes
+            .applied
+            .iter()
+            .any(|p| p == "src/modules/hr/shared.txt"),
+        "an add-over-existing must not be reported as a plain add: {:?}",
+        report.changes
+    );
+}
+
+#[test]
+fn add_over_existing_with_newer_target_stays_blocked() {
+    let src_dir = make_temp_dir("src-addblocked");
+    let main_dir = make_temp_dir("main-addblocked");
+
+    init_repo(&src_dir, "master");
+    commit_files_dated(
+        &src_dir,
+        "A: base",
+        &[
+            ("package.json", b"{\"name\":\"hr-management\"}\n".as_slice()),
+            (
+                "src/modules/hr/index.ts",
+                b"export const a = 1;\n".as_slice(),
+            ),
+        ],
+        "2020-01-01T00:00:00+00:00",
+    );
+    let add = commit_files_dated(
+        &src_dir,
+        "B: add shared file",
+        &[(
+            "src/modules/hr/shared.txt",
+            b"subsystem older version\n".as_slice(),
+        )],
+        "2020-02-01T00:00:00+00:00",
+    );
+
+    // The main system's copy is NEWER than the source commit.
+    init_repo(&main_dir, "master");
+    commit_files_dated(
+        &main_dir,
+        "main: base",
+        &[
+            ("package.json", BASE_MAIN_PKG.as_bytes()),
+            ("package-lock.json", LOCKFILE.as_bytes()),
+            (
+                "src/modules/hr/index.ts",
+                b"export const a = 1;\n".as_slice(),
+            ),
+            (
+                "src/modules/hr/shared.txt",
+                b"main newer version\n".as_slice(),
+            ),
+        ],
+        "2024-01-01T00:00:00+00:00",
+    );
+    git_out(&main_dir, &["branch", "staging"]);
+    let staging_tip = sha(&main_dir, "staging");
+
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let report = promote(
+        &src_dir,
+        &main_dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![add],
+            ..Default::default()
+        },
+    );
+    assert!(!report.ok);
+    assert!(
+        codes(&report).contains(&"PATCH_CONFLICT".to_string()),
+        "{:?}",
+        codes(&report)
+    );
+    let blocker = report
+        .blockers
+        .iter()
+        .find(|b| b.code == "PATCH_CONFLICT")
+        .expect("PATCH_CONFLICT blocker");
+    assert_eq!(
+        blocker.details.as_deref(),
+        Some("add-over-diverge"),
+        "{blocker:?}"
+    );
+    assert!(
+        blocker.message.contains("newer"),
+        "the message must say the main-system copy is newer: {}",
+        blocker.message
+    );
+    assert_eq!(
+        sha(&main_dir, "staging"),
+        staging_tip,
+        "target tip must be unchanged"
+    );
+}
+
+#[test]
+fn plain_add_without_target_file_still_applies_as_add() {
+    let src_dir = make_temp_dir("src-plainadd");
+    let main_dir = make_temp_dir("main-plainadd");
+
+    init_repo(&src_dir, "master");
+    commit_files_dated(
+        &src_dir,
+        "A: base",
+        &[
+            ("package.json", b"{\"name\":\"hr-management\"}\n".as_slice()),
+            (
+                "src/modules/hr/index.ts",
+                b"export const a = 1;\n".as_slice(),
+            ),
+        ],
+        "2020-01-01T00:00:00+00:00",
+    );
+    let add = commit_files_dated(
+        &src_dir,
+        "B: add fresh file",
+        &[("src/modules/hr/fresh.txt", b"brand new\n".as_slice())],
+        "2024-01-01T00:00:00+00:00",
+    );
+
+    // The target has no copy of the path at all.
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![add],
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "src/modules/hr/fresh.txt"),
+        "brand new\n"
+    );
+    assert!(
+        report
+            .changes
+            .applied
+            .iter()
+            .any(|p| p == "src/modules/hr/fresh.txt"),
+        "a plain add stays a plain add: {:?}",
+        report.changes
+    );
+    assert!(
+        report.changes.updated.is_empty(),
+        "no update may be reported for a plain add: {:?}",
+        report.changes
+    );
+}
+
+#[test]
+fn plain_modify_over_different_content_still_three_way_merges() {
+    let src_dir = make_temp_dir("src-plainmod");
+    let main_dir = make_temp_dir("main-plainmod");
+
+    init_repo(&src_dir, "master");
+    commit_files_dated(
+        &src_dir,
+        "A: baseline",
+        &[("src/merge-plain.txt", b"a\nb\nc\nd\n".as_slice())],
+        "2020-01-01T00:00:00+00:00",
+    );
+    let modify = commit_files_dated(
+        &src_dir,
+        "B: modify a different line",
+        &[("src/merge-plain.txt", b"a\nb\nc\nX\n".as_slice())],
+        "2024-01-01T00:00:00+00:00",
+    );
+
+    // A modify (base exists) keeps the three-way merge even though the
+    // target content differs on another line.
+    let main = create_main_repo(&main_dir, &[], &[("src/merge-plain.txt", b"a\nY\nc\nd\n")]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![modify],
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "src/merge-plain.txt"),
+        "a\nY\nc\nX\n"
+    );
+    assert!(
+        report
+            .changes
+            .merged
+            .iter()
+            .any(|p| p == "src/merge-plain.txt"),
+        "a modify must still merge, not overwrite: {:?}",
+        report.changes
+    );
+    assert!(
+        report.changes.updated.is_empty(),
+        "no update may be reported for a merge: {:?}",
+        report.changes
+    );
 }

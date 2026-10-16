@@ -472,6 +472,10 @@ function PromotionDialogContent({
                 </span>
               )}
             </p>
+            <p className="text-2xs leading-relaxed text-brand-100/80">
+              Files the subsystem adds over an existing main-system file are applied as updates when
+              the subsystem's copy is newer; a newer main-system copy blocks the promotion.
+            </p>
             <label className="flex items-start gap-2 text-xs text-slate-200">
               <Checkbox
                 checked={acknowledged}

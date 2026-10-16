@@ -12,6 +12,7 @@ pub mod lockfile;
 pub mod provenance;
 pub mod semver;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::github::models::PromotionDelivery;
@@ -103,6 +104,7 @@ pub struct EngineDeps<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct ChangeSummary {
     pub applied: Vec<String>,
+    pub updated: Vec<String>,
     pub merged: Vec<String>,
     pub deleted: Vec<String>,
     pub main_owned_skipped: Vec<String>,
@@ -555,6 +557,16 @@ fn run_inner(
         for entry in &planned.entries {
             match entry.status {
                 PathStatus::Apply | PathStatus::ExplicitReview => {
+                    let target_tip = report.start_point.clone().unwrap_or_default();
+                    let apply_options = apply::ApplyOptions {
+                        allowed_add_overwrite: allowed_add_overwrite(
+                            &options.target_repo_dir,
+                            &target_tip,
+                            &planned.sha,
+                            planned.base_sha.as_deref(),
+                            &entry.delta,
+                        ),
+                    };
                     match apply::apply_file_delta(
                         &options.target_repo_dir,
                         &worktree_dir,
@@ -562,13 +574,20 @@ fn run_inner(
                         planned.base_sha.as_deref(),
                         &entry.delta,
                         &options.temp_root,
+                        &apply_options,
                     ) {
                         Ok(set) => {
                             mode_ops.extend(set.mode_ops);
                             for result in set.results {
                                 match result.outcome {
                                     apply::ApplyOutcome::Written => {
-                                        report.changes.applied.push(result.path)
+                                        if result.reason.as_deref()
+                                            == Some(apply::ADD_OVER_EXISTING_REASON)
+                                        {
+                                            report.changes.updated.push(result.path)
+                                        } else {
+                                            report.changes.applied.push(result.path)
+                                        }
                                     }
                                     apply::ApplyOutcome::Merged => {
                                         report.changes.merged.push(result.path)
@@ -748,6 +767,7 @@ fn run_inner(
         .map(|l| should_regenerate && !l.skipped && !l.stubbed)
         .unwrap_or(false);
     let any_change = !(report.changes.applied.is_empty()
+        && report.changes.updated.is_empty()
         && report.changes.merged.is_empty()
         && report.changes.deleted.is_empty())
         || deps_changed
@@ -921,6 +941,62 @@ pub fn integration_branch_name(
         safe_target,
         sanitize_nonce(nonce)
     )
+}
+
+/// Recency guard for adds-over-existing (subsystem split history).
+///
+/// The subsystem repos were split from the main system, so files that exist
+/// in BOTH appear as adds in the subsystem's fresh history. An add may
+/// overwrite the target copy only when that copy is NOT newer than the
+/// source commit: allowed when the target branch never carried the path
+/// (`target_epoch.is_none()`) or the source commit is at least as new
+/// (`source_epoch >= target_epoch`). Computed per add-path; `apply`
+/// enforces the resulting set. Modified (`M`) paths are untouched and keep
+/// the three-way merge.
+fn allowed_add_overwrite(
+    objects_repo: &Path,
+    target_tip: &str,
+    source_sha: &str,
+    base_sha: Option<&str>,
+    delta: &git::DeltaEntry,
+) -> HashSet<String> {
+    let mut paths: Vec<&str> = Vec::new();
+    if delta.status == 'D' {
+        if let Some(path) = delta.path.as_deref() {
+            paths.push(path);
+        }
+    } else if delta.is_rename_or_copy() {
+        if let Some(old) = delta.old_path.as_deref() {
+            paths.push(old);
+        }
+        if let Some(new) = delta.new_path.as_deref() {
+            paths.push(new);
+        }
+    } else if let Some(path) = delta.path.as_deref() {
+        paths.push(path);
+    }
+    let source_epoch = git::commit_epoch(objects_repo, source_sha);
+    let mut allowed = HashSet::new();
+    for rel_path in paths {
+        // Only adds (absent from the source baseline, present in the source
+        // commit) can take the add-over-existing path in `apply`.
+        let base_blob = base_sha.and_then(|sha| git::read_blob(objects_repo, sha, rel_path));
+        if base_blob.is_some() {
+            continue;
+        }
+        if git::read_blob(objects_repo, source_sha, rel_path).is_none() {
+            continue;
+        }
+        let target_epoch = git::last_change_epoch(objects_repo, target_tip, rel_path);
+        let overwrite_ok = match target_epoch {
+            None => true,
+            Some(target) => source_epoch.map(|source| source >= target).unwrap_or(false),
+        };
+        if overwrite_ok {
+            allowed.insert(rel_path.to_string());
+        }
+    }
+    allowed
 }
 
 fn resolve_local_ref(repo_dir: &Path, branch: &str) -> Option<String> {

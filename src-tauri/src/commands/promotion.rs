@@ -470,6 +470,15 @@ fn engine_findings_local(
 }
 
 fn append_shared_findings(report: &PromotionReport, findings: &mut Vec<ValidationFinding>) {
+    if !report.changes.updated.is_empty() {
+        findings.push(ValidationFinding::info(
+            "add_over_existing_updated",
+            format!(
+                "Applied as updates (subsystem copy is newer): {}",
+                report.changes.updated.join(", ")
+            ),
+        ));
+    }
     if !report.changes.main_owned_skipped.is_empty() {
         findings.push(ValidationFinding::warning(
             "main_owned_skipped",

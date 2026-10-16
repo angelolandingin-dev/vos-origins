@@ -1060,11 +1060,14 @@ fn promotion_note_for(status: &CommitStatus) -> Option<String> {
     }
 }
 
-/// `path -> blob sha` at the target branch tip, in one call. Blob ids are
-/// content-addressed, so equal ids mean byte-identical files.
-fn target_blob_map(target_dir: &Path, target_branch: &str) -> HashMap<String, String> {
+/// `path -> blob sha` for a revision, in one call. Blob ids are
+/// content-addressed, so equal ids mean byte-identical files: comparing the
+/// source and target trees is an exact divergence check with no content
+/// diffing — and no add-vs-modify ambiguity, which the subsystem's split
+/// history otherwise creates.
+fn tree_blobs(repo_dir: &Path, rev: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    let Ok(out) = git::run(target_dir, &["ls-tree", "-r", target_branch]) else {
+    let Ok(out) = git::run(repo_dir, &["ls-tree", "-r", rev]) else {
         return map;
     };
     if out.status != 0 {
@@ -1081,48 +1084,6 @@ fn target_blob_map(target_dir: &Path, target_branch: &str) -> HashMap<String, St
     map
 }
 
-/// How a commit's delta relates to the target branch's current content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeltaState {
-    /// Every changed path is already identical in the target.
-    Applied,
-    /// At least one changed path exists in the target with different content.
-    Divergent,
-    /// Nothing matching yet — safe to promote.
-    Pending,
-}
-
-fn classify_delta(
-    deltas: &[(String, String, char)],
-    target: &HashMap<String, String>,
-) -> DeltaState {
-    let (mut applied, mut conflicts, mut pending) = (0usize, 0usize, 0usize);
-    for (path, new_blob, kind) in deltas {
-        match (kind, target.get(path)) {
-            ('D', None) => applied += 1,
-            ('D', Some(_)) => pending += 1,
-            // An add whose path already exists with different content is the one
-            // case the engine cannot apply: two independent creations.
-            ('A', None) => pending += 1,
-            ('A', Some(blob)) if blob == new_blob => applied += 1,
-            ('A', Some(_)) => conflicts += 1,
-            (_, None) => pending += 1,
-            (_, Some(blob)) if blob == new_blob => applied += 1,
-            // A modify over differing content is normal — the engine three-way
-            // merges it (base = the version before this commit), so it stays
-            // promotable; a real merge conflict is reported at apply time.
-            (_, Some(_)) => pending += 1,
-        }
-    }
-    if conflicts > 0 {
-        DeltaState::Divergent
-    } else if pending == 0 && applied > 0 {
-        DeltaState::Applied
-    } else {
-        DeltaState::Pending
-    }
-}
-
 /// Newest source commit that touches each path, as an index into the
 /// newest-first commit list — used to spot commits a later one already covers.
 fn latest_toucher_index(commits: &[SourceCommit]) -> HashMap<String, usize> {
@@ -1135,17 +1096,13 @@ fn latest_toucher_index(commits: &[SourceCommit]) -> HashMap<String, usize> {
     map
 }
 
-/// True when every path this commit changes is also changed by a newer source
-/// commit: promoting it would only re-apply stale content.
-fn all_paths_superseded(
-    deltas: &[(String, String, char)],
-    latest: &HashMap<String, usize>,
-    index: usize,
-) -> bool {
-    !deltas.is_empty()
-        && deltas
+/// True when every one of these paths is also changed by a newer source commit,
+/// so promoting the older commit would only re-apply stale content.
+fn all_superseded(paths: &[&String], latest: &HashMap<String, usize>, index: usize) -> bool {
+    !paths.is_empty()
+        && paths
             .iter()
-            .all(|(path, _, _)| latest.get(path).is_some_and(|newer| *newer < index))
+            .all(|path| latest.get(*path).is_some_and(|newer| *newer < index))
 }
 
 /// Epoch of the target branch's most recent change per path (bounded scan).
@@ -1250,8 +1207,11 @@ pub fn commit_page_live(
             "branch does not exist in the target checkout",
         ));
     }
-    let target_blobs = target_blob_map(target_dir, &target_branch);
     let commits = parse_source_log(source_dir, &entry.source_branch)?;
+    // Comparing the two trees by blob id is an exact divergence check — no
+    // content diffing, and no add-vs-modify ambiguity.
+    let source_tree = tree_blobs(source_dir, &entry.source_branch);
+    let target_blobs = tree_blobs(target_dir, &target_branch);
     let path_latest = latest_toucher_index(&commits);
     let target_dates = target_path_dates(target_dir, &target_branch);
     let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
@@ -1301,13 +1261,31 @@ pub fn commit_page_live(
                 status = open_pr_status(pr, &target_branch);
             }
         }
-        // Content-level truth: a trailer only records that the tool integrated a
-        // SHA, so also compare this commit's blobs against the target tip.
+        // Content-level truth, computed by comparing the two trees rather than
+        // from the commit's declared add/modify status: a trailer only records
+        // what the tool integrated, and the subsystem's split history makes files
+        // that exist on both sides look like adds (which is not a conflict).
         if matches!(
             status.kind,
             CommitStatusKind::Eligible | CommitStatusKind::Unknown
         ) {
-            if all_paths_superseded(&commit.deltas, &path_latest, index) {
+            let out_of_sync: Vec<&String> = commit
+                .deltas
+                .iter()
+                .map(|(path, _, _)| path)
+                .filter(|path| source_tree.get(*path) != target_blobs.get(*path))
+                .collect();
+            if out_of_sync.is_empty() {
+                status = CommitStatus::of(
+                    CommitStatusKind::Applied,
+                    &target_branch,
+                    Some(
+                        "Everything this commit changes already matches the target branch; there is nothing to promote."
+                            .to_string(),
+                    ),
+                    None,
+                );
+            } else if all_superseded(&out_of_sync, &path_latest, index) {
                 status = CommitStatus::of(
                     CommitStatusKind::Superseded,
                     &target_branch,
@@ -1317,50 +1295,20 @@ pub fn commit_page_live(
                     ),
                     None,
                 );
-            } else {
-                match classify_delta(&commit.deltas, &target_blobs) {
-                    DeltaState::Applied => {
-                        status = CommitStatus::of(
-                            CommitStatusKind::Applied,
-                            &target_branch,
-                            Some(
-                                "Every file this commit changes is already identical on the target branch; there is nothing to promote."
-                                    .to_string(),
-                            ),
-                            None,
-                        );
-                    }
-                    DeltaState::Divergent => {
-                        // Which side is newer decides whether taking the
-                        // subsystem's version is an update or a regression.
-                        let target_is_newer = commit
-                            .deltas
-                            .iter()
-                            .filter(|(path, blob, kind)| {
-                                *kind == 'A'
-                                    && target_blobs
-                                        .get(path)
-                                        .is_some_and(|current| current != blob)
-                            })
-                            .any(|(path, _, _)| {
-                                target_dates
-                                    .get(path)
-                                    .is_some_and(|epoch| *epoch > commit.committed_unix)
-                            });
-                        let detail = if target_is_newer {
-                            "This commit adds a file the target already has, and the target's copy was changed more recently - taking the subsystem's version would revert newer work."
-                        } else {
-                            "This commit adds a file the target already has; the subsystem's copy is newer, so taking the subsystem's version would be an update."
-                        };
-                        status = CommitStatus::of(
-                            CommitStatusKind::Divergent,
-                            &target_branch,
-                            Some(detail.to_string()),
-                            None,
-                        );
-                    }
-                    DeltaState::Pending => {}
-                }
+            } else if out_of_sync.iter().all(|path| {
+                target_dates
+                    .get(*path)
+                    .is_some_and(|epoch| *epoch > commit.committed_unix)
+            }) {
+                status = CommitStatus::of(
+                    CommitStatusKind::Divergent,
+                    &target_branch,
+                    Some(
+                        "The target branch's copies of every file this commit changes were themselves changed more recently; promoting would revert newer work."
+                            .to_string(),
+                    ),
+                    None,
+                );
             }
         }
         if let Some(filter) = query.status_filter {

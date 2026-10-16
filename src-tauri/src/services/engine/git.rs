@@ -155,6 +155,32 @@ pub fn commit_message(repo_dir: &Path, sha: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Committer time of `sha` in epoch seconds (`None` when unresolvable).
+/// Used as the source date for the add-over-existing recency guard.
+pub fn commit_epoch(repo_dir: &Path, sha: &str) -> Option<i64> {
+    let out = run(repo_dir, &["show", "-s", "--format=%ct", sha]).ok()?;
+    if out.status != 0 {
+        return None;
+    }
+    out.stdout_trimmed().parse::<i64>().ok()
+}
+
+/// Committer time of the most recent commit reachable from `rev` that last
+/// touched `path`, in epoch seconds. `None` when the path has no history
+/// under `rev` (the target branch never carried it). Used as the target
+/// date for the add-over-existing recency guard.
+pub fn last_change_epoch(repo_dir: &Path, rev: &str, path: &str) -> Option<i64> {
+    let out = run(repo_dir, &["log", "-1", "--format=%ct", rev, "--", path]).ok()?;
+    if out.status != 0 {
+        return None;
+    }
+    let text = out.stdout_trimmed();
+    if text.is_empty() {
+        return None;
+    }
+    text.parse::<i64>().ok()
+}
+
 pub fn first_parent(repo_dir: &Path, sha: &str) -> Option<String> {
     rev_parse(repo_dir, &format!("{sha}^1"))
 }
