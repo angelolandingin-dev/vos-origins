@@ -851,17 +851,20 @@ fn case5_sha_not_reachable_from_source_branch_is_rejected() {
 }
 
 #[test]
-fn case5b_non_ancestry_order_is_rejected() {
+fn case5b_out_of_order_selection_is_sorted_not_rejected() {
     let src_dir = make_temp_dir("src");
     let main_dir = make_temp_dir("main");
+    let main_again_dir = make_temp_dir("main-again");
     let src = create_source_chain(&src_dir);
-    let main = create_main_repo(&main_dir, &[], &[]);
     let github = StubGitHubOps::new();
     let registry = test_registry();
 
-    let report = promote(
+    // The descendant is listed FIRST. Under copying the order decides nothing -
+    // each path comes from the newest selected commit that touches it - so the
+    // engine sorts ancestor-first instead of refusing the selection.
+    let out_of_order = promote(
         &src_dir,
-        &main.dir,
+        &create_main_repo(&main_dir, &[], &[]).dir,
         &github,
         &registry,
         PromoteOptions {
@@ -869,8 +872,33 @@ fn case5b_non_ancestry_order_is_rejected() {
             ..Default::default()
         },
     );
-    assert!(!report.ok);
-    assert!(codes(&report).contains(&"COMMIT_VERIFICATION_FAILED".to_string()));
+    assert!(out_of_order.ok, "{:?}", out_of_order.blockers);
+
+    // The same selection in ancestry order must land the same content.
+    let ordered = promote(
+        &src_dir,
+        &create_main_repo(&main_again_dir, &[], &[]).dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.b.clone(), src.c.clone()],
+            ..Default::default()
+        },
+    );
+    assert!(ordered.ok, "{:?}", ordered.blockers);
+
+    let mut from_out_of_order = out_of_order.changes.applied.clone();
+    from_out_of_order.sort();
+    let mut from_ordered = ordered.changes.applied.clone();
+    from_ordered.sort();
+    assert_eq!(
+        from_out_of_order, from_ordered,
+        "the selection order must not change which paths are applied"
+    );
+    assert!(
+        !from_ordered.is_empty(),
+        "the selection must have applied something: {from_ordered:?}"
+    );
 }
 
 #[test]

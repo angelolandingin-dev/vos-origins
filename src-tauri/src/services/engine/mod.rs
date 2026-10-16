@@ -1336,23 +1336,24 @@ fn build_plan(
             return Err(());
         }
     }
-    for i in 0..request.commits.len() {
-        for j in (i + 1)..request.commits.len() {
-            if git::is_ancestor(repo_dir, &request.commits[j], &request.commits[i]) {
-                fail(
-                    report,
-                    format!(
-                        "Commit order is not ancestry-consistent: {} is a descendant of {} but was listed first",
-                        request.commits[i], request.commits[j]
-                    ),
-                );
-                return Err(());
-            }
+    // The selection order decides nothing: a copy takes each path from the
+    // newest SELECTED commit that touches it, which is an ancestry question, not
+    // an input-order one. Sort ancestor-first instead of refusing a selection
+    // the user happened to make out of order.
+    let mut ordered: Vec<String> = Vec::with_capacity(request.commits.len());
+    for sha in &request.commits {
+        if ordered.iter().any(|placed| placed == sha) {
+            continue;
         }
+        let at = ordered
+            .iter()
+            .position(|placed| git::is_ancestor(repo_dir, sha, placed))
+            .unwrap_or(ordered.len());
+        ordered.insert(at, sha.clone());
     }
 
     let mut plan = Vec::new();
-    for sha in &request.commits {
+    for sha in &ordered {
         let (parent, entries) = match git::name_status_delta(repo_dir, sha) {
             Ok(value) => value,
             Err(err) => {

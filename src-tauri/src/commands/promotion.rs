@@ -782,7 +782,7 @@ fn map_blocker(report: &PromotionReport) -> AppError {
         ),
         "COMMIT_VERIFICATION_FAILED" => (
             ErrorCode::SourceCommitNotEligible,
-            "Only commits reachable from the configured protected source branch can be promoted; use full 40-character SHAs in ancestry order.",
+            "Only commits reachable from the configured protected source branch can be promoted; use full 40-character SHAs.",
         ),
         "DUPLICATE_ACTIVE" | "PR_ALREADY_OPEN" => (
             ErrorCode::DuplicateIntegration,
