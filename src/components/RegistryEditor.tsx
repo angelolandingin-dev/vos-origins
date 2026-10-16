@@ -162,12 +162,34 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
           />
         </label>
         <div className="rounded-lg border border-ink-700/60 bg-ink-850/50 px-3 py-2">
-          <p className="text-xs font-semibold text-slate-100">Promotion: pull request only</p>
+          <p className="text-xs font-semibold text-slate-100">Promotion: local-first</p>
           <p className="mt-1 text-2xs text-slate-400">
-            The engine always opens an integration PR against the selected target branch; direct
-            pushes to a protected branch are not permitted.
+            Local delivery creates a branch + commit in your clone (you push it yourself). Push + PR
+            is an explicit opt-in per promotion.
           </p>
         </div>
+        <label className="block md:col-span-2">
+          <span className="muted">
+            Local main repository clone (absolute path for local promotion)
+          </span>
+          <input
+            className="input mono mt-1"
+            value={config.localMainRepositoryPath ?? ''}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="e.g. C:\repos\main-system (empty = use VOS_TARGET_REPO_DIR / managed checkout)"
+            onChange={(event) =>
+              setConfig((current) => ({
+                ...current,
+                localMainRepositoryPath: event.target.value.trim() ? event.target.value : null,
+              }))
+            }
+          />
+          <span className="mt-1 block text-2xs text-slate-500">
+            Used for local delivery: the integration branch + provenance commit are created here
+            (never pushed). Falls back to VOS_TARGET_REPO_DIR, then the tool-managed checkout cache.
+          </span>
+        </label>
       </div>
 
       <div className="space-y-2">

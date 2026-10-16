@@ -14,6 +14,7 @@ pub mod semver;
 
 use std::path::{Path, PathBuf};
 
+use crate::github::models::PromotionDelivery;
 use crate::github::models::PromotionMode;
 use crate::services::registry::{
     assert_full_sha, assert_safe_branch_name, DependencyStrategy, Registry, SubsystemEntry,
@@ -53,6 +54,31 @@ pub struct EngineRequest {
     pub mode: PromotionMode,
     pub base_sha: Option<String>,
     pub target_branch: String,
+    /// `local` builds the branch + commit in the target clone and stops
+    /// (no push, no PR); `push_pr` is today's push-then-PR behaviour.
+    /// Defaults to `local` when omitted on the wire.
+    pub delivery: PromotionDelivery,
+}
+
+impl EngineRequest {
+    /// Test helper: `push_pr` delivery without touching the new field.
+    #[cfg(test)]
+    pub fn for_push_pr(
+        subsystem_id: &str,
+        commits: Vec<String>,
+        mode: PromotionMode,
+        base_sha: Option<String>,
+        target_branch: &str,
+    ) -> Self {
+        Self {
+            subsystem_id: subsystem_id.to_string(),
+            commits,
+            mode,
+            base_sha,
+            target_branch: target_branch.to_string(),
+            delivery: PromotionDelivery::PushPr,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -301,6 +327,19 @@ fn run_inner(
         seen.push(sha);
     }
 
+    if request.delivery == PromotionDelivery::Local
+        && !git::is_git_repository(&options.target_repo_dir)
+    {
+        report.blockers.push(Blocker::new(
+            "LOCAL_REPO_INVALID",
+            format!(
+                "The local target path '{}' is not a git repository.",
+                options.target_repo_dir.display()
+            ),
+        ));
+        return Err(Bail);
+    }
+
     let target_ref = resolve_local_ref(&options.target_repo_dir, &request.target_branch);
     let Some(target_tip) = target_ref else {
         match deps
@@ -479,6 +518,16 @@ fn run_inner(
         &request.target_branch,
         &options.nonce,
     );
+    if git::local_branch_exists(&options.target_repo_dir, &branch_name) {
+        report.blockers.push(Blocker::new(
+            "BRANCH_ALREADY_EXISTS",
+            format!(
+                "Integration branch '{branch_name}' already exists in '{}'.",
+                options.target_repo_dir.display()
+            ),
+        ));
+        return Err(Bail);
+    }
     let worktree_dir = options.temp_root.join(format!(
         "vos-integration-{}",
         sanitize_nonce(&options.nonce)
@@ -752,6 +801,14 @@ fn run_inner(
             "Integration commit is not descended from the target tip; aborting.",
         ));
         return Err(Bail);
+    }
+
+    // `local` delivery stops here: the branch + provenance commit stay in the
+    // target clone (worktree removed, branch kept). No push, no PR — the user
+    // pushes explicitly. This guard is delivery-based, not flag-based, so even
+    // a caller passing `push: true` cannot push in local mode.
+    if request.delivery == PromotionDelivery::Local {
+        return Ok(());
     }
 
     if options.push {

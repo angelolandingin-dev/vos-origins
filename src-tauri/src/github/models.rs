@@ -551,6 +551,25 @@ impl PromotionMode {
     }
 }
 
+/// Delivery mode for a promotion (wire `delivery`, camelCase field).
+/// Omitted on the wire defaults to [`PromotionDelivery::Local`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionDelivery {
+    #[default]
+    Local,
+    PushPr,
+}
+
+impl PromotionDelivery {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PromotionDelivery::Local => "local",
+            PromotionDelivery::PushPr => "push_pr",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromotionRequest {
@@ -562,6 +581,9 @@ pub struct PromotionRequest {
     pub target_branch: String,
     #[serde(default)]
     pub confirmation_acknowledged: bool,
+    /// `"local" | "push_pr"`; omitted ⇒ `local`.
+    #[serde(default)]
+    pub delivery: PromotionDelivery,
 }
 
 /// In-tool promotion result (§9.2).
@@ -577,6 +599,10 @@ pub struct PromotionDispatchResult {
     pub message: String,
     pub requested_at: String,
     pub findings: Vec<ValidationFinding>,
+    #[serde(default)]
+    pub delivery: PromotionDelivery,
+    #[serde(default)]
+    pub next_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

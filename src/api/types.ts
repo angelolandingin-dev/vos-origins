@@ -27,6 +27,9 @@ export type FileIntegrationPolicy =
 
 export type PromotionMode = 'individual' | 'cumulative';
 
+/** Local-first delivery: `local` builds a branch + commit in the user's clone (no push, no PR); `push_pr` is the explicit opt-in. */
+export type PromotionDelivery = 'local' | 'push_pr';
+
 export interface ValidationFinding {
   level: 'info' | 'warning' | 'error';
   code: string;
@@ -295,11 +298,13 @@ export interface PromotionRequest {
   /** Required in cumulative mode: the explicitly verified baseline SHA. */
   baseSha: string | null;
   targetBranch: string;
-  /** The user must have seen the "integration PR, not a direct push" confirmation. */
+  /** The user must have seen the delivery-mode confirmation. */
   confirmationAcknowledged: boolean;
+  /** Omitted ⇒ `local`. */
+  delivery?: PromotionDelivery | null;
 }
 
-/** In-tool promotion result (§9.2): the engine pushes the branch + PR itself, so there is no workflow run id. */
+/** In-tool promotion result (§9.2): `local` stops at a branch + commit in the user's clone; `push_pr` pushes the branch + opens a PR. */
 export interface PromotionDispatchResult {
   accepted: boolean;
   prUrl: string | null;
@@ -311,6 +316,9 @@ export interface PromotionDispatchResult {
   message: string;
   requestedAt: string;
   findings: ValidationFinding[];
+  delivery: PromotionDelivery;
+  /** Literal next steps for `local` delivery (empty for `push_pr`). */
+  nextCommands: string[];
 }
 
 export type WorkflowRunStatus =
@@ -496,6 +504,8 @@ export interface RegistryConfig {
   mainRepository: string;
   promotion: RegistryPromotionPolicy;
   subsystems: RegistrySubsystem[];
+  /** Absolute path to the user's local clone of the main repository (local delivery). Omitted/null ⇒ resolve via env / managed checkout. */
+  localMainRepositoryPath?: string | null;
 }
 
 export interface RegistrySnapshot {

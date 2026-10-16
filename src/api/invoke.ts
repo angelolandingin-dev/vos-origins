@@ -138,7 +138,9 @@ export const api = {
     call<RegistrationResult>('submit_subsystem_registration', { request }),
 
   dispatchPromotion: (request: PromotionRequest) =>
-    call<PromotionDispatchResult>('dispatch_promotion', { request }),
+    call<PromotionDispatchResult>('dispatch_promotion', {
+      request: { ...request, delivery: request.delivery ?? 'local' },
+    }),
 
   listWorkflowRuns: (subsystemId: string | null, targetBranch: string | null, limit: number) =>
     call<WorkflowRunList>('list_workflow_runs', { subsystemId, targetBranch, limit }),

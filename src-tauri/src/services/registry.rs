@@ -16,6 +16,11 @@ pub struct Registry {
     pub main_repository: String,
     pub promotion: PromotionPolicy,
     pub subsystems: Vec<SubsystemEntry>,
+    /// Absolute path to the user's local clone of the main repository,
+    /// used for `local` delivery. `None` ⇒ resolve via `VOS_TARGET_REPO_DIR`
+    /// or the tool-managed checkout cache.
+    #[serde(default)]
+    pub local_main_repository_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -153,6 +158,21 @@ impl Registry {
 
     pub fn validate(&self) -> Result<(), ValidationError> {
         require_repository_slug(&self.main_repository, "mainRepository")?;
+
+        if let Some(path) = self.local_main_repository_path.as_deref() {
+            if path.trim().is_empty() {
+                return Err(ValidationError::new(
+                    "localMainRepositoryPath must not be blank",
+                    "Set localMainRepositoryPath to the absolute path of your local main-system clone, or remove it to use VOS_TARGET_REPO_DIR / the managed checkout.",
+                ));
+            }
+            if !PathBuf::from(path).is_absolute() {
+                return Err(ValidationError::new(
+                    format!("localMainRepositoryPath must be absolute, got {path:?}"),
+                    "Set localMainRepositoryPath to the absolute path of your local main-system clone, e.g. C:\\repos\\main-system.",
+                ));
+            }
+        }
 
         if !self.promotion.require_pull_request {
             return Err(ValidationError::new(

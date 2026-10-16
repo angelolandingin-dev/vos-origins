@@ -1,7 +1,12 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 
 import { api, asApiError } from '../api/invoke';
-import type { CommitSummary, DependencyChange, PromotionMode } from '../api/types';
+import type {
+  CommitSummary,
+  DependencyChange,
+  PromotionDelivery,
+  PromotionMode,
+} from '../api/types';
 import {
   AppContext,
   useAsyncData,
@@ -29,6 +34,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     commits: [],
     mode: 'individual',
     baseSha: '',
+    delivery: 'local',
     dispatching: false,
     error: null,
     result: null,
@@ -115,6 +121,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       commits,
       mode: 'individual',
       baseSha: '',
+      delivery: 'local',
       dispatching: false,
       error: null,
       result: null,
@@ -142,6 +149,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setPromotion((current) => ({ ...current, baseSha }));
   }, []);
 
+  const setPromotionDelivery = useCallback((delivery: PromotionDelivery) => {
+    setPromotion((current) => ({ ...current, delivery }));
+  }, []);
+
   const dispatchPromotion = useCallback(() => {
     if (!selectedSubsystemId) return;
     setPromotion((current) => ({ ...current, dispatching: true, error: null }));
@@ -153,18 +164,27 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         baseSha: promotion.mode === 'cumulative' ? promotion.baseSha : null,
         targetBranch,
         confirmationAcknowledged: true,
+        delivery: promotion.delivery,
       })
       .then((result) => {
         setPromotion((current) => ({ ...current, dispatching: false, result }));
-        pushNotice({
-          tone: 'success',
-          title: result.prUrl
-            ? `Integration PR #${result.prNumber ?? '?'} opened`
-            : 'Promotion request accepted',
-          message: result.prUrl
-            ? `${result.branch} · ${result.prUrl} against ${targetBranch}.`
-            : `${result.branch} · target ${targetBranch}. ${result.message}`,
-        });
+        if (result.delivery === 'local') {
+          pushNotice({
+            tone: 'success',
+            title: 'Local branch + commit created',
+            message: `${result.branch} · target ${targetBranch}. No push, no PR — run the listed next commands to push it yourself.`,
+          });
+        } else {
+          pushNotice({
+            tone: 'success',
+            title: result.prUrl
+              ? `Integration PR #${result.prNumber ?? '?'} opened`
+              : 'Promotion request accepted',
+            message: result.prUrl
+              ? `${result.branch} · ${result.prUrl} against ${targetBranch}.`
+              : `${result.branch} · target ${targetBranch}. ${result.message}`,
+          });
+        }
         bumpDataVersion();
       })
       .catch((error: unknown) => {
@@ -174,6 +194,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.shas,
     promotion.mode,
     promotion.baseSha,
+    promotion.delivery,
     selectedSubsystemId,
     targetBranch,
     pushNotice,
@@ -217,6 +238,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       removePromotionSha,
       setPromotionMode,
       setPromotionBaseSha,
+      setPromotionDelivery,
       dispatchPromotion,
     }),
     [
@@ -244,6 +266,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       removePromotionSha,
       setPromotionMode,
       setPromotionBaseSha,
+      setPromotionDelivery,
       dispatchPromotion,
     ],
   );

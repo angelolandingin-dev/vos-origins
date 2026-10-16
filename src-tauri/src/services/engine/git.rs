@@ -310,6 +310,21 @@ pub fn list_branches(repo_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// True when `dir` is inside a git work tree / repository. Used to fail
+/// closed for `local` delivery before any branch is created: a non-repo
+/// path must never be treated as the user's clone.
+pub fn is_git_repository(dir: &Path) -> bool {
+    run(dir, &["rev-parse", "--git-dir"])
+        .map(|out| out.status == 0)
+        .unwrap_or(false)
+}
+
+/// True when `refs/heads/<branch>` already exists locally. `local` delivery
+/// refuses to overwrite it so a re-run never clobbers the user's branch.
+pub fn local_branch_exists(repo_dir: &Path, branch: &str) -> bool {
+    rev_parse(repo_dir, &format!("refs/heads/{branch}")).is_some()
+}
+
 /// Quarantine ref, so selected SHAs are present in this object DB.
 ///
 /// The bearer token never lands in argv: any `user:token@` credentials are

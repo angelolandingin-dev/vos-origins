@@ -74,6 +74,8 @@ export default function App() {
         onModeChange={app.setPromotionMode}
         baseSha={app.promotion.baseSha}
         onBaseShaChange={app.setPromotionBaseSha}
+        delivery={app.promotion.delivery}
+        onDeliveryChange={app.setPromotionDelivery}
         dependencies={app.promotion.dependencies}
         dependenciesLoading={app.promotion.dependenciesLoading}
         dispatching={app.promotion.dispatching}

@@ -179,17 +179,37 @@ pub fn reset_clone_count_for_tests() {
     clone_count_for_tests_inner().store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// A cached checkout is reusable only when it is a real repository with a
+/// resolvable `HEAD`. A clone killed mid-transfer leaves `.git` behind with
+/// `HEAD -> refs/heads/.invalid` and no objects; trusting it would poison every
+/// read until someone deleted the directory by hand.
+fn is_usable_checkout(dir: &Path) -> bool {
+    if !dir.join(".git").is_dir() {
+        return false;
+    }
+    if let Ok(head) = std::fs::read_to_string(dir.join(".git").join("HEAD")) {
+        if head.contains(".invalid") {
+            return false;
+        }
+    }
+    matches!(
+        git::run(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]),
+        Ok(out) if out.status == 0
+    )
+}
+
 /// Reusable checkout for a remote: clone once, `git fetch` on reuse, never
-/// delete. A failed refresh keeps the stale checkout (fail-open read).
+/// delete. A failed refresh keeps the stale checkout (fail-open read), but a
+/// broken/partial checkout is discarded and re-cloned.
 /// Only for remotes — pass local dirs through with [`local_dir_for`].
 pub fn ensure_remote_checkout(key: &str, remote: &str, token: Option<&str>) -> AppResult<PathBuf> {
     let dir = checkouts_root().join(key);
     let slot = lock_for(key);
     let _guard = slot.lock().unwrap_or_else(|err| err.into_inner());
-    if force_refresh_requested() {
+    if force_refresh_requested() || (dir.exists() && !is_usable_checkout(&dir)) {
         let _ = std::fs::remove_dir_all(&dir);
     }
-    if dir.join(".git").is_dir() {
+    if is_usable_checkout(&dir) {
         let _ = git::fetch_cached(&dir, token);
         return Ok(dir);
     }
@@ -275,6 +295,52 @@ mod tests {
             ],
         );
         git(dir, &["rev-parse", "HEAD"])
+    }
+
+    /// Regression: a clone that died mid-transfer leaves `.git/HEAD` pointing at
+    /// `refs/heads/.invalid` and no files. Trusting it produced a bogus
+    /// "branch does not exist in the target checkout" for every read.
+    #[test]
+    fn broken_checkout_is_discarded_and_re_cloned() {
+        let _env = env_lock();
+        let root = unique_dir("heal");
+        let _checkouts = EnvRestore::set("VOS_CHECKOUTS_DIR", root.to_str().expect("utf8"));
+        let _refresh = EnvRestore::remove("VOS_CHECKOUT_FORCE_REFRESH");
+
+        let remote = unique_dir("heal-remote");
+        init_repo(&remote, "master");
+        std::fs::write(remote.join("a.txt"), "one").expect("write");
+        commit_all(&remote, "one");
+        let remote_url = remote.to_string_lossy().to_string();
+
+        let key = "t-heal";
+        let first = ensure_remote_checkout(key, &remote_url, None).expect("first clone");
+        assert!(is_usable_checkout(&first));
+        assert!(
+            first.join("a.txt").is_file(),
+            "clone should check out files"
+        );
+
+        std::fs::remove_dir_all(&first).expect("wipe");
+        std::fs::create_dir_all(first.join(".git").join("refs")).expect("mkdir refs");
+        std::fs::write(
+            first.join(".git").join("HEAD"),
+            "ref: refs/heads/.invalid\n",
+        )
+        .expect("head");
+
+        let healed = ensure_remote_checkout(key, &remote_url, None).expect("heal");
+        assert!(
+            is_usable_checkout(&healed),
+            "the broken cache must be re-cloned"
+        );
+        assert!(
+            healed.join("a.txt").is_file(),
+            "the healed checkout must contain the tracked files"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&remote);
     }
 
     struct EnvRestore {

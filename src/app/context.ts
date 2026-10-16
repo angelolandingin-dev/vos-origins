@@ -14,6 +14,7 @@ import type {
   AuthStatus,
   CommitSummary,
   DependencyChange,
+  PromotionDelivery,
   PromotionDispatchResult,
   PromotionMode,
   SubsystemSummary,
@@ -85,6 +86,7 @@ export interface PromotionState {
   commits: CommitSummary[];
   mode: PromotionMode;
   baseSha: string;
+  delivery: PromotionDelivery;
   dispatching: boolean;
   error: ApiError | null;
   result: PromotionDispatchResult | null;
@@ -133,6 +135,7 @@ export interface AppContextValue {
   removePromotionSha: (sha: string) => void;
   setPromotionMode: (mode: PromotionMode) => void;
   setPromotionBaseSha: (sha: string) => void;
+  setPromotionDelivery: (delivery: PromotionDelivery) => void;
   dispatchPromotion: () => void;
 }
 

@@ -1,7 +1,10 @@
 //! Promotion dispatch via the in-tool engine (§4/§9.2).
 //! Fixture mode returns a labelled simulation naming the missing prerequisites.
+//! Delivery is local-first: `local` builds a branch + commit in the user's
+//! clone (no push, no PR); `push_pr` is the explicit opt-in that pushes and
+//! opens a PR.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tauri::State;
 
@@ -24,9 +27,9 @@ pub async fn dispatch_promotion(
 ) -> AppResult<PromotionDispatchResult> {
     if !request.confirmation_acknowledged {
         return Err(AppError::invalid_request(
-            "The promotion was not confirmed: the confirmation line acknowledging an integration PR was not accepted.",
+            "The promotion was not confirmed: the confirmation line acknowledging the delivery mode was not accepted.",
         )
-        .with_remedy("Re-open the promotion dialog and confirm that this creates an integration PR against the selected target branch."));
+        .with_remedy("Re-open the promotion dialog and confirm the selected delivery mode."));
     }
 
     if request.source_commit_shas.is_empty() {
@@ -79,39 +82,20 @@ pub async fn dispatch_promotion(
         );
     };
 
-    let mut cloned_dir: Option<PathBuf> = None;
-    let target_repo_dir = match std::env::var("VOS_TARGET_REPO_DIR")
-        .ok()
-        .map(PathBuf::from)
-        .filter(|path| path.is_dir())
-    {
-        Some(dir) => dir,
-        None => {
-            let stamp: String = now_rfc3339()
-                .chars()
-                .filter(|c| c.is_ascii_alphanumeric())
-                .collect();
-            let temp =
-                std::env::temp_dir().join(format!("vos-target-{}-{stamp}", std::process::id()));
-            let url = authenticated_remote_url(&registry.main_repository, &token);
-            match crate::services::engine::git::clone_no_tags(&url, &temp) {
-                Ok(()) => {
-                    cloned_dir = Some(temp.clone());
-                    temp
-                }
-                Err(err) => {
-                    return simulate(
-                        &registry,
-                        &request,
-                        &probe,
-                        Some(format!(
-                            "Cloning {} failed: {}",
-                            registry.main_repository,
-                            crate::services::engine::git::sanitize(&err.to_string())
-                        )),
-                    );
-                }
-            }
+    let delivery = request.delivery;
+
+    // Target checkout resolution. `local` prefers the user's own clone:
+    // registry `localMainRepositoryPath` → `VOS_TARGET_REPO_DIR` → the
+    // tool-managed checkout cache. `push_pr` keeps today's behaviour
+    // (`VOS_TARGET_REPO_DIR` else a disposable temp clone).
+    let (target_repo_dir, cloned_dir, used_managed_fallback) = match delivery {
+        PromotionDelivery::Local => {
+            let (dir, fallback) = resolve_local_target(&registry, &token)?;
+            (dir, None, fallback)
+        }
+        PromotionDelivery::PushPr => {
+            let (dir, cloned) = resolve_push_pr_target(&registry, &token).await?;
+            (dir, cloned, false)
         }
     };
 
@@ -126,7 +110,13 @@ pub async fn dispatch_promotion(
         mode: request.mode,
         base_sha: request.base_sha.clone(),
         target_branch: request.target_branch.clone(),
+        delivery,
     };
+    let is_local = delivery == PromotionDelivery::Local;
+    let local_dir_for_commands = target_repo_dir.clone();
+    let subsystem_for_title = request.subsystem_id.clone();
+    let commit_count = request.source_commit_shas.len();
+    let target_for_message = request.target_branch.clone();
 
     let report = tauri::async_runtime::spawn_blocking(move || {
         let github = RealGitHubOps::new(token.clone());
@@ -147,8 +137,8 @@ pub async fn dispatch_promotion(
             allow_shared_config: false,
             allow_removals: false,
             nonce: format!("{}-{}", std::process::id(), now_rfc3339()),
-            push: true,
-            create_pr: true,
+            push: !is_local,
+            create_pr: !is_local,
         };
         let deps = EngineDeps {
             github: &github as &dyn GitHubOps,
@@ -170,15 +160,57 @@ pub async fn dispatch_promotion(
     })?;
 
     if !report.ok {
-        cleanup_clone(&mut cloned_dir);
+        let mut cloned = cloned_dir;
+        cleanup_clone(&mut cloned);
         return Err(map_blocker(&report));
     }
 
     let branch = report.integration_branch.clone().unwrap_or_default();
+    let commit_sha = report.commit_sha.clone();
+    let mut cloned = cloned_dir;
+    cleanup_clone(&mut cloned);
+
+    if is_local {
+        let next_commands = build_next_commands(
+            &local_dir_for_commands,
+            &branch,
+            &target_for_message,
+            &subsystem_for_title,
+            commit_count,
+        );
+        let where_note = if used_managed_fallback {
+            format!(
+                " in the tool-managed checkout '{}' (your local clone was not configured, so the managed checkout under the checkouts cache was used — this is not your personal clone)",
+                local_dir_for_commands.display()
+            )
+        } else {
+            format!(
+                " in your local clone '{}'",
+                local_dir_for_commands.display()
+            )
+        };
+        let short_sha = commit_sha.clone().unwrap_or_default();
+        let message = format!(
+            "Integration branch '{branch}' was created from the {target} tip{where_note} with the selected delta applied (commit {short_sha}). No push, no PR — you push it yourself with the listed next commands.",
+            target = target_for_message,
+        );
+        return Ok(PromotionDispatchResult {
+            accepted: true,
+            pr_url: None,
+            pr_number: None,
+            branch: branch.clone(),
+            commit_sha: commit_sha.clone(),
+            target_branch: request.target_branch.clone(),
+            message,
+            requested_at: now_rfc3339(),
+            findings: engine_findings_local(&report, used_managed_fallback),
+            delivery: PromotionDelivery::Local,
+            next_commands,
+        });
+    }
+
     let pr_url = report.pull_request.as_ref().and_then(|pr| pr.url.clone());
     let pr_number = report.pull_request.as_ref().and_then(|pr| pr.number);
-    let commit_sha = report.commit_sha.clone();
-    cleanup_clone(&mut cloned_dir);
 
     Ok(PromotionDispatchResult {
         accepted: true,
@@ -194,7 +226,124 @@ pub async fn dispatch_promotion(
         ),
         requested_at: now_rfc3339(),
         findings: engine_findings(&report),
+        delivery: PromotionDelivery::PushPr,
+        next_commands: Vec::new(),
     })
+}
+
+/// `local` checkout: registry path → `VOS_TARGET_REPO_DIR` → managed cache.
+/// Returns the dir plus whether the managed-cache fallback was used.
+/// An explicitly configured but invalid path fails closed (never silently
+/// falls through to a different clone).
+fn resolve_local_target(registry: &Registry, token: &str) -> AppResult<(PathBuf, bool)> {
+    if let Some(configured) = registry
+        .local_main_repository_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let path = PathBuf::from(configured);
+        if !path.is_dir() {
+            return Err(AppError::new(
+                ErrorCode::RepositoryInaccessible,
+                format!("localMainRepositoryPath '{configured}' is not a directory."),
+            )
+            .with_remedy("Open Settings → Main system registry and set Local main repository clone to the absolute path of your local main-system clone, or clear it to use VOS_TARGET_REPO_DIR / the managed checkout."));
+        }
+        if !crate::services::engine::git::is_git_repository(&path) {
+            return Err(AppError::new(
+                ErrorCode::RepositoryInaccessible,
+                format!("localMainRepositoryPath '{configured}' is not a git repository."),
+            )
+            .with_remedy("Point Local main repository clone at the root of your local main-system git clone (the directory containing .git)."));
+        }
+        return Ok((path, false));
+    }
+
+    if let Ok(raw) = std::env::var("VOS_TARGET_REPO_DIR") {
+        if raw.trim().is_empty() {
+            // Empty env var behaves as unset → fall through to the cache.
+        } else {
+            let path = PathBuf::from(raw.trim());
+            if !path.is_dir() {
+                return Err(AppError::new(
+                    ErrorCode::RepositoryInaccessible,
+                    format!(
+                        "VOS_TARGET_REPO_DIR '{}' is not a directory.",
+                        path.display()
+                    ),
+                )
+                .with_remedy("Point VOS_TARGET_REPO_DIR at a local clone of the main-system repository, or unset it to use the managed checkout."));
+            }
+            if !crate::services::engine::git::is_git_repository(&path) {
+                return Err(AppError::new(
+                    ErrorCode::RepositoryInaccessible,
+                    format!(
+                        "VOS_TARGET_REPO_DIR '{}' is not a git repository.",
+                        path.display()
+                    ),
+                )
+                .with_remedy("Point VOS_TARGET_REPO_DIR at the root of a git clone (the directory containing .git)."));
+            }
+            return Ok((path, false));
+        }
+    }
+
+    let key = crate::services::checkouts::target_key(&registry.main_repository);
+    let url = authenticated_remote_url(&registry.main_repository, token);
+    let dir = crate::services::checkouts::ensure_remote_checkout(&key, &url, Some(token))?;
+    Ok((dir, true))
+}
+
+/// `push_pr` checkout: today's behaviour (`VOS_TARGET_REPO_DIR` else a
+/// disposable temp clone that the caller deletes afterwards).
+async fn resolve_push_pr_target(
+    registry: &Registry,
+    token: &str,
+) -> AppResult<(PathBuf, Option<PathBuf>)> {
+    if let Ok(raw) = std::env::var("VOS_TARGET_REPO_DIR") {
+        let path = PathBuf::from(raw.trim());
+        if path.is_dir() {
+            return Ok((path, None));
+        }
+    }
+    let stamp: String = now_rfc3339()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let temp = std::env::temp_dir().join(format!("vos-target-{}-{stamp}", std::process::id()));
+    let url = authenticated_remote_url(&registry.main_repository, token);
+    match crate::services::engine::git::clone_no_tags(&url, &temp) {
+        Ok(()) => Ok((temp.clone(), Some(temp))),
+        Err(err) => Err(AppError::new(
+            ErrorCode::RepositoryInaccessible,
+            format!(
+                "Cloning {} failed: {}",
+                registry.main_repository,
+                crate::services::engine::git::sanitize(&err.to_string())
+            ),
+        )
+        .with_remedy(
+            "Check the network connection and that `gh` can read the repository, then retry.",
+        )),
+    }
+}
+
+/// Literal next steps for a local promotion (copyable in the UI).
+pub fn build_next_commands(
+    local_path: &Path,
+    branch: &str,
+    target: &str,
+    subsystem_id: &str,
+    commit_count: usize,
+) -> Vec<String> {
+    vec![
+        format!("cd {}", local_path.display()),
+        format!("git push -u origin {branch}"),
+        format!(
+            "gh pr create --base {target} --head {branch} --title \"{subsystem_id}: integrate {commit_count} commit(s)\""
+        ),
+    ]
 }
 
 fn simulate(
@@ -215,13 +364,13 @@ fn simulate(
     findings.push(ValidationFinding::warning(
         "engine_not_configured",
         "No in-tool promotion ran, so no branch or pull request was created.",
-        "Set VOS_TARGET_REPO_DIR to a local clone of the main-system repository (and authenticate gh) to run the real in-tool promotion engine.",
+        "Set the local clone in Settings (localMainRepositoryPath) or VOS_TARGET_REPO_DIR to a local clone of the main-system repository (and authenticate gh) to run the real in-tool promotion engine.",
     ));
     if let Some(reason) = reason {
         findings.push(ValidationFinding::warning(
             "engine_unavailable",
             reason,
-            "Fix the prerequisite and retry, or set VOS_TARGET_REPO_DIR to a local clone of the main-system repository.",
+            "Fix the prerequisite and retry, or set the local clone in Settings (localMainRepositoryPath) or VOS_TARGET_REPO_DIR to a local clone of the main-system repository.",
         ));
     }
     findings.push(ValidationFinding::info(
@@ -271,6 +420,8 @@ fn simulate(
         ),
         requested_at: now_rfc3339(),
         findings,
+        delivery: request.delivery,
+        next_commands: Vec::new(),
     })
 }
 
@@ -287,6 +438,38 @@ fn engine_findings(report: &PromotionReport) -> Vec<ValidationFinding> {
             report.verification.order.len()
         ),
     ));
+    append_shared_findings(report, &mut findings);
+    findings
+}
+
+fn engine_findings_local(
+    report: &PromotionReport,
+    used_managed_fallback: bool,
+) -> Vec<ValidationFinding> {
+    let mut findings = Vec::new();
+    findings.push(ValidationFinding::info(
+        "local_only",
+        "Local branch + commit created in the target clone; nothing was pushed and no PR was opened. You push it yourself.",
+    ));
+    if used_managed_fallback {
+        findings.push(ValidationFinding::warning(
+            "managed_checkout_fallback",
+            "No local clone was configured, so the tool-managed checkout under the checkouts cache was used instead of your personal clone.",
+            "Set the local clone in Settings (localMainRepositoryPath) or VOS_TARGET_REPO_DIR to promote inside your own clone.",
+        ));
+    }
+    findings.push(ValidationFinding::info(
+        "selection_scope",
+        format!(
+            "Applied only the first-parent delta of {} selected SHA(s). Unselected commits were never imported.",
+            report.verification.order.len()
+        ),
+    ));
+    append_shared_findings(report, &mut findings);
+    findings
+}
+
+fn append_shared_findings(report: &PromotionReport, findings: &mut Vec<ValidationFinding>) {
     if !report.changes.main_owned_skipped.is_empty() {
         findings.push(ValidationFinding::warning(
             "main_owned_skipped",
@@ -320,7 +503,6 @@ fn engine_findings(report: &PromotionReport) -> Vec<ValidationFinding> {
             warning.message.clone(),
         ));
     }
-    findings
 }
 
 fn cleanup_clone(dir: &mut Option<PathBuf>) {
@@ -342,6 +524,14 @@ fn map_blocker(report: &PromotionReport) -> AppError {
         "TARGET_INVALID" | "TARGET_NOT_ALLOWED" | "TARGET_NOT_FOUND" | "TARGET_NOT_LOCAL" => (
             ErrorCode::BranchNotPermitted,
             "Choose a target branch that exists and is allowed by the registry policy (promotion.allowedTargetBranches / allowedTargetBranchPatterns).",
+        ),
+        "LOCAL_REPO_INVALID" => (
+            ErrorCode::RepositoryInaccessible,
+            "Set the local clone in Settings (localMainRepositoryPath) to the absolute path of your local main-system git clone, or set VOS_TARGET_REPO_DIR to such a clone.",
+        ),
+        "BRANCH_ALREADY_EXISTS" => (
+            ErrorCode::DuplicateIntegration,
+            "The integration branch already exists in the local clone. Delete or rename it (`git branch -D <branch>`), then re-promote to create a fresh branch.",
         ),
         "COMMIT_VERIFICATION_FAILED" => (
             ErrorCode::SourceCommitNotEligible,

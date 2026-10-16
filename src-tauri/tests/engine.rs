@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use subsystem_integration_manager_lib::github::models::PromotionDelivery;
 use subsystem_integration_manager_lib::github::models::PromotionMode;
 use subsystem_integration_manager_lib::services::engine::apply::{apply_file_delta, ApplyConflict};
 use subsystem_integration_manager_lib::services::engine::git::DeltaEntry;
@@ -453,6 +454,7 @@ struct PromoteOptions {
     push: bool,
     create_pr: bool,
     real_lockfile: bool,
+    delivery: PromotionDelivery,
 }
 
 impl Default for PromoteOptions {
@@ -468,6 +470,7 @@ impl Default for PromoteOptions {
             push: false,
             create_pr: true,
             real_lockfile: false,
+            delivery: PromotionDelivery::PushPr,
         }
     }
 }
@@ -485,6 +488,7 @@ fn promote(
         mode: options.mode,
         base_sha: options.base_sha,
         target_branch: options.target_branch,
+        delivery: options.delivery,
     };
     let temp_root = sandbox_root();
     let engine_options = EngineOptions {
@@ -1457,6 +1461,7 @@ fn case15_duplicate_and_open_pr_are_blocked() {
         mode: PromotionMode::Individual,
         base_sha: None,
         target_branch: "development".to_string(),
+        delivery: PromotionDelivery::PushPr,
     };
     let temp_root = sandbox_root();
     let engine_options = EngineOptions {
@@ -1826,6 +1831,7 @@ fn oracle_finding9_pr_lookup_failure_is_distinct_from_already_open() {
         mode: PromotionMode::Individual,
         base_sha: None,
         target_branch: "staging".to_string(),
+        delivery: PromotionDelivery::PushPr,
     };
     let engine_options = EngineOptions {
         target_repo_dir: main.dir.clone(),
@@ -2040,4 +2046,349 @@ fn oracle_watchout_failed_promotion_deletes_integration_ref() {
         !branches.lines().any(|b| b.contains("integration/")),
         "failed promotion must not leave an integration/* ref: {branches}"
     );
+}
+
+// ===========================================================================
+// Local-first delivery (new wire `delivery`, default `local`)
+// ===========================================================================
+
+#[test]
+fn local_mode_creates_branch_in_clone_without_push_or_pr_and_leaves_worktree_clean() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+
+    let src_dir = make_temp_dir("src-local");
+    let main_dir = make_temp_dir("main-local");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    let head_before = sha(&main.dir, "HEAD");
+    let branch_before = git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let status_before = status_porcelain(&main.dir);
+    assert_eq!(status_before, "", "target clone starts clean");
+
+    // Even with push/create_pr requested, `local` must not call them.
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::Local,
+            push: true,
+            create_pr: true,
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().expect("branch");
+    let commit = report.commit_sha.clone().expect("commit");
+
+    // Branch + provenance commit exist in the target clone.
+    assert!(
+        ref_in(&main.dir, &format!("refs/heads/{branch}")).is_some(),
+        "integration branch must exist locally"
+    );
+    let message = git_out(&main.dir, &["log", "-1", "--format=%B", &branch]);
+    assert!(message.contains("Subsystem-ID: hr-management"), "{message}");
+    assert!(message.contains(&src.c), "{message}");
+    assert_eq!(
+        git_out(&main.dir, &["rev-parse", &branch]),
+        commit,
+        "branch tip is the provenance commit"
+    );
+
+    // User's working tree + current branch unchanged.
+    assert_eq!(sha(&main.dir, "HEAD"), head_before, "HEAD unchanged");
+    assert_eq!(
+        git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        branch_before,
+        "current branch unchanged"
+    );
+    assert_eq!(
+        status_porcelain(&main.dir),
+        "",
+        "working tree stays clean (work done in a temp worktree)"
+    );
+
+    // No push, no PR — stub records zero calls, report carries none.
+    assert!(
+        github.calls_named("pushBranch").is_empty(),
+        "local mode must not push: {:?}",
+        github.calls()
+    );
+    assert!(
+        github.create_pr_calls().is_empty(),
+        "local mode must not open a PR"
+    );
+    assert!(report.push.is_none());
+    assert!(report.pull_request.is_none());
+
+    // Worktree removed, branch kept.
+    let worktrees = git_out(&main.dir, &["worktree", "list"]);
+    assert!(
+        !worktrees.contains("vos-integration-"),
+        "temp worktree must be removed: {worktrees}"
+    );
+}
+
+#[test]
+fn push_pr_mode_still_pushes_and_creates_pr() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+
+    let src_dir = make_temp_dir("src-pushpr");
+    let main_dir = make_temp_dir("main-pushpr");
+    let bare_dir = make_temp_dir("remote-pushpr");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let bare = init_bare(&bare_dir);
+    let github = StubGitHubOps::new().with_push_target(bare.to_string_lossy().to_string());
+    let registry = test_registry();
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::PushPr,
+            push: true,
+            create_pr: true,
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+
+    assert!(
+        ref_in(&bare, &format!("refs/heads/{branch}")).is_some(),
+        "push_pr must push the branch to the remote"
+    );
+    assert_eq!(github.calls_named("pushBranch").len(), 1);
+    assert_eq!(github.create_pr_calls().len(), 1);
+    let pr_call = github.create_pr_calls().into_iter().next().unwrap();
+    assert!(
+        pr_call.payload.contains("-> staging"),
+        "PR base is the target branch: {}",
+        pr_call.payload
+    );
+    let pr = report.pull_request.clone().expect("PR");
+    assert_eq!(pr.base, "staging");
+    assert!(report.push.as_ref().is_some_and(|p| p.pushed));
+}
+
+#[test]
+fn delivery_omitted_on_the_wire_defaults_to_local() {
+    use subsystem_integration_manager_lib::github::models::{PromotionDelivery, PromotionRequest};
+
+    let without: PromotionRequest = serde_json::from_str(
+        r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true}"#,
+    )
+    .expect("wire without delivery parses");
+    assert_eq!(without.delivery, PromotionDelivery::Local);
+
+    let explicit: PromotionRequest = serde_json::from_str(
+        r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true,"delivery":"push_pr"}"#,
+    )
+    .expect("wire with push_pr parses");
+    assert_eq!(explicit.delivery, PromotionDelivery::PushPr);
+
+    let local: PromotionRequest = serde_json::from_str(
+        r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true,"delivery":"local"}"#,
+    )
+    .expect("wire with local parses");
+    assert_eq!(local.delivery, PromotionDelivery::Local);
+}
+
+#[test]
+fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
+    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+
+    // Not a git repository.
+    let src_dir = make_temp_dir("src-local-err");
+    let src = create_source_chain(&src_dir);
+    let not_git = make_temp_dir("not-git");
+    std::fs::write(not_git.join("file.txt"), "x\n").expect("write");
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let bad_repo = promote(
+        &src_dir,
+        &not_git,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::Local,
+            ..Default::default()
+        },
+    );
+    assert!(!bad_repo.ok);
+    assert!(
+        codes(&bad_repo).contains(&"LOCAL_REPO_INVALID".to_string()),
+        "{:?}",
+        codes(&bad_repo)
+    );
+
+    // Missing target ref.
+    let main_dir = make_temp_dir("main-local-missing");
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let missing = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::Local,
+            target_branch: "release/9.9".to_string(),
+            ..Default::default()
+        },
+    );
+    assert!(!missing.ok);
+    assert!(
+        codes(&missing).contains(&"TARGET_NOT_FOUND".to_string()),
+        "{:?}",
+        codes(&missing)
+    );
+
+    // Existing branch (same nonce ⇒ same branch name).
+    let main_dir2 = make_temp_dir("main-local-collide");
+    let main2 = create_main_repo(&main_dir2, &[], &[]);
+    let fixed_nonce = format!("collide-{}-{}", std::process::id(), "branch-exists");
+    let run_once = |nonce: &str| {
+        let request = EngineRequest {
+            subsystem_id: "hr-management".to_string(),
+            commits: vec![src.c.clone()],
+            mode: PromotionMode::Individual,
+            base_sha: None,
+            target_branch: "staging".to_string(),
+            delivery: PromotionDelivery::Local,
+        };
+        let engine_options = EngineOptions {
+            target_repo_dir: main2.dir.clone(),
+            temp_root: sandbox_root(),
+            push_remote_url: None,
+            token: None,
+            allow_shared_config: false,
+            allow_removals: false,
+            nonce: nonce.to_string(),
+            push: false,
+            create_pr: false,
+        };
+        let source_dir = src_dir.clone();
+        let source_url =
+            move |_e: &subsystem_integration_manager_lib::services::registry::SubsystemEntry| {
+                Some(source_dir.to_string_lossy().replace('\\', "/"))
+            };
+        let lockfile = StubLockfileGenerator;
+        let deps = EngineDeps {
+            github: &github,
+            lockfile: &lockfile,
+            source_url: &source_url,
+        };
+        run_promotion(&registry, &request, &engine_options, &deps)
+    };
+    let first = run_once(&fixed_nonce);
+    assert!(first.ok, "{:?}", first.blockers);
+    let branch = first.integration_branch.clone().unwrap();
+    let second = run_once(&fixed_nonce);
+    assert!(!second.ok);
+    assert!(
+        codes(&second).contains(&"BRANCH_ALREADY_EXISTS".to_string()),
+        "{:?}",
+        codes(&second)
+    );
+    assert!(
+        ref_in(&main2.dir, &format!("refs/heads/{branch}")).is_some(),
+        "the pre-existing branch must not be deleted by the failed re-run"
+    );
+}
+
+#[test]
+fn registry_round_trip_with_local_main_repository_path_set_and_unset() {
+    // Set.
+    let with_path = format!(
+        r#"{{"mainRepository":"ORG/main-system","localMainRepositoryPath":{},"promotion":{{"allowedTargetBranches":["staging"],"allowedTargetBranchPatterns":[],"requirePullRequest":true}},"subsystems":[]}}"#,
+        serde_json::to_string(&sandbox_root().to_string_lossy().to_string()).unwrap()
+    );
+    let parsed = Registry::from_json(&with_path, "with-path").expect("parses with path");
+    assert!(parsed.local_main_repository_path.is_some());
+    let encoded = serde_json::to_string(&parsed).expect("encodes");
+    assert!(encoded.contains("localMainRepositoryPath"), "{encoded}");
+    let reparsed = Registry::from_json(&encoded, "reparse").expect("round-trips");
+    assert_eq!(parsed, reparsed);
+
+    // Unset (field omitted) ⇒ None.
+    let without = r#"{"mainRepository":"ORG/main-system","promotion":{"allowedTargetBranches":["staging"],"allowedTargetBranchPatterns":[],"requirePullRequest":true},"subsystems":[]}"#;
+    let parsed_without = Registry::from_json(without, "without").expect("parses without path");
+    assert_eq!(parsed_without.local_main_repository_path, None);
+    let encoded_without = serde_json::to_string(&parsed_without).expect("encodes");
+    let reparsed_without =
+        Registry::from_json(&encoded_without, "reparse-without").expect("round-trips");
+    assert_eq!(parsed_without, reparsed_without);
+
+    // Blank and relative paths are rejected fail-closed.
+    let blank = r#"{"mainRepository":"ORG/main-system","localMainRepositoryPath":"  ","promotion":{"allowedTargetBranches":["staging"],"allowedTargetBranchPatterns":[],"requirePullRequest":true},"subsystems":[]}"#;
+    assert!(Registry::from_json(blank, "blank").is_err());
+    let relative = r#"{"mainRepository":"ORG/main-system","localMainRepositoryPath":"repos/main","promotion":{"allowedTargetBranches":["staging"],"allowedTargetBranchPatterns":[],"requirePullRequest":true},"subsystems":[]}"#;
+    assert!(Registry::from_json(relative, "relative").is_err());
+}
+
+#[test]
+fn local_next_commands_carry_cd_push_and_pr_create() {
+    use subsystem_integration_manager_lib::commands::promotion::build_next_commands;
+
+    let dir = if cfg!(windows) {
+        PathBuf::from(r"C:\repos\main-system")
+    } else {
+        PathBuf::from("/tmp/main-system")
+    };
+    let commands = build_next_commands(
+        &dir,
+        "integration/hr-abc-staging-n1",
+        "staging",
+        "hr-management",
+        2,
+    );
+    assert_eq!(commands.len(), 3, "{commands:?}");
+    assert!(
+        commands[0].starts_with("cd "),
+        "first command cds into the clone: {commands:?}"
+    );
+    assert!(
+        commands[0].contains(&dir.to_string_lossy().to_string()),
+        "{commands:?}"
+    );
+    assert_eq!(
+        commands[1], "git push -u origin integration/hr-abc-staging-n1",
+        "{commands:?}"
+    );
+    assert!(
+        commands[2].contains("gh pr create")
+            && commands[2].contains("--base staging")
+            && commands[2].contains("--head integration/hr-abc-staging-n1")
+            && commands[2].contains("hr-management: integrate 2 commit(s)"),
+        "{commands:?}"
+    );
+
+    // Result shape: local carries commands and no PR; push_pr carries none.
+    use subsystem_integration_manager_lib::github::models::{
+        PromotionDelivery, PromotionDispatchResult,
+    };
+    let local_json = serde_json::json!({
+        "accepted": true, "prUrl": null, "prNumber": null,
+        "branch": "integration/hr-abc-staging-n1", "commitSha": "a".repeat(40),
+        "targetBranch": "staging", "message": "m", "requestedAt": "t",
+        "findings": [], "delivery": "local",
+        "nextCommands": commands,
+    });
+    let local: PromotionDispatchResult =
+        serde_json::from_value(local_json).expect("local result parses");
+    assert_eq!(local.delivery, PromotionDelivery::Local);
+    assert!(!local.next_commands.is_empty());
+    assert!(local.pr_url.is_none());
+    assert!(local.pr_number.is_none());
 }
