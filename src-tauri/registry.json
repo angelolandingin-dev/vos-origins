@@ -1,0 +1,27 @@
+{
+  "mainRepository": "ORG/main-system",
+  "promotion": {
+    "allowedTargetBranches": ["development", "staging", "master"],
+    "allowedTargetBranchPatterns": ["release/*"],
+    "requirePullRequest": true
+  },
+  "subsystems": [
+    {
+      "id": "hr-management",
+      "name": "Human Resource Management",
+      "repository": "ORG/hr-management",
+      "sourceBranch": "master",
+      "enabled": true,
+      "pathStrategy": "preserve-relative-paths",
+      "dependencyStrategy": "reconcile",
+      "integrationPolicy": {
+        "applicationFiles": "selected-commit-delta",
+        "packageJson": "merge-dependency-delta",
+        "lockfiles": "regenerate-in-target",
+        "sharedConfiguration": "review-explicitly",
+        "githubWorkflows": "main-owned",
+        "secretFiles": "never-import"
+      }
+    }
+  ]
+}

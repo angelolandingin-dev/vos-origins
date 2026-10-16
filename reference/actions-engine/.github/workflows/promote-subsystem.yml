@@ -1,0 +1,102 @@
+# Promote Subsystem — server-side integration engine (main system).
+#
+# The desktop application is only a control plane: it dispatches this workflow with
+# `gh workflow run --ref <default-branch> ...`. The `--ref` selects the WORKFLOW DEFINITION
+# execution ref and is NOT the integration target. The integration PR base is `target_branch`
+# (see §5.4). The engine re-reads and re-validates all policy server-side; workflow inputs are
+# never trusted on their own.
+
+name: Promote Subsystem
+
+on:
+  workflow_dispatch:
+    inputs:
+      subsystem:
+        description: Registered subsystem ID
+        type: string
+        required: true
+      commits:
+        description: JSON array of full source commit SHAs
+        type: string
+        required: true
+      mode:
+        description: Integration mode
+        type: choice
+        required: true
+        default: individual
+        options: [individual, cumulative]
+      base_sha:
+        description: Required only in cumulative mode
+        type: string
+        required: false
+      target_branch:
+        description: Main-system integration target branch
+        type: string
+        required: true
+      allow_shared_config:
+        description: Explicitly approve applying shared/global config changes (tsconfig, next.config, ...)
+        type: boolean
+        required: false
+        default: false
+      allow_removals:
+        description: Explicitly approve removing dependencies from the target manifest
+        type: boolean
+        required: false
+        default: false
+
+# Least privilege at the workflow level: read-only by default.
+permissions:
+  contents: read
+
+# Serialize promotions per (repository, target branch). Unrelated target branches proceed
+# independently. (§5.3, §10)
+concurrency:
+  group: promote-subsystem-${{ github.repository }}-${{ inputs.target_branch }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    # The promote job opts into the MINIMUM additional write scopes it needs. In production
+    # these should come from a scoped promotion bot credential rather than the default
+    # GITHUB_TOKEN where the organization's supply-chain policy requires it.
+    permissions:
+      contents: write # push the temporary integration branch only (never the protected target)
+      pull-requests: write # open/update the integration PR
+      actions: read
+    steps:
+      # Pin third-party actions to verified immutable revisions when adopting the
+      # organization's supply-chain policy. Major-version tags are used here for readability.
+      - name: Checkout main repository (registry + engine)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history: registry branch refs + target-branch ancestry
+          persist-credentials: false
+
+      - name: Set up integration runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Validate and run promotion
+        env:
+          SOURCE_SUBSYSTEM: ${{ inputs.subsystem }}
+          SOURCE_COMMITS_JSON: ${{ inputs.commits }}
+          PROMOTION_MODE: ${{ inputs.mode }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          # §6.4: shared-config and dependency-removal approvals MUST be grantable through the
+          # workflow_dispatch inputs (a dispatcher cannot set process env on the runner).
+          VOS_ALLOW_SHARED_CONFIG: ${{ inputs.allow_shared_config }}
+          VOS_ALLOW_REMOVALS: ${{ inputs.allow_removals }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REPOSITORY_SLUG: ${{ github.repository }}
+          # The desktop user token and the automation credential are different trust
+          # boundaries (§9.3). The engine uses this scoped token for the main-repo write
+          # path and the read-only source fetch.
+          GITHUB_TOKEN: ${{ secrets.PROMOTION_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          SOURCE_READ_TOKEN: ${{ secrets.SOURCE_READ_TOKEN }}
+          VOS_GH_MODE: real
+          VOS_REPORT_PATH: ${{ github.workspace }}/.integration-report.json
+        run: node .github/scripts/promote-subsystem.mjs

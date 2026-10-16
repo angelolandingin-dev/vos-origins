@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vos://integration/config.schema.json",
+  "title": "VOS Integration Config",
+  "description": "Policy document read from the registry branch. Validation fails closed: unknown keys, unknown schema keywords, invalid types, or policy-disabling values all reject the promotion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "mainRepository",
+    "registryBranch",
+    "sourceBranchDefault",
+    "promotion"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "mainRepository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "description": "OWNER/REPO of the main system. Registry branch below is authoritative for policy."
+    },
+    "registryBranch": { "type": "string", "minLength": 1 },
+    "sourceBranchDefault": { "type": "string", "minLength": 1 },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowedTargetBranches",
+        "requirePullRequest",
+        "allowDirectPush",
+        "workflowFile"
+      ],
+      "properties": {
+        "allowedTargetBranches": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 0
+        },
+        "allowedTargetBranchPatterns": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 0
+        },
+        "requirePullRequest": { "type": "boolean" },
+        "allowDirectPush": {
+          "type": "boolean",
+          "const": false,
+          "description": "Hard-locked to false. Direct pushes to protected targets are prohibited."
+        },
+        "workflowFile": { "type": "string", "pattern": "^[^/]+\\.ya?ml$" }
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

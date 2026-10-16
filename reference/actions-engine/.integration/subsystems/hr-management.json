@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "hr-management",
+  "name": "Human Resource Management",
+  "repository": "ORG/hr-management",
+  "sourceBranch": "master",
+  "enabled": true,
+  "pathStrategy": "preserve-relative-paths",
+  "dependencyStrategy": "reconcile",
+  "integrationPolicy": {
+    "applicationFiles": "selected-commit-delta",
+    "packageJson": "merge-dependency-delta",
+    "lockfiles": "regenerate-in-target",
+    "sharedConfiguration": "review-explicitly",
+    "githubWorkflows": "main-owned",
+    "secretFiles": "never-import"
+  },
+  "initialBaselines": {
+    "staging": {
+      "sourceCommit": "FULL_SOURCE_SHA_AFTER_VERIFIED_EXISTING_COPY",
+      "status": "requires-manual-verification"
+    }
+  },
+  "assumptions": [
+    "UNVERIFIED PLACEHOLDER: \"ORG\" and \"ORG/hr-management\" are stand-in names, NOT verified repositories. Registration must be validated against real GitHub access before use.",
+    "UNVERIFIED PLACEHOLDER: initialBaselines.staging.sourceCommit is a placeholder. It MUST be validated against the real staging branch state for each target branch before being trusted; the placeholder must never be treated as verified and must not be used to mark a commit Integrated.",
+    "sourceBranch \"master\" is the default per spec; verify the subsystem's actual protected branch."
+  ]
+}

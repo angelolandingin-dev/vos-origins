@@ -1,0 +1,242 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --color-ink-400: #44598a;
+  --color-ink-500: #33486f;
+  --color-ink-600: #27395c;
+  --color-ink-700: #1e3050;
+  --color-ink-750: #182741;
+  --color-ink-800: #131f33;
+  --color-ink-850: #0f1a2b;
+  --color-ink-870: #0c1424;
+  --color-ink-900: #0a111d;
+  --color-ink-925: #080e19;
+  --color-ink-950: #070b13;
+
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+  --color-brand-800: #1e40af;
+  --color-brand-900: #1e3a8a;
+
+  --color-status-eligible: #34d399;
+  --color-status-selected: #60a5fa;
+  --color-status-queued: #fbbf24;
+  --color-status-running: #fb923c;
+  --color-status-prOpen: #c4b5fd;
+  --color-status-inReview: #f0abfc;
+  --color-status-integrated: #4ade80;
+  --color-status-reverted: #cbd5e1;
+  --color-status-blocked: #fda4af;
+  --color-status-failed: #f87171;
+  --color-status-unknown: #94a3b8;
+
+  --font-sans: ui-sans-serif, system-ui, Segoe UI, Inter, Roboto, Helvetica Neue, Arial, sans-serif;
+  --font-mono: ui-monospace, Cascadia Code, JetBrains Mono, Consolas, SFMono-Regular, monospace;
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px -24px rgba(0, 0, 0, 0.9);
+  --shadow-popover: 0 24px 60px -18px rgba(0, 0, 0, 0.85);
+  --shadow-focus-brand: 0 0 0 2px rgba(37, 99, 235, 0.85);
+
+  --animate-fade-in: fade-in 140ms ease-out;
+  --animate-pulse-dot: pulse-dot 1800ms ease-in-out infinite;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+}
+
+@utility panel {
+  @apply rounded-xl border border-ink-700/70 bg-ink-870 shadow-panel;
+}
+
+@utility panel-header {
+  @apply flex items-center justify-between gap-3 border-b border-ink-700/60 px-4 py-3;
+}
+
+@utility panel-title {
+  @apply text-sm font-semibold tracking-tight text-slate-100;
+}
+
+@utility muted {
+  @apply text-xs text-slate-400;
+}
+
+@utility mono {
+  @apply font-mono text-xs tracking-tight;
+}
+
+@utility btn {
+  @apply inline-flex select-none items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium
+      transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+@utility btn-primary {
+  @apply btn bg-brand-600 text-white hover:bg-brand-500 active:bg-brand-700;
+}
+
+@utility btn-secondary {
+  @apply btn border border-ink-600/80 bg-ink-800/70 text-slate-200 hover:border-ink-500 hover:bg-ink-750;
+}
+
+@utility btn-ghost {
+  @apply btn text-slate-300 hover:bg-ink-800/70 hover:text-slate-100;
+}
+
+@utility btn-danger {
+  @apply btn border border-rose-900/70 bg-rose-950/40 text-rose-200 hover:bg-rose-900/40;
+}
+
+@utility input {
+  @apply w-full rounded-lg border border-ink-600/80 bg-ink-900/80 px-3 py-2 text-sm text-slate-100
+      placeholder:text-slate-500 hover:border-ink-500 focus:border-brand-500 focus:outline-hidden;
+}
+
+@utility select {
+  @apply input cursor-pointer appearance-none pr-9;
+}
+
+@utility chip {
+  @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-medium;
+}
+
+@utility kbd {
+  @apply rounded-sm border border-ink-600 bg-ink-800 px-1.5 py-0.5 font-mono text-2xs text-slate-400;
+}
+
+@utility nav-item {
+  @apply relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium
+      text-slate-300 transition-colors hover:bg-ink-800/60 hover:text-slate-100;
+}
+
+@utility nav-item-active {
+  @apply bg-ink-800 text-white;
+}
+
+@utility tab {
+  @apply relative shrink-0 border-b-2 border-transparent px-3 py-2 text-sm font-medium text-slate-400
+      transition-colors hover:text-slate-200;
+}
+
+@utility tab-active {
+  @apply border-brand-500 text-white;
+}
+
+@utility table-head {
+  @apply bg-ink-900/80 text-2xs font-semibold uppercase tracking-wider text-slate-400;
+}
+
+@utility row-hover {
+  @apply transition-colors hover:bg-ink-800/60;
+}
+
+@utility scroll-area {
+  @apply overflow-y-auto overscroll-contain;
+}
+
+@utility text-balance {
+  text-wrap: balance;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-950 font-sans text-slate-200 antialiased;
+    overflow: hidden;
+  }
+
+  /* Visible, consistent keyboard focus indicator everywhere. */
+  :focus-visible {
+    @apply outline-hidden ring-2 ring-brand-500 ring-offset-1 ring-offset-ink-950;
+  }
+
+  ::selection {
+    @apply bg-brand-600/50;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #1e3050 transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: #1e3050;
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: #27395c;
+  }
+
+  [data-tauri-drag-region] {
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+
+  [data-tauri-no-drag] {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+}

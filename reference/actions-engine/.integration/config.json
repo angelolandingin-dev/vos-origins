@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "mainRepository": "ORG/main-system",
+  "registryBranch": "master",
+  "sourceBranchDefault": "master",
+  "promotion": {
+    "allowedTargetBranches": ["development", "staging", "master"],
+    "allowedTargetBranchPatterns": ["release/*"],
+    "requirePullRequest": true,
+    "allowDirectPush": false,
+    "workflowFile": "promote-subsystem.yml"
+  },
+  "assumptions": [
+    "UNVERIFIED PLACEHOLDER: \"ORG\" is a stand-in GitHub owner/organization name. It is NOT a real, verified organization. Replace it with the real main-system owner before any production promotion.",
+    "UNVERIFIED PLACEHOLDER: allowed target branches (development/staging/master) and the release/* pattern are POLICY defaults, not an assertion that these branches exist. The engine independently queries the repository for branches that actually exist and pass policy.",
+    "UNVERIFIED PLACEHOLDER: registryBranch \"master\" assumes the main-system default/administration branch is named master. Verify the real default branch name.",
+    "This file is read from the configured registryBranch, NOT from the promotion target branch tip."
+  ]
+}

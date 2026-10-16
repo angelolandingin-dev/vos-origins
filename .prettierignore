@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+src-tauri
+reference
+package-lock.json
+*.min.js

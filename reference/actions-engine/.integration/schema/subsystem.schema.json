@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vos://integration/subsystem.schema.json",
+  "title": "VOS Subsystem Registry Entry",
+  "description": "One file per subsystem under .integration/subsystems/. The registry is an allowlist + integration policy document, not a commit-history ledger. Validation fails closed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "name",
+    "repository",
+    "sourceBranch",
+    "enabled",
+    "pathStrategy",
+    "dependencyStrategy",
+    "integrationPolicy"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,63}$",
+      "description": "Stable slug used as the registry filename and the Subsystem-ID trailer value."
+    },
+    "name": { "type": "string", "minLength": 1 },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "sourceBranch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Protected source branch whose reachable ancestry defines eligibility."
+    },
+    "enabled": { "type": "boolean" },
+    "pathStrategy": {
+      "type": "string",
+      "enum": ["preserve-relative-paths"]
+    },
+    "dependencyStrategy": {
+      "type": "string",
+      "enum": ["reconcile", "none"]
+    },
+    "integrationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "applicationFiles",
+        "packageJson",
+        "lockfiles",
+        "sharedConfiguration",
+        "githubWorkflows",
+        "secretFiles"
+      ],
+      "properties": {
+        "applicationFiles": {
+          "type": "string",
+          "enum": ["selected-commit-delta"]
+        },
+        "packageJson": {
+          "type": "string",
+          "enum": ["merge-dependency-delta", "explicit-review"]
+        },
+        "lockfiles": {
+          "type": "string",
+          "enum": ["regenerate-in-target"]
+        },
+        "sharedConfiguration": {
+          "type": "string",
+          "enum": ["review-explicitly", "merge-controlled"]
+        },
+        "githubWorkflows": {
+          "type": "string",
+          "enum": ["main-owned"]
+        },
+        "secretFiles": {
+          "type": "string",
+          "enum": ["never-import"]
+        }
+      }
+    },
+    "initialBaselines": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceCommit", "status"],
+        "properties": {
+          "sourceCommit": { "type": "string", "minLength": 1 },
+          "status": {
+            "type": "string",
+            "enum": ["requires-manual-verification", "verified"]
+          }
+        }
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

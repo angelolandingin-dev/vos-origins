@@ -1,0 +1,464 @@
+/** Wire contract for the Rust command surface (spec §9.2); camelCase matches `rename_all`. */
+/** Statuses are never invented in components; fixtures always carry `dataSource: 'fixture'`. */
+
+export type DataSource = 'fixture' | 'live';
+
+export type ConnectivityState = 'connected' | 'degraded' | 'unknown';
+
+/** Truthful status vocabulary (spec section 3.4). Never fabricate `Ready`. */
+export type CommitStatusKind =
+  | 'eligible'
+  | 'selected'
+  | 'promotion_queued'
+  | 'promotion_running'
+  | 'pr_open'
+  | 'in_review'
+  | 'integrated'
+  | 'reverted'
+  | 'blocked'
+  | 'failed'
+  | 'unknown';
+
+export type FileChangeKind = 'added' | 'modified' | 'deleted' | 'renamed';
+
+/** Per-path integration semantics (spec §6.4): apply in place; manifests merge; lockfiles regenerate; main-owned/secret files never import. */
+export type FileIntegrationPolicy =
+  'apply' | 'regenerate_in_target' | 'review_required' | 'never_import' | 'main_owned';
+
+export type PromotionMode = 'individual' | 'cumulative';
+
+export interface ValidationFinding {
+  level: 'info' | 'warning' | 'error';
+  code: string;
+  message: string;
+  remedy: string | null;
+}
+
+export interface AuthStatus {
+  ghInstalled: boolean;
+  ghVersion: string | null;
+  authenticated: boolean;
+  hostname: string;
+  accountLogin: string | null;
+  accountName: string | null;
+  organization: string | null;
+  scopes: string[];
+  tokenSource: string | null;
+  /** True when a token is obtainable (GH_TOKEN / GITHUB_TOKEN / `gh auth token`). */
+  tokenAvailable: boolean;
+  gitInstalled: boolean;
+  gitVersion: string | null;
+  packageManager: string | null;
+  packageManagerVersion: string | null;
+  checkedAt: string;
+  message: string;
+  remedy: string | null;
+  dataSource: DataSource;
+  mainRepository: string;
+  registryBranch: string;
+  workflowFile: string;
+}
+
+export interface SubsystemPolicy {
+  applicationFiles: string;
+  packageJson: string;
+  lockfiles: string;
+  sharedConfiguration: string;
+  githubWorkflows: string;
+  secretFiles: string;
+}
+
+export interface SubsystemSummary {
+  id: string;
+  name: string;
+  repository: string;
+  sourceBranch: string;
+  enabled: boolean;
+  description: string;
+  connectivity: ConnectivityState;
+  connectivityMessage: string | null;
+  policy: SubsystemPolicy;
+  pathStrategy: string;
+  dependencyStrategy: string;
+  lastSyncedAt: string;
+  registeredAt: string;
+  registrationPrNumber: number | null;
+  registrationPrUrl: string | null;
+  allowedTargetBranches: string[];
+}
+
+export interface TargetBranch {
+  name: string;
+  headSha: string;
+  protected: boolean;
+  isDefault: boolean;
+  allowed: boolean;
+  disallowedReason: string | null;
+  openPrCount: number;
+  activePromotions: number;
+}
+
+export interface TargetBranchPolicy {
+  allowedTargetBranches: string[];
+  allowedTargetBranchPatterns: string[];
+  requirePullRequest: boolean;
+  allowDirectPush: boolean;
+  workflowFile: string;
+}
+
+export interface TargetBranchList {
+  targetBranch: string;
+  mainRepository: string;
+  registryBranch: string;
+  branches: TargetBranch[];
+  policy: TargetBranchPolicy;
+  fetchedAt: string;
+  dataSource: DataSource;
+}
+
+export interface SubsystemRegistrationRequest {
+  id: string;
+  name: string;
+  repository: string;
+  sourceBranch: string;
+  description: string;
+  policy: SubsystemPolicy;
+}
+
+export interface RegistrationResult {
+  accepted: boolean;
+  branch: string | null;
+  pullRequestNumber: number | null;
+  pullRequestUrl: string | null;
+  message: string;
+  findings: ValidationFinding[];
+}
+
+export interface IntegrationEvidence {
+  mainCommitSha: string;
+  mergedAt: string;
+  message: string;
+  pullRequestNumber: number | null;
+  targetBranch: string;
+  inheritedFromBranch: string | null;
+}
+
+export interface CommitStatus {
+  kind: CommitStatusKind;
+  label: string;
+  targetBranch: string;
+  detail: string | null;
+  evidence: IntegrationEvidence | null;
+}
+
+export interface CommitSummary {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  authorName: string;
+  authorLogin: string | null;
+  authoredAt: string;
+  committedAt: string;
+  relativeTime: string;
+  status: CommitStatus;
+  parents: string[];
+  isMerge: boolean;
+  eligible: boolean;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  tags: string[];
+  touchesManifest: boolean;
+}
+
+export interface CommitPage {
+  targetBranch: string;
+  sourceBranch: string;
+  subsystemId: string;
+  total: number;
+  page: number;
+  pageSize: number;
+  commits: CommitSummary[];
+  fetchedAt: string;
+  dataSource: DataSource;
+}
+
+export interface CommitQuery {
+  subsystemId: string;
+  targetBranch: string;
+  page: number;
+  pageSize: number;
+  search: string;
+  /** `null` means "all statuses". */
+  statusFilter: CommitStatusKind | null;
+  sort: 'newest' | 'oldest';
+  shas?: string[];
+}
+
+export interface DependencyChange {
+  name: string;
+  section: 'dependencies' | 'devDependencies' | 'peerDependencies' | 'optionalDependencies';
+  change: 'added' | 'updated' | 'removed';
+  fromRange: string | null;
+  toRange: string | null;
+  conflict: boolean;
+  note: string | null;
+}
+
+export interface ChangedFile {
+  path: string;
+  previousPath: string | null;
+  change: FileChangeKind;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  policy: FileIntegrationPolicy;
+  policyNote: string | null;
+}
+
+export interface PullRequestRef {
+  number: number;
+  title: string;
+  state: 'open' | 'closed' | 'merged';
+  baseBranch: string;
+  htmlUrl: string;
+  repository: string;
+}
+
+export interface CommitDetails {
+  subsystemId: string;
+  targetBranch: string;
+  sha: string;
+  shortSha: string;
+  subject: string;
+  body: string;
+  authorName: string;
+  authorLogin: string | null;
+  authoredAt: string;
+  committedAt: string;
+  relativeTime: string;
+  status: CommitStatus;
+  tags: string[];
+  files: ChangedFile[];
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  dependencies: DependencyChange[];
+  relatedPullRequests: PullRequestRef[];
+  parents: string[];
+  isMerge: boolean;
+  sourceUrl: string;
+  note: string | null;
+}
+
+export type DiffLineKind = 'context' | 'added' | 'removed';
+
+export interface DiffLine {
+  kind: DiffLineKind;
+  oldLine: number | null;
+  newLine: number | null;
+  text: string;
+}
+
+export interface DiffHunk {
+  header: string;
+  lines: DiffLine[];
+}
+
+export interface CommitDiff {
+  subsystemId: string;
+  sha: string;
+  filePath: string;
+  language: string;
+  hunks: DiffHunk[];
+  totalLines: number;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  truncated: boolean;
+  sourceUrl: string;
+  note: string | null;
+}
+
+export interface IntegrationStatus {
+  subsystemId: string;
+  sourceSha: string;
+  targetBranch: string;
+  status: CommitStatus;
+  checkedAt: string;
+}
+
+export interface PromotionRequest {
+  subsystemId: string;
+  sourceCommitShas: string[];
+  mode: PromotionMode;
+  /** Required in cumulative mode: the explicitly verified baseline SHA. */
+  baseSha: string | null;
+  targetBranch: string;
+  /** The user must have seen the "integration PR, not a direct push" confirmation. */
+  confirmationAcknowledged: boolean;
+}
+
+/** In-tool promotion result (§9.2): the engine pushes the branch + PR itself, so there is no workflow run id. */
+export interface PromotionDispatchResult {
+  accepted: boolean;
+  prUrl: string | null;
+  prNumber: number | null;
+  branch: string;
+  /** The provenance commit that carries the §8.1 trailers. */
+  commitSha: string | null;
+  targetBranch: string;
+  message: string;
+  requestedAt: string;
+  findings: ValidationFinding[];
+}
+
+export type WorkflowRunStatus =
+  'queued' | 'in_progress' | 'completed' | 'waiting' | 'requested' | 'unknown';
+
+export type WorkflowRunConclusion =
+  'success' | 'failure' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required' | 'neutral';
+
+export interface WorkflowRun {
+  id: number;
+  runNumber: number;
+  name: string;
+  displayTitle: string;
+  event: string;
+  status: WorkflowRunStatus;
+  conclusion: WorkflowRunConclusion | null;
+  headBranch: string;
+  targetBranch: string;
+  subsystemId: string;
+  sourceShas: string[];
+  mode: PromotionMode;
+  actor: string;
+  createdAt: string;
+  updatedAt: string;
+  htmlUrl: string;
+}
+
+export interface WorkflowStep {
+  number: number;
+  name: string;
+  status: WorkflowRunStatus;
+  conclusion: WorkflowRunConclusion | null;
+}
+
+export interface WorkflowJob {
+  id: number;
+  name: string;
+  status: WorkflowRunStatus;
+  conclusion: WorkflowRunConclusion | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  steps: WorkflowStep[];
+}
+
+export interface WorkflowLogLine {
+  ts: string;
+  level: 'info' | 'warn' | 'error' | 'debug';
+  text: string;
+}
+
+export interface WorkflowRunList {
+  runs: WorkflowRun[];
+  total: number;
+  fetchedAt: string;
+  dataSource: DataSource;
+}
+
+export interface WorkflowRunDetails {
+  run: WorkflowRun;
+  jobs: WorkflowJob[];
+  logs: WorkflowLogLine[];
+  logsTruncated: boolean;
+  logsUrl: string | null;
+  artifactNote: string | null;
+}
+
+export interface IntegrationPr {
+  number: number;
+  title: string;
+  state: 'open' | 'closed' | 'merged';
+  draft: boolean;
+  reviewState: 'required' | 'approved' | 'changes_requested' | 'unknown';
+  baseBranch: string;
+  headBranch: string;
+  subsystemId: string;
+  sourceShas: string[];
+  createdAt: string;
+  updatedAt: string;
+  mergedAt: string | null;
+  mergedBy: string | null;
+  mergeCommitSha: string | null;
+  author: string;
+  htmlUrl: string;
+  provenanceOk: boolean;
+  provenanceNote: string | null;
+}
+
+export type IntegrationHistoryKind = 'merged' | 'pending_pr' | 'reverted' | 'restored' | 'failed';
+
+export interface IntegrationHistoryEntry {
+  id: string;
+  kind: IntegrationHistoryKind;
+  subsystemId: string;
+  sourceShas: string[];
+  targetBranch: string;
+  mainCommitSha: string | null;
+  pullRequestNumber: number | null;
+  actor: string;
+  occurredAt: string;
+  detail: string;
+  inheritedFromBranch: string | null;
+}
+
+export interface IntegrationHistory {
+  targetBranch: string;
+  subsystemId: string | null;
+  entries: IntegrationHistoryEntry[];
+  total: number;
+  fetchedAt: string;
+  dataSource: DataSource;
+}
+
+export interface CacheStats {
+  entries: number;
+  capacity: number;
+  hits: number;
+  misses: number;
+  oldestEntryAt: string | null;
+  /** Always true: the cache can be dropped and rebuilt from Git/GitHub history. */
+  rebuildable: boolean;
+  dataSource: DataSource;
+  note: string;
+}
+
+export type ApiErrorCode =
+  | 'backend_unavailable'
+  | 'unauthenticated'
+  | 'missing_prerequisite'
+  | 'insufficient_scope'
+  | 'repository_inaccessible'
+  | 'invalid_registry'
+  | 'branch_not_permitted'
+  | 'source_commit_not_eligible'
+  | 'duplicate_integration'
+  | 'duplicate_registration'
+  | 'rate_limited'
+  | 'offline'
+  | 'workflow_dispatch_rejected'
+  | 'patch_conflict'
+  | 'dependency_conflict'
+  | 'ci_failure'
+  | 'not_found'
+  | 'internal';
+
+export interface ApiErrorPayload {
+  code: ApiErrorCode;
+  message: string;
+  remedy: string | null;
+  details: string | null;
+  retryable: boolean;
+}

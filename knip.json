@@ -1,0 +1,15 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/main.tsx", "vite.config.ts", "eslint.config.js"],
+  "project": ["src/**/*.{ts,tsx}", "*.ts", "*.js"],
+  "ignore": ["reference/**", "src-tauri/**", "dist/**", "coverage/**"],
+  "ignoreDependencies": [
+    "tailwindcss",
+    "husky",
+    "lint-staged",
+    "eslint-config-prettier",
+    "@eslint/js",
+    "globals",
+    "@types/react-dom"
+  ]
+}

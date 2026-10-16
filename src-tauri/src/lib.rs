@@ -1,0 +1,65 @@
+//! Control plane for subsystem integration (spec §9).
+//! Never patches/builds itself; privileged work happens in GitHub Actions
+//! which opens an integration PR against the target branch.
+
+pub mod commands;
+pub mod error;
+pub mod fixtures;
+pub mod github;
+pub mod services;
+
+use std::sync::Mutex;
+
+use fixtures::FixtureWorld;
+use github::api::GitHubAdapter;
+use services::cache::Cache;
+
+/// Disposable fixture world + response cache; never authoritative.
+pub struct AppState {
+    pub world: Mutex<FixtureWorld>,
+    pub cache: Cache,
+    pub adapter: GitHubAdapter,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        Self {
+            world: Mutex::new(FixtureWorld::build()),
+            cache: Cache::new(256),
+            adapter: GitHubAdapter::default(),
+        }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(AppState::new())
+        .invoke_handler(tauri::generate_handler![
+            commands::auth::get_auth_status,
+            commands::registry::list_subsystems,
+            commands::registry::list_target_branches,
+            commands::registry::submit_subsystem_registration,
+            commands::commits::get_subsystem_commits,
+            commands::commits::get_commit_details,
+            commands::commits::get_commit_diff,
+            commands::commits::get_integration_statuses,
+            commands::promotion::dispatch_promotion,
+            commands::workflows::list_workflow_runs,
+            commands::workflows::get_workflow_run_details,
+            commands::history::list_integration_prs,
+            commands::history::list_integration_history,
+            commands::system::get_cache_stats,
+            commands::system::clear_cache,
+            commands::system::open_external_url,
+        ])
+        .run(tauri::generate_context!())
+        .expect("failed to run the Subsystem Integration Manager");
+}
