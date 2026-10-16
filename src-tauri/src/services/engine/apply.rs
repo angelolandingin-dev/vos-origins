@@ -133,7 +133,17 @@ fn is_reparse_or_symlink(path: &Path) -> bool {
 /// Symlinked parents/files would let a write escape the worktree, so every
 /// existing component is checked; containment is the second line of defence.
 pub fn assert_real_path_within(dir: &Path, rel_path: &str) -> Result<(), ApplyConflict> {
-    if rel_path.starts_with('/') || rel_path.contains("..") {
+    // Whole-segment ".." only. A substring check also matches legitimate names
+    // like Next.js catch-all routes (`[...path]`), which made the apply refuse a
+    // path the classifier had already accepted. `classify::inspect_path_safety`
+    // performs the same segment-wise check, so the two now agree.
+    let normalised = rel_path.replace('\\', "/");
+    let bytes = normalised.as_bytes();
+    let drive_letter = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if normalised.starts_with('/')
+        || drive_letter
+        || normalised.split('/').any(|segment| segment == "..")
+    {
         return Err(ApplyConflict::new(
             format!("Refusing to touch a path outside the worktree: {rel_path}"),
             Some(rel_path.to_string()),
@@ -142,7 +152,7 @@ pub fn assert_real_path_within(dir: &Path, rel_path: &str) -> Result<(), ApplyCo
     }
     let root = dir.to_path_buf();
     let mut current = root.clone();
-    for segment in rel_path.split('/').filter(|s| !s.is_empty()) {
+    for segment in normalised.split('/').filter(|s| !s.is_empty()) {
         current.push(segment);
         if is_reparse_or_symlink(&current) {
             return Err(ApplyConflict::new(
@@ -667,8 +677,15 @@ mod tests {
     fn refuses_traversal_and_absolute_paths() {
         let dir = std::env::temp_dir();
         assert!(assert_real_path_within(&dir, "../evil.txt").is_err());
+        assert!(assert_real_path_within(&dir, "a/../../b.txt").is_err());
         assert!(assert_real_path_within(&dir, "/etc/passwd").is_err());
+        assert!(assert_real_path_within(&dir, "C:/windows/system32").is_err());
         assert!(assert_real_path_within(&dir, "src/app.ts").is_ok());
+        // Next.js catch-all routes carry ".." as a substring, not a segment.
+        assert!(
+            assert_real_path_within(&dir, "src/app/api/fm/consignment/[...path]/route.ts").is_ok()
+        );
+        assert!(assert_real_path_within(&dir, "src/app/[...slug]/page.tsx").is_ok());
     }
 
     #[test]
