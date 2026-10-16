@@ -14,6 +14,7 @@ use crate::github::gh_cli;
 use crate::github::models::*;
 use crate::services::engine::github_ops::{authenticated_remote_url, GitHubOps, RealGitHubOps};
 use crate::services::engine::lockfile::RealLockfileGenerator;
+use crate::services::engine::preflight::PreflightRequest;
 use crate::services::engine::{
     self, Blocker, EngineDeps, EngineOptions, EngineRequest, PromotionReport,
 };
@@ -229,6 +230,159 @@ pub async fn dispatch_promotion(
         delivery: PromotionDelivery::PushPr,
         next_commands: Vec::new(),
     })
+}
+
+/// Dry-run mergeability preflight for the promotion dialog: per-file
+/// `clean` / `merged` / `conflict` / `skipped` for the selected SHAs against
+/// the target branch tip, computed with the engine's own three-way merge.
+/// Read-only: creates no branch, no commit, and no worktree, and performs no
+/// push or PR. The failure path is untouched — the real promotion still fails
+/// closed exactly as it does today.
+#[tauri::command]
+pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<PromotionPreflight> {
+    if request.source_commit_shas.is_empty() {
+        return Err(AppError::invalid_request("No source commit SHAs were selected.")
+            .with_remedy("Tick at least one eligible commit in the Commit Browser or the Promote Commits list."));
+    }
+
+    // Same shape gate as the engine (`assert_full_sha`): 40/64 lowercase hex.
+    if let Some(invalid) = request
+        .source_commit_shas
+        .iter()
+        .find(|sha| assert_full_sha(sha, "source_commit_shas[]").is_err())
+    {
+        return Err(AppError::invalid_request(format!(
+            "'{invalid}' is not a full 40/64-character lowercase source commit SHA."
+        ))
+        .with_remedy(
+            "Use full SHAs. Abbreviated SHAs are only for display and cannot be promoted.",
+        ));
+    }
+
+    if request.mode == PromotionMode::Cumulative && request.base_sha.is_none() {
+        return Err(AppError::invalid_request(
+            "Cumulative mode requires an explicitly verified baseline SHA.",
+        )
+        .with_remedy("Provide the baseline SHA, or switch to individual mode to promote only the selected deltas."));
+    }
+
+    let registry = Registry::load(Registry::app_data_override_path().as_deref())?;
+    let subsystem =
+        crate::services::live_read::find_live_subsystem(&registry, &request.subsystem_id)?.clone();
+    let decision = registry.is_target_allowed(&request.target_branch);
+    if !decision.allowed {
+        return Err(AppError::new(
+            ErrorCode::BranchNotPermitted,
+            format!(
+                "Target branch '{}' is not permitted ({}).",
+                request.target_branch, decision.reason
+            ),
+        )
+        .with_remedy("Choose a target branch that exists and is allowed by promotion.allowedTargetBranches / allowedTargetBranchPatterns."));
+    }
+
+    // Already-cached checkouts only: no fetch, no push, no PR. A stale cache
+    // refreshes on the same TTL the reads use, so this costs no more than
+    // opening the commit list.
+    let token = gh_cli::auth_token();
+    let (target_repo_dir, _) = crate::services::live_read::resolve_target_checkout(
+        &registry.main_repository,
+        registry.local_main_repository_path.as_deref(),
+        token.as_deref(),
+    )?;
+    let source_resolver = |entry: &SubsystemEntry| {
+        Some(match token.as_deref() {
+            Some(token) => authenticated_remote_url(&entry.repository, token),
+            // No token: remote slugs fail below with a typed error, while
+            // local-path repositories still pass straight through.
+            None => entry.repository.clone(),
+        })
+    };
+    let (source_repo_dir, _) = crate::services::live_read::resolve_source_checkout(
+        &subsystem,
+        &source_resolver,
+        token.as_deref(),
+    )?;
+
+    let policy = subsystem.integration_policy.clone();
+    let commits = request.source_commit_shas.clone();
+    let mode = request.mode;
+    let base_sha = request.base_sha.clone();
+    let target_branch = request.target_branch.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let scratch_root = std::env::temp_dir().join("vos-integration");
+        let _ = std::fs::create_dir_all(&scratch_root);
+        let preflight = PreflightRequest {
+            policy: &policy,
+            commits: &commits,
+            mode,
+            base_sha: base_sha.as_deref(),
+            target_branch: &target_branch,
+        };
+        crate::services::engine::preflight::compute_preflight(
+            &source_repo_dir,
+            &target_repo_dir,
+            &preflight,
+            &scratch_root,
+        )
+    })
+    .await
+    .map_err(|error| {
+        AppError::new(
+            ErrorCode::Internal,
+            format!("The preflight check did not complete: {error}"),
+        )
+        .with_remedy("Retry; if it keeps failing, inspect the commit selection and retry.")
+        .retryable()
+    })?
+    .map_err(map_preflight_error)?;
+
+    Ok(PromotionPreflight {
+        files: report
+            .files
+            .into_iter()
+            .map(|file| PreflightFileResult {
+                path: file.path,
+                outcome: match file.outcome {
+                    crate::services::engine::preflight::PreflightOutcome::Clean => {
+                        PreflightOutcome::Clean
+                    }
+                    crate::services::engine::preflight::PreflightOutcome::Merged => {
+                        PreflightOutcome::Merged
+                    }
+                    crate::services::engine::preflight::PreflightOutcome::Conflict => {
+                        PreflightOutcome::Conflict
+                    }
+                    crate::services::engine::preflight::PreflightOutcome::Skipped => {
+                        PreflightOutcome::Skipped
+                    }
+                },
+            })
+            .collect(),
+        clean: report.clean,
+        merged: report.merged,
+        conflict: report.conflict,
+        skipped: report.skipped,
+        conflicts: report.conflicts,
+    })
+}
+
+fn map_preflight_error(error: crate::services::engine::preflight::PreflightError) -> AppError {
+    use crate::services::engine::preflight::PreflightError as EngineError;
+    match error {
+        EngineError::UnknownTargetBranch(_) => AppError::new(
+            ErrorCode::BranchNotPermitted,
+            error.message(),
+        )
+        .with_remedy("Choose a target branch that exists and is allowed by the registry policy (promotion.allowedTargetBranches / allowedTargetBranchPatterns)."),
+        EngineError::UnknownCommit(_) | EngineError::InvalidRange(_) => {
+            AppError::invalid_request(error.message()).with_remedy(
+                "Refresh the commit list and re-select the commits; the source branch may have moved.",
+            )
+        }
+        EngineError::Scratch(_) => AppError::new(ErrorCode::Internal, error.message())
+            .with_remedy("Retry; if it keeps failing, check the temp directory is writable."),
+    }
 }
 
 /// `local` checkout: registry path → `VOS_TARGET_REPO_DIR` → managed cache.

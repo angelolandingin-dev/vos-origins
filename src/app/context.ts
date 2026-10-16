@@ -17,6 +17,7 @@ import type {
   PromotionDelivery,
   PromotionDispatchResult,
   PromotionMode,
+  PromotionPreflight,
   SubsystemSummary,
   TargetBranchList,
 } from '../api/types';
@@ -92,6 +93,8 @@ export interface PromotionState {
   result: PromotionDispatchResult | null;
   dependencies: DependencyChange[];
   dependenciesLoading: boolean;
+  preflight: PromotionPreflight | null;
+  preflightLoading: boolean;
 }
 
 export interface AppContextValue {

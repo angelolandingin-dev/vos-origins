@@ -17,6 +17,7 @@ import type {
   PromotionDelivery,
   PromotionDispatchResult,
   PromotionMode,
+  PromotionPreflight,
   SubsystemSummary,
   TargetBranchList,
 } from '../api/types';
@@ -49,6 +50,8 @@ export interface PromotionDialogProps {
   onDeliveryChange: (delivery: PromotionDelivery) => void;
   dependencies: DependencyChange[];
   dependenciesLoading: boolean;
+  preflight: PromotionPreflight | null;
+  preflightLoading: boolean;
   dispatching: boolean;
   error: ApiError | null;
   result: PromotionDispatchResult | null;
@@ -66,6 +69,16 @@ export function PromotionDialog(props: PromotionDialogProps) {
       {...props}
     />
   );
+}
+
+function preflightSummary(preflight: PromotionPreflight): string {
+  const parts = [
+    `${preflight.clean} clean`,
+    `${preflight.merged} merged`,
+    `${preflight.conflict} conflict`,
+  ];
+  if (preflight.skipped > 0) parts.push(`${preflight.skipped} skipped`);
+  return `${preflight.files.length} files: ${parts.join(' · ')}`;
 }
 
 function PromotionDialogContent({
@@ -87,6 +100,8 @@ function PromotionDialogContent({
   onDeliveryChange,
   dependencies,
   dependenciesLoading,
+  preflight,
+  preflightLoading,
   dispatching,
   error,
   result,
@@ -445,6 +460,41 @@ function PromotionDialogContent({
               </InlineAlert>
             ) : null}
           </section>
+
+          {preflightLoading ? (
+            <p className="text-2xs text-slate-500">Checking mergeability…</p>
+          ) : preflight && preflight.files.length > 0 ? (
+            <section className="space-y-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Mergeability preflight
+              </h3>
+              <InlineAlert
+                tone={preflight.conflict > 0 ? 'warning' : 'info'}
+                title={preflightSummary(preflight)}
+              >
+                {preflight.conflict > 0 ? (
+                  <>
+                    <p>Promoting now will fail on these files until they are resolved.</p>
+                    <ul className="mono space-y-0.5 break-all text-2xs">
+                      {preflight.conflicts.map((path) => (
+                        <li key={path}>{path}</li>
+                      ))}
+                    </ul>
+                    <p>
+                      Resolve the divergence in the main system, or drop the conflicting commit from
+                      the selection, then re-promote. Dependency manifests merge and lockfiles
+                      regenerate instead of conflicting.
+                    </p>
+                  </>
+                ) : (
+                  <p>
+                    Every selected delta applies without a merge conflict. Dependency manifests
+                    merge and lockfiles regenerate.
+                  </p>
+                )}
+              </InlineAlert>
+            </section>
+          ) : null}
 
           <InlineAlert tone="info" title="Only the ticked commits move">
             A commit can depend on code or packages added by an unselected commit. Such dependencies

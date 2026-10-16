@@ -78,6 +78,8 @@ export default function App() {
         onDeliveryChange={app.setPromotionDelivery}
         dependencies={app.promotion.dependencies}
         dependenciesLoading={app.promotion.dependenciesLoading}
+        preflight={app.promotion.preflight}
+        preflightLoading={app.promotion.preflightLoading}
         dispatching={app.promotion.dispatching}
         error={app.promotion.error}
         result={app.promotion.result}

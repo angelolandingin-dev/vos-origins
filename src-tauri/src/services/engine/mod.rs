@@ -9,6 +9,7 @@ pub mod git;
 pub mod github_ops;
 pub mod history;
 pub mod lockfile;
+pub mod preflight;
 pub mod provenance;
 pub mod semver;
 

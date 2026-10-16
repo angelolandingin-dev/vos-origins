@@ -15,6 +15,7 @@ import type {
   IntegrationPr,
   IntegrationStatus,
   PromotionDispatchResult,
+  PromotionPreflight,
   PromotionRequest,
   RegistrationResult,
   RegistryConfig,
@@ -143,6 +144,9 @@ export const api = {
     call<PromotionDispatchResult>('dispatch_promotion', {
       request: { ...request, delivery: request.delivery ?? 'local' },
     }),
+
+  preflightPromotion: (request: PromotionRequest) =>
+    call<PromotionPreflight>('preflight_promotion', { request }),
 
   listWorkflowRuns: (subsystemId: string | null, targetBranch: string | null, limit: number) =>
     call<WorkflowRunList>('list_workflow_runs', { subsystemId, targetBranch, limit }),

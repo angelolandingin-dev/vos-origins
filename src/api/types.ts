@@ -307,6 +307,24 @@ export interface PromotionRequest {
   delivery?: PromotionDelivery | null;
 }
 
+/** Per-file mergeability from the `preflight_promotion` dry run (mirrors the Rust `PreflightOutcome`). */
+export type PreflightOutcome = 'clean' | 'merged' | 'conflict' | 'skipped';
+
+export interface PreflightFileResult {
+  path: string;
+  outcome: PreflightOutcome;
+}
+
+/** Dry-run mergeability summary: per-file outcomes plus the actionable `conflicts` path list. Counts sum to `files.length`. */
+export interface PromotionPreflight {
+  files: PreflightFileResult[];
+  clean: number;
+  merged: number;
+  conflict: number;
+  skipped: number;
+  conflicts: string[];
+}
+
 /** In-tool promotion result (§9.2): `local` stops at a branch + commit in the user's clone; `push_pr` pushes the branch + opens a PR. */
 export interface PromotionDispatchResult {
   accepted: boolean;

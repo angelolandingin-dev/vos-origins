@@ -6,6 +6,7 @@ import type {
   DependencyChange,
   PromotionDelivery,
   PromotionMode,
+  PromotionPreflight,
 } from '../api/types';
 import {
   AppContext,
@@ -18,7 +19,10 @@ import type { Route } from './navigation';
 
 const DEFAULT_TARGET_BRANCH = 'staging';
 
-type PromotionInternal = Omit<PromotionState, 'dependencies' | 'dependenciesLoading'>;
+type PromotionInternal = Omit<
+  PromotionState,
+  'dependencies' | 'dependenciesLoading' | 'preflight' | 'preflightLoading'
+>;
 
 export function AppDataProvider({ children }: { children: ReactNode }) {
   const [route, setRoute] = useState<Route>('subsystems');
@@ -79,6 +83,27 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     );
     return details.flatMap((detail) => detail.dependencies);
   }, [promotion.open, promotion.shas, selectedSubsystemId, targetBranch]);
+
+  const promotionPreflight = useAsyncData<PromotionPreflight | null>(async () => {
+    if (!promotion.open || promotion.shas.length === 0 || !selectedSubsystemId) return null;
+    return api.preflightPromotion({
+      subsystemId: selectedSubsystemId,
+      sourceCommitShas: promotion.shas,
+      mode: promotion.mode,
+      baseSha: promotion.mode === 'cumulative' ? promotion.baseSha : null,
+      targetBranch,
+      confirmationAcknowledged: false,
+      delivery: promotion.delivery,
+    });
+  }, [
+    promotion.open,
+    promotion.shas,
+    selectedSubsystemId,
+    targetBranch,
+    promotion.mode,
+    promotion.baseSha,
+    promotion.delivery,
+  ]);
 
   const pushNotice = useCallback((next: Omit<Notice, 'id'>) => {
     setNotice({ ...next, id: Date.now() });
@@ -232,6 +257,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         error: promotion.error ?? promotionDependencies.error,
         dependencies: promotionDependencies.data ?? [],
         dependenciesLoading: promotionDependencies.loading,
+        preflight: promotionPreflight.data ?? null,
+        preflightLoading: promotionPreflight.loading,
       },
       openPromotionDialog,
       closePromotionDialog,
@@ -261,6 +288,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       openExternal,
       promotion,
       promotionDependencies,
+      promotionPreflight,
       openPromotionDialog,
       closePromotionDialog,
       removePromotionSha,

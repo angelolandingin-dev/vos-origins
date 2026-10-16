@@ -72,7 +72,7 @@ pub struct ApplyOptions {
     pub allowed_add_overwrite: HashSet<String>,
 }
 
-fn is_binary(bytes: &[u8]) -> bool {
+pub(crate) fn is_binary(bytes: &[u8]) -> bool {
     let len = bytes.len().min(8000);
     bytes[..len].contains(&0)
 }
@@ -81,7 +81,7 @@ fn is_binary(bytes: &[u8]) -> bool {
 /// checkout (CRLF bytes in the worktree, LF bytes in blobs) never fakes a
 /// divergence. Only ever called when none of the inputs is binary; binaries
 /// keep exact byte semantics and are never normalised.
-fn strip_cr(bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn strip_cr(bytes: &[u8]) -> Vec<u8> {
     if !bytes.contains(&b'\r') {
         return bytes.to_vec();
     }
@@ -196,12 +196,12 @@ fn delete_worktree_file(dir: &Path, rel_path: &str) -> Result<(), ApplyConflict>
     Ok(())
 }
 
-enum MergeOutcome {
+pub(crate) enum MergeOutcome {
     Ok(Vec<u8>),
     Conflict(String),
 }
 
-fn three_way_merge(
+pub(crate) fn three_way_merge(
     scratch_dir: &Path,
     rel_path: &str,
     ours: &[u8],

@@ -595,6 +595,25 @@ pub struct PromotionRequest {
     pub delivery: PromotionDelivery,
 }
 
+/// Dry-run mergeability preflight (§9.2): per-file `clean` / `merged` /
+/// `conflict` / `skipped` for the selected deltas against the target tip.
+/// Read-only: computing it creates no branch, no commit, and no worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PreflightOutcome {
+    Clean,
+    Merged,
+    Conflict,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreflightFileResult {
+    pub path: String,
+    pub outcome: PreflightOutcome,
+}
+
 /// In-tool promotion result (§9.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -612,6 +631,20 @@ pub struct PromotionDispatchResult {
     pub delivery: PromotionDelivery,
     #[serde(default)]
     pub next_commands: Vec<String>,
+}
+
+/// Dry-run mergeability summary for a promotion selection: per-file outcomes
+/// plus the actionable `conflicts` path list. Counts always sum to
+/// `files.len()`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromotionPreflight {
+    pub files: Vec<PreflightFileResult>,
+    pub clean: usize,
+    pub merged: usize,
+    pub conflict: usize,
+    pub skipped: usize,
+    pub conflicts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
