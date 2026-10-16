@@ -42,7 +42,6 @@ export function RegistryEditor() {
 
   return (
     <Panel
-      className="xl:col-span-2"
       title="Main system registry"
       subtitle="Owned by the tool — nothing is written into any repository"
       actions={
@@ -76,6 +75,9 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
   const [config, setConfig] = useState<RegistryConfig>(snapshot.config);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
+
+  const mainRepositoryInUse = app.auth.data?.mainRepository ?? config.mainRepository;
+  const localPathInEffect = (config.localMainRepositoryPath ?? '').trim();
 
   const patchSubsystem = (index: number, patch: Partial<RegistrySubsystem>) => {
     setConfig((current) => ({
@@ -170,7 +172,7 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
             value={config.localMainRepositoryPath ?? ''}
             spellCheck={false}
             autoComplete="off"
-            placeholder="e.g. C:\repos\main-system (empty = use VOS_TARGET_REPO_DIR / managed checkout)"
+            placeholder="C:\Users\you\repos\main-system"
             onChange={(event) =>
               setConfig((current) => ({
                 ...current,
@@ -179,7 +181,9 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
             }
           />
           <span className="mt-1 block truncate text-[11px] text-muted">
-            Empty = VOS_TARGET_REPO_DIR, then the managed checkout.
+            In use: <span className="font-mono">{mainRepositoryInUse || 'unknown'}</span>
+            {' · '}
+            <span className="font-mono">{localPathInEffect || 'managed checkout'}</span>
           </span>
         </label>
       </div>
