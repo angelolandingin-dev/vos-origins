@@ -515,3 +515,18 @@ export interface RegistrySnapshot {
   overridePath: string;
   overrideExists: boolean;
 }
+
+/** Result of a manual "pull latest" over the already-cached checkouts. */
+export interface CheckoutRefresh {
+  refreshed: string[];
+  skipped: string[];
+  failed: string[];
+  message: string;
+  dataSource: DataSource;
+}
+
+/** Result of deleting the cached clones outright (escape hatch for corruption). */
+export interface CheckoutClear {
+  removed: number;
+  message: string;
+}

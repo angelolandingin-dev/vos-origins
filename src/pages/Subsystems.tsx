@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Boxes, Plus, Search } from 'lucide-react';
+import { Boxes, Plus, RefreshCw, Search } from 'lucide-react';
 
 import { api, asApiError, type ApiError } from '../api/invoke';
 import type {
@@ -226,6 +226,7 @@ export function Subsystems() {
   const app = useApp();
   const [search, setSearch] = useState('');
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [pulling, setPulling] = useState(false);
   const narrow = useMediaQuery('(max-width: 1023px)');
 
   const subsystems = app.subsystems.data ?? [];
@@ -263,6 +264,34 @@ export function Subsystems() {
               className="input pl-9"
             />
           </div>
+          <Button
+            variant="secondary"
+            icon={RefreshCw}
+            disabled={pulling}
+            onClick={() => {
+              setPulling(true);
+              void api
+                .refreshCheckouts(app.selectedSubsystemId)
+                .then((result) => {
+                  app.pushNotice({
+                    tone: result.failed.length > 0 ? 'warning' : 'success',
+                    title: 'Repositories refreshed',
+                    message: result.message,
+                  });
+                  app.bumpDataVersion();
+                })
+                .catch((error: unknown) => {
+                  app.pushNotice({
+                    tone: 'danger',
+                    title: 'Refresh failed',
+                    message: asApiError(error).message,
+                  });
+                })
+                .finally(() => setPulling(false));
+            }}
+          >
+            {pulling ? 'Pulling…' : 'Pull latest'}
+          </Button>
           <Button variant="primary" icon={Plus} onClick={() => setRegisterOpen(true)}>
             Register Subsystem
           </Button>

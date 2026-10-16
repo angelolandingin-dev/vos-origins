@@ -10,6 +10,8 @@ use crate::AppState;
 
 #[tauri::command]
 pub async fn get_auth_status(state: State<'_, AppState>) -> AppResult<AuthStatus> {
+    // Kick off the one-time, off-path warm so the first read is fresh.
+    super::system::warm_checkouts_once();
     let adapter = state.adapter.clone();
     let probe = tauri::async_runtime::spawn_blocking(gh_cli::probe)
         .await

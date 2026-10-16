@@ -62,6 +62,8 @@ pub fn run() {
             commands::history::list_integration_history,
             commands::system::get_cache_stats,
             commands::system::clear_cache,
+            commands::system::refresh_checkouts,
+            commands::system::clear_checkouts,
             commands::system::open_external_url,
         ])
         .run(tauri::generate_context!())

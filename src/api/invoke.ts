@@ -5,6 +5,8 @@ import type {
   ApiErrorPayload,
   AuthStatus,
   CacheStats,
+  CheckoutClear,
+  CheckoutRefresh,
   CommitDetails,
   CommitDiff,
   CommitPage,
@@ -160,6 +162,11 @@ export const api = {
   getRegistry: () => call<RegistrySnapshot>('get_registry'),
 
   saveRegistry: (config: RegistryConfig) => call<RegistrySnapshot>('save_registry', { config }),
+
+  refreshCheckouts: (subsystemId: string | null) =>
+    call<CheckoutRefresh>('refresh_checkouts', { subsystemId }),
+
+  clearCheckouts: () => call<CheckoutClear>('clear_checkouts'),
 
   getCacheStats: () => call<CacheStats>('get_cache_stats'),
 

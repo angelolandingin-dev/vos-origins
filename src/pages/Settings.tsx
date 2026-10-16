@@ -44,6 +44,16 @@ export function Settings() {
       .catch(() => setCacheMessage('Clearing the cache failed.'));
   };
 
+  const clearCheckouts = () => {
+    void api
+      .clearCheckouts()
+      .then((result) => {
+        setCacheMessage(result.message);
+        cache.reload();
+      })
+      .catch(() => setCacheMessage('Deleting the cached clones failed.'));
+  };
+
   const diagnostics = [
     `app: Subsystem Integration Manager 0.1.0`,
     `runtime: ${isTauriRuntime() ? 'Tauri v2 (desktop webview)' : 'browser preview (backend unavailable)'}`,
@@ -250,10 +260,20 @@ npm --version`}
               <Button variant="secondary" icon={Trash2} onClick={clearCache}>
                 Clear cache
               </Button>
+              <Button variant="secondary" icon={Trash2} onClick={clearCheckouts}>
+                Clear cached clones
+              </Button>
               <Button variant="secondary" icon={RefreshCw} onClick={() => cache.reload()}>
                 Re-read statistics
               </Button>
             </div>
+
+            <p className="text-2xs leading-relaxed text-slate-500">
+              Cached clones persist between runs and are reused for reading commits. They are only
+              deleted when a checkout is detected as corrupt (or by the button above, as an escape
+              hatch) — each one is re-cloned on next use. Subsystem clones are read-only; a
+              promotion never runs <span className="mono">npm</span> in them.
+            </p>
 
             <p className="flex items-start gap-2 text-2xs text-slate-500">
               <Database className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />

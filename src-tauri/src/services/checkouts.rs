@@ -198,9 +198,62 @@ fn is_usable_checkout(dir: &Path) -> bool {
     )
 }
 
+/// How long a cached checkout is considered fresh enough to skip a network
+/// `git fetch`. `VOS_CHECKOUT_FETCH_TTL_SECS` overrides it (`0` = always fetch).
+const DEFAULT_FETCH_TTL_SECS: u64 = 180;
+
+fn fetch_ttl_secs() -> u64 {
+    std::env::var("VOS_CHECKOUT_FETCH_TTL_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_FETCH_TTL_SECS)
+}
+
+/// `git fetch` is what makes a warm read cost a network round trip. `FETCH_HEAD`
+/// is written by every fetch, so its mtime is the last-fetch stamp.
+fn fetch_is_recent(dir: &Path) -> bool {
+    let ttl = fetch_ttl_secs();
+    if ttl == 0 {
+        return false;
+    }
+    std::fs::metadata(dir.join(".git").join("FETCH_HEAD"))
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .map(|age| age.as_secs() < ttl)
+        .unwrap_or(false)
+}
+
+/// Force a fetch of an **already-cloned** checkout, ignoring the freshness window.
+/// Returns `Ok(false)` when nothing is cached for `key` (callers must not clone
+/// implicitly — new repos are cloned on demand when they are actually opened).
+pub fn refresh_cached_checkout(key: &str, remote: &str, token: Option<&str>) -> AppResult<bool> {
+    let dir = checkouts_root().join(key);
+    if !dir.join(".git").is_dir() {
+        return Ok(false);
+    }
+    let slot = lock_for(key);
+    let _guard = slot.lock().unwrap_or_else(|err| err.into_inner());
+    if !is_usable_checkout(&dir) {
+        let _ = std::fs::remove_dir_all(&dir);
+        clone_fresh(&dir, remote)?;
+        return Ok(true);
+    }
+    git::fetch_cached(&dir, token).map_err(|err| {
+        AppError::new(
+            ErrorCode::RepositoryInaccessible,
+            format!("Could not refresh the cached checkout ({}).", dir.display()),
+        )
+        .with_remedy("Check the network connection and that `gh` can read the repository.")
+        .with_details(git::sanitize(&err.to_string()))
+    })?;
+    Ok(true)
+}
+
 /// Reusable checkout for a remote: clone once, `git fetch` on reuse, never
 /// delete. A failed refresh keeps the stale checkout (fail-open read), but a
-/// broken/partial checkout is discarded and re-cloned.
+/// broken/partial checkout is discarded and re-cloned. A fetch is skipped while
+/// the checkout is fresh (see [`fetch_ttl_secs`]).
 /// Only for remotes — pass local dirs through with [`local_dir_for`].
 pub fn ensure_remote_checkout(key: &str, remote: &str, token: Option<&str>) -> AppResult<PathBuf> {
     let dir = checkouts_root().join(key);
@@ -210,7 +263,9 @@ pub fn ensure_remote_checkout(key: &str, remote: &str, token: Option<&str>) -> A
         let _ = std::fs::remove_dir_all(&dir);
     }
     if is_usable_checkout(&dir) {
-        let _ = git::fetch_cached(&dir, token);
+        if !fetch_is_recent(&dir) {
+            let _ = git::fetch_cached(&dir, token);
+        }
         return Ok(dir);
     }
     clone_fresh(&dir, remote)?;
