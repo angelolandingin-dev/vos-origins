@@ -109,14 +109,24 @@ pub fn slug_for_repo(repo_ref: &str) -> String {
     format!("{sanitized}-{}", &digest[..12])
 }
 
-/// Stable cache key for the main (target) repository.
-pub fn target_key(main_repository: &str) -> String {
-    format!("t-{}", slug_for_repo(main_repository))
+/// Cache key carrying only a content digest of the credential-free repo
+/// identity. The cosmetic slug is deliberately omitted: Windows MAX_PATH (260)
+/// counts the whole destination, these keys sit under a deep AppData prefix,
+/// and some repos ship 140+ character file paths.
+pub fn cache_key(prefix: &str, repo_ref: &str) -> String {
+    let digest = fnv1a_hex(&identity_of(repo_ref));
+    format!("{prefix}-{}", &digest[..12])
 }
 
-/// Stable cache key for a subsystem source repository.
+/// Stable cache key for the main (target) repository.
+pub fn target_key(main_repository: &str) -> String {
+    cache_key("t", main_repository)
+}
+
+/// Stable cache key for a subsystem source repository. Keyed by repository only,
+/// so two subsystems pointing at the same repo share one clone.
 pub fn source_key(entry: &SubsystemEntry) -> String {
-    format!("s-{}-{}", entry.id, slug_for_repo(&entry.repository))
+    cache_key("s", &entry.repository)
 }
 
 /// A local repo dir passes through untouched (like `VOS_TARGET_REPO_DIR`):

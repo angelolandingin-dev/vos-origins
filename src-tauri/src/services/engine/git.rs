@@ -61,6 +61,12 @@ fn base_command() -> Command {
     command
         .arg("-c")
         .arg("credential.helper=")
+        // Windows MAX_PATH (260) counts the whole destination path. Cached
+        // checkouts sit under a deep AppData prefix and some repos have 140+
+        // character file paths, so without this a clone downloads everything and
+        // then fails the checkout ("Clone succeeded, but checkout failed").
+        .arg("-c")
+        .arg("core.longpaths=true")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never");
     command
@@ -837,6 +843,20 @@ mod tests {
         let clean = sanitize(text);
         assert!(clean.contains("Basic ***"), "{clean}");
         assert!(!clean.contains("eC1hY2Nlc3MtdG9rZW46Z2hz_abc"), "{clean}");
+    }
+
+    #[test]
+    fn git_allows_windows_long_paths() {
+        let command = base_command();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-c" && pair[1] == "core.longpaths=true"),
+            "every git command must allow paths past MAX_PATH: {args:?}"
+        );
     }
 
     #[test]
