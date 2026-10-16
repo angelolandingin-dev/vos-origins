@@ -333,9 +333,9 @@ export function Subsystems() {
                   'rounded-lg border border-ink-700/60 bg-ink-870 p-2.5 text-2xs leading-relaxed text-slate-500',
                 )}
               >
-                The registry lives in the main repository on{' '}
-                <span className="mono">{app.auth.data?.registryBranch ?? 'master'}</span>. It is
-                read-only here: every change goes through a reviewed registration PR.
+                The subsystem registry lives in the tool, not in any repository — manage it under{' '}
+                <span className="mono">Settings → Main system registry</span>. A promotion adds no
+                files to the main system or subsystem repositories.
               </p>
             </aside>
 
