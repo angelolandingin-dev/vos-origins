@@ -179,6 +179,7 @@ pub fn warm_checkouts_once() {
             return;
         }
         tauri::async_runtime::spawn_blocking(|| {
+            crate::services::checkouts::sweep_orphaned_checkouts();
             let Ok(registry) = crate::services::live_read::load_live_registry() else {
                 return;
             };

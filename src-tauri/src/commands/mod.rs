@@ -98,11 +98,17 @@ mod tests {
         let state = std::sync::Arc::new(AppState::new());
         let calls = std::sync::Arc::new(AtomicU64::new(0));
         let mut handles = Vec::new();
+        // A barrier makes the overlap deterministic. The sleep alone is not
+        // enough: a thread scheduled late can miss the slot and recompute,
+        // which is why this assertion used to fail intermittently.
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(8));
         for _ in 0..8 {
             let state = state.clone();
             let calls = calls.clone();
+            let gate = gate.clone();
             handles.push(std::thread::spawn(move || {
-                // Slow compute so all threads overlap inside the slot.
+                gate.wait();
+                // Slow compute so the first caller holds the slot while the rest wait.
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 cached_json(&state, "k::shared", || {
                     calls.fetch_add(1, Ordering::Relaxed);

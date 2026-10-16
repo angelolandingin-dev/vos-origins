@@ -129,6 +129,33 @@ pub fn source_key(entry: &SubsystemEntry) -> String {
     cache_key("s", &entry.repository)
 }
 
+/// Deletes leftover checkout directories from older cache-key schemes. Keys are
+/// `<t|s>-<12 hex>`; an `s-`/`t-` directory that does not match is an orphan
+/// from a previous scheme, is never read again, and only wastes disk. Anything
+/// that is not an `s-`/`t-` directory is left alone, so a custom
+/// `VOS_CHECKOUTS_DIR` never loses unrelated content.
+pub fn sweep_orphaned_checkouts() {
+    let Ok(entries) = std::fs::read_dir(checkouts_root()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some((prefix, digest)) = name.split_once('-') else {
+            continue;
+        };
+        if !matches!(prefix, "t" | "s") {
+            continue;
+        }
+        let current_scheme = digest.len() == 12 && digest.chars().all(|c| c.is_ascii_hexdigit());
+        if !current_scheme {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// A local repo dir passes through untouched (like `VOS_TARGET_REPO_DIR`):
 /// it is never copied into the cache. Returns `None` for remotes.
 pub fn local_dir_for(raw: &str) -> Option<PathBuf> {
