@@ -403,10 +403,14 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Env is process-global: save, scrub, run, restore in one test so no
-    /// parallel test can observe a half-set state.
+    /// parallel test can observe a half-set state. Holds the crate-wide
+    /// `crate::test_support::env_lock` for its whole lifetime so env-mutating
+    /// tests in other modules (e.g. `checkouts`, `live_read`) cannot run
+    /// concurrently with this one.
     struct EnvGuard {
         gh_token: Option<String>,
         github_token: Option<String>,
+        _env: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvGuard {
@@ -414,6 +418,7 @@ mod tests {
             let guard = Self {
                 gh_token: std::env::var("GH_TOKEN").ok(),
                 github_token: std::env::var("GITHUB_TOKEN").ok(),
+                _env: crate::test_support::env_lock(),
             };
             std::env::remove_var("GH_TOKEN");
             std::env::remove_var("GITHUB_TOKEN");

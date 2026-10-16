@@ -287,13 +287,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-    static ENV_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_GUARD
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
+        crate::test_support::env_lock()
     }
 
     fn unique_dir(prefix: &str) -> PathBuf {
@@ -406,7 +402,8 @@ mod tests {
     impl EnvRestore {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
-            // Tests run single-threaded behind `ENV_GUARD` (see above), and
+            // Tests run single-threaded behind the crate-wide
+            // `crate::test_support::env_lock` (see above), and
             // this crate is edition 2021 where `set_var` is still safe.
             std::env::set_var(key, value);
             Self { key, previous }

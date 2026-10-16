@@ -84,8 +84,11 @@ pub async fn list_integration_history(
         }
         let registry = live_read::load_live_registry()?;
         let token = live_token()?;
-        let (target_dir, _) =
-            live_read::resolve_target_checkout(&registry.main_repository, Some(&token))?;
+        let (target_dir, _) = live_read::resolve_target_checkout(
+            &registry.main_repository,
+            registry.local_main_repository_path.as_deref(),
+            Some(&token),
+        )?;
         let github = RealGitHubOps::new(token);
         live_read::integration_history_live(
             &target_dir,

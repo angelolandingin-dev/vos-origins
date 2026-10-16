@@ -287,18 +287,36 @@ fn require_allowed_target(registry: &Registry, branch: &str) -> AppResult<String
 /// never deleted by readers, so repeat visits reuse the same clone.
 pub fn resolve_target_checkout(
     main_repository: &str,
+    local_override: Option<&str>,
     token: Option<&str>,
 ) -> AppResult<(PathBuf, Option<PathBuf>)> {
-    if let Ok(dir) = std::env::var("VOS_TARGET_REPO_DIR") {
-        let path = PathBuf::from(&dir);
+    // The registry (Settings → localMainRepositoryPath) wins over the
+    // environment: an explicitly configured directory must be honoured by
+    // reads too, not only by the promotion engine, otherwise the app clones
+    // the main repo into the cache while the user's own clone sits unused.
+    let configured = local_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("VOS_TARGET_REPO_DIR")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        });
+    if let Some(path) = configured {
         if path.is_dir() {
             return Ok((path, None));
         }
         return Err(AppError::new(
             ErrorCode::RepositoryInaccessible,
-            format!("VOS_TARGET_REPO_DIR '{dir}' is not a directory."),
+            format!(
+                "The configured main-system directory '{}' is not a directory.",
+                path.display()
+            ),
         )
-        .with_remedy("Point VOS_TARGET_REPO_DIR at a local clone of the main-system repository, or unset it to clone automatically."));
+        .with_remedy("Set the local clone in Settings (localMainRepositoryPath) or VOS_TARGET_REPO_DIR to your local main-system git clone, or clear it to use the managed checkout."));
     }
     if let Some(local) = crate::services::checkouts::local_dir_for(main_repository) {
         return Ok((local, None));
@@ -2311,6 +2329,7 @@ mod tests {
 
     #[test]
     fn fixture_flag_and_target_dir_seam() {
+        let _env = crate::test_support::env_lock();
         // Fixture flag defaults off; explicit 1 opts into fixtures.
         std::env::remove_var("VOS_USE_FIXTURES");
         assert!(!use_fixtures());
@@ -2332,7 +2351,7 @@ mod tests {
         let _ = commit_all(&dir, "base");
         std::env::set_var("VOS_TARGET_REPO_DIR", &dir);
         let (resolved, cleanup) =
-            resolve_target_checkout("ORG/main-system", None).expect("local dir seam");
+            resolve_target_checkout("ORG/main-system", None, None).expect("local dir seam");
         assert_eq!(resolved, dir);
         assert!(cleanup.is_none());
         std::env::remove_var("VOS_TARGET_REPO_DIR");

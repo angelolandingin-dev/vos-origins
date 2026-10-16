@@ -117,8 +117,11 @@ pub async fn get_subsystem_commits(
         let registry = live_read::load_live_registry()?;
         let token = live_token()?;
         // Reusable on-disk checkouts: repeat visits reuse the same clone.
-        let (target_dir, _) =
-            live_read::resolve_target_checkout(&registry.main_repository, Some(&token))?;
+        let (target_dir, _) = live_read::resolve_target_checkout(
+            &registry.main_repository,
+            registry.local_main_repository_path.as_deref(),
+            Some(&token),
+        )?;
         let github = RealGitHubOps::new(token.clone());
         let source_resolver =
             |entry: &SubsystemEntry| Some(authenticated_remote_url(&entry.repository, &token));
@@ -153,8 +156,11 @@ pub async fn get_commit_details(
         // 90s entry expires, and promotion clears the cache on dispatch.
         let registry = live_read::load_live_registry()?;
         let token = live_token()?;
-        let (target_dir, _) =
-            live_read::resolve_target_checkout(&registry.main_repository, Some(&token))?;
+        let (target_dir, _) = live_read::resolve_target_checkout(
+            &registry.main_repository,
+            registry.local_main_repository_path.as_deref(),
+            Some(&token),
+        )?;
         let github = RealGitHubOps::new(token.clone());
         let source_resolver =
             |entry: &SubsystemEntry| Some(authenticated_remote_url(&entry.repository, &token));
@@ -259,8 +265,11 @@ pub async fn get_integration_statuses(
         }
         let registry = live_read::load_live_registry()?;
         let token = live_token()?;
-        let (target_dir, _) =
-            live_read::resolve_target_checkout(&registry.main_repository, Some(&token))?;
+        let (target_dir, _) = live_read::resolve_target_checkout(
+            &registry.main_repository,
+            registry.local_main_repository_path.as_deref(),
+            Some(&token),
+        )?;
         let github = RealGitHubOps::new(token);
         live_read::integration_statuses_live(
             &target_dir,
