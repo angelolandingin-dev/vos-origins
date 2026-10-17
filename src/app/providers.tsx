@@ -19,6 +19,19 @@ import type { Route } from './navigation';
 
 const DEFAULT_TARGET_BRANCH = 'staging';
 
+/** Remembers the chosen target branch across restarts; falls back to the policy list. */
+const TARGET_BRANCH_KEY = 'vos-origins.target-branch';
+
+function readTargetBranchSetting(): string | null {
+  try {
+    const value = window.localStorage.getItem(TARGET_BRANCH_KEY);
+    return value && value.length > 0 ? value : null;
+  } catch {
+    /* Storage unavailable - the policy list decides instead. */
+    return null;
+  }
+}
+
 type PromotionInternal = Omit<
   PromotionState,
   'dependencies' | 'dependenciesLoading' | 'preflight' | 'preflightLoading'
@@ -28,7 +41,17 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [route, setRoute] = useState<Route>('commit-browser');
   const [dataVersion, setDataVersion] = useState(0);
   const [selectedSubsystemIdSetting, setSelectedSubsystemId] = useState<string | null>(null);
-  const [targetBranchSetting, setTargetBranch] = useState(DEFAULT_TARGET_BRANCH);
+  const [targetBranchSetting, setTargetBranchState] = useState<string | null>(
+    readTargetBranchSetting,
+  );
+  const setTargetBranch = useCallback((branch: string) => {
+    setTargetBranchState(branch);
+    try {
+      window.localStorage.setItem(TARGET_BRANCH_KEY, branch);
+    } catch {
+      /* Storage unavailable - the selection simply does not survive a restart. */
+    }
+  }, []);
   const [selectedShas, setSelectedShasState] = useState<string[]>([]);
   const [focusedSha, setFocusedSha] = useState<string | null>(null);
   /** Summaries for selected SHAs, accumulated across pages/filters so a selection once seen is never forgotten. */
@@ -74,9 +97,13 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   // Stays aligned with the policy list once it loads, derived instead of written from an effect.
   const targetBranch = useMemo(() => {
-    if (!allowedTargetBranches || allowedTargetBranches.length === 0) return targetBranchSetting;
-    if (allowedTargetBranches.includes(targetBranchSetting)) return targetBranchSetting;
-    return allowedTargetBranches[0] ?? targetBranchSetting;
+    if (!allowedTargetBranches || allowedTargetBranches.length === 0) {
+      return targetBranchSetting ?? DEFAULT_TARGET_BRANCH;
+    }
+    if (targetBranchSetting && allowedTargetBranches.includes(targetBranchSetting)) {
+      return targetBranchSetting;
+    }
+    return allowedTargetBranches[0] ?? targetBranchSetting ?? DEFAULT_TARGET_BRANCH;
   }, [allowedTargetBranches, targetBranchSetting]);
 
   const selectedSubsystem =

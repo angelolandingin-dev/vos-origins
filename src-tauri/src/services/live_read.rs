@@ -801,7 +801,25 @@ pub fn target_branches_live(
             active_promotions: open_count,
         });
     }
-    branches.sort_by(|a, b| a.name.cmp(&b.name));
+    // Ordered by the registry's policy list first, then alphabetically. A raw
+    // name comparison is case-sensitive, so `UAT` sorted ahead of `master` and
+    // became the default the app fell back to - the operator's own ordering of
+    // allowedTargetBranches is the one that should decide.
+    let policy_order: Vec<&str> = registry
+        .promotion
+        .allowed_target_branches
+        .iter()
+        .map(String::as_str)
+        .collect();
+    branches.sort_by(|a, b| {
+        let rank = |name: &str| {
+            policy_order
+                .iter()
+                .position(|candidate| *candidate == name)
+                .unwrap_or(usize::MAX)
+        };
+        (rank(&a.name), a.name.as_str()).cmp(&(rank(&b.name), b.name.as_str()))
+    });
     let selected_name = selected
         .map(str::to_string)
         .filter(|s| branches.iter().any(|b| &b.name == s && b.allowed))
