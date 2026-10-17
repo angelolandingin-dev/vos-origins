@@ -72,6 +72,15 @@ pub struct PreflightReport {
     pub conflict: usize,
     pub skipped: usize,
     pub conflicts: Vec<String>,
+    /// Contract pin (dialog depends on it): `conflicts` names every path whose
+    /// content the main system changed (divergence / blob-membership failure),
+    /// INDEPENDENT of policy — `fail` refuses them, `take_subsystem`
+    /// overwrites them, either way they are listed. `replaced` names what the
+    /// ACTIVE policy will actually overwrite: the rescued subset, non-empty
+    /// only under `take_subsystem` (where those paths appear in BOTH lists).
+    /// Paths refused regardless of policy (unsafe, secret/main-owned,
+    /// global-file protected, dependency, lockfile) never enter `replaced`.
+    pub replaced: Vec<String>,
 }
 
 /// Read-only inputs for [`compute_preflight`] (mirrors `EngineRequest`).
@@ -85,9 +94,12 @@ pub struct PreflightRequest<'a> {
     pub mode: PromotionMode,
     pub base_sha: Option<&'a str>,
     pub target_branch: &'a str,
-    /// Mirrors the real apply's `on_conflict`. Copy semantics ignores it for
-    /// correctness (refusals are fail-closed and never bypassed); the field
-    /// stays for wire compat.
+    /// `fail` refuses every membership-divergent path; `take_subsystem`
+    /// overwrites it with the subsystem's copy instead. Either way the path
+    /// stays in `conflicts` (content the main system changed); under
+    /// `take_subsystem` it ALSO appears in `replaced`. Never bypasses unsafe
+    /// paths, secret/main-owned files, global-file protection, dependency or
+    /// lockfile guards.
     pub on_conflict: PromotionOnConflict,
     /// Wire `allowGaps` (default false).
     pub allow_gaps: bool,
@@ -154,6 +166,7 @@ pub fn compute_preflight(
         request.allow_gaps,
         request.excluded_paths,
         request.global_files,
+        request.on_conflict,
     );
     Ok(report)
 }
@@ -226,6 +239,7 @@ fn evaluate_plan(
     allow_gaps: bool,
     excluded_paths: &[String],
     global_files: &[String],
+    on_conflict: PromotionOnConflict,
 ) -> PreflightReport {
     // Copy semantics, same rules as the engine (addendum §7 + E3):
     // blob membership decides, dates never do. ONE ls-tree per revision for
@@ -251,6 +265,20 @@ fn evaluate_plan(
     candidate_paths.sort();
     let blob_sets = blobset::collect_blob_sets(source_dir, &ordered, &candidate_paths);
     let target_tree = blobset::tree_blob_map(target_dir, target_tip);
+    // Shared overwrite-allowance (the SAME function the engine calls): range
+    // membership widened by one batched selected-history probe for all paths,
+    // so preview and apply cannot disagree. Scoped to the selected ancestry —
+    // main-system-only bytes committed on the target side are not reachable
+    // from it, so they still refuse.
+    let history_tips: Vec<String> = ordered.iter().map(|(sha, _)| sha.clone()).collect();
+    let overwrite_ok = blobset::overwrite_allowed(
+        source_dir,
+        &blob_sets,
+        &target_tree,
+        &candidate_paths,
+        &history_tips,
+    );
+    let take_subsystem = on_conflict == PromotionOnConflict::TakeSubsystem;
     let oldest_tree: HashMap<String, String> = match ordered.first().and_then(|(_, b)| b.as_deref())
     {
         Some(base) => blobset::tree_blob_map(source_dir, base),
@@ -304,9 +332,13 @@ fn evaluate_plan(
         }
     }
     let mut by_path: HashMap<String, PreflightOutcome> = HashMap::new();
+    let mut replaced: Vec<String> = Vec::new();
     for delta in plan {
         for entry in &delta.entries {
             for rel_path in expanded_paths(entry) {
+                // `candidate_paths` was built from this same expansion, so the
+                // map always has the path; `false` is fail-closed if not.
+                let allowed = overwrite_ok.get(&rel_path).copied().unwrap_or(false);
                 let outcome = evaluate_path_copy(
                     source_dir,
                     target_dir,
@@ -315,14 +347,15 @@ fn evaluate_plan(
                     entry,
                     &rel_path,
                     target_tip,
-                    &target_tree,
-                    &blob_sets,
                     &oldest_tree,
                     &newest_toucher,
                     &skipped_touch,
                     allow_gaps,
                     &excluded,
                     global_files,
+                    allowed,
+                    take_subsystem,
+                    &mut replaced,
                 );
                 by_path
                     .entry(rel_path)
@@ -354,6 +387,9 @@ fn evaluate_plan(
     }
     report.conflicts.sort();
     report.files = files;
+    replaced.sort();
+    replaced.dedup();
+    report.replaced = replaced;
     report
 }
 
@@ -385,14 +421,15 @@ fn evaluate_path_copy(
     entry: &git::DeltaEntry,
     rel_path: &str,
     target_tip: &str,
-    target_tree: &HashMap<String, String>,
-    blob_sets: &HashMap<String, HashSet<Option<String>>>,
     oldest_tree: &HashMap<String, String>,
     newest_toucher: &HashMap<String, String>,
     skipped_touch: &HashMap<String, Vec<String>>,
     allow_gaps: bool,
     excluded: &HashSet<String>,
     global_files: &[String],
+    overwrite_ok: bool,
+    take_subsystem: bool,
+    replaced: &mut Vec<String>,
 ) -> PreflightOutcome {
     if rel_path.is_empty() {
         return PreflightOutcome::Conflict;
@@ -483,29 +520,23 @@ fn evaluate_path_copy(
         }
     }
 
-    // globalFiles guard (same rule as the engine).
-    if is_global_match(rel_path, global_files) {
-        let target_blob = target_tree.get(rel_path).cloned();
-        let allowed = match blob_sets.get(rel_path) {
-            Some(set) => set.contains(&target_blob),
-            None => target_blob.is_none(),
-        };
-        if !allowed {
-            return PreflightOutcome::Conflict;
-        }
+    // globalFiles guard (same shared allowance as the engine). Protected
+    // app-shell files stay refused regardless of policy: `take_subsystem`
+    // never rescues them, so they never enter `replaced`.
+    if is_global_match(rel_path, global_files) && !overwrite_ok {
+        return PreflightOutcome::Conflict;
     }
 
-    // Overwrite refusal by blob membership (same rule as the engine).
+    // Overwrite refusal on the shared allowance (same rule as the engine).
     // `theirs == None` deletes are included: set = {base, None}.
-    {
-        let target_blob = target_tree.get(rel_path).cloned();
-        let allowed = match blob_sets.get(rel_path) {
-            Some(set) => set.contains(&target_blob),
-            None => target_blob.is_none(),
-        };
-        if !allowed {
-            return PreflightOutcome::Conflict;
+    // Contract pin: the divergence is named in `conflicts` under BOTH
+    // policies. Under `take_subsystem` the apply overwrites the path anyway,
+    // so it is ALSO recorded in `replaced`.
+    if !overwrite_ok {
+        if take_subsystem && !replaced.iter().any(|p| p == rel_path) {
+            replaced.push(rel_path.to_string());
         }
+        return PreflightOutcome::Conflict;
     }
 
     // Copy semantics below (no merge — `three_way_merge` is never called):
@@ -1101,5 +1132,63 @@ mod tests {
             .arg(&repo)
             .args(["worktree", "remove", "--force", wt.to_str().unwrap()])
             .output();
+    }
+
+    /// Dialog contract pin: `conflicts` names content the main system changed
+    /// under BOTH policies (`fail` refuses it, `take_subsystem` overwrites
+    /// it), while `replaced` carries it ONLY under `take_subsystem`. Moving
+    /// rescued paths out of `conflicts` would zero the dialog's overwrite
+    /// count and print "Ready to promote" over pending overwrites.
+    #[test]
+    fn conflicts_names_divergence_under_both_policies_replaced_only_under_take_subsystem() {
+        let repo = diverging_repo();
+        git(&repo, &["checkout", "-q", "target"]);
+        write(&repo, "app.txt", "target edit\n");
+        let _ = commit_all(&repo, "target work");
+        git(&repo, &["checkout", "-q", "source"]);
+        write(&repo, "app.txt", "source edit\n");
+        let sha = commit_all(&repo, "source work");
+
+        for on_conflict in [
+            PromotionOnConflict::Fail,
+            PromotionOnConflict::TakeSubsystem,
+        ] {
+            let registry = test_registry();
+            let scratch = tmp("scratch");
+            let empty: Vec<String> = Vec::new();
+            let request = PreflightRequest {
+                policy: &registry.subsystems[0].integration_policy,
+                commits: std::slice::from_ref(&sha),
+                mode: PromotionMode::Individual,
+                base_sha: None,
+                target_branch: "target",
+                on_conflict,
+                allow_gaps: false,
+                excluded_paths: &empty,
+                global_files: &empty,
+            };
+            let report =
+                compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
+            assert_eq!(
+                report.conflicts,
+                vec!["app.txt".to_string()],
+                "divergence must be named under {on_conflict:?}"
+            );
+            assert_eq!(outcome_of(&report, "app.txt"), PreflightOutcome::Conflict);
+            if on_conflict == PromotionOnConflict::TakeSubsystem {
+                assert_eq!(
+                    report.replaced,
+                    vec!["app.txt".to_string()],
+                    "take_subsystem overwrites: also reported as replaced"
+                );
+            } else {
+                assert!(
+                    report.replaced.is_empty(),
+                    "fail refuses: nothing may be reported as replaced: {:?}",
+                    report.replaced
+                );
+            }
+            let _ = std::fs::remove_dir_all(&scratch);
+        }
     }
 }

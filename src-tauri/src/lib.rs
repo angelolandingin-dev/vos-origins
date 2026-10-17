@@ -64,6 +64,7 @@ pub fn run() {
             commands::workflows::get_workflow_run_details,
             commands::history::list_integration_prs,
             commands::history::list_integration_history,
+            commands::history::get_integration_event,
             commands::system::get_cache_stats,
             commands::system::clear_cache,
             commands::system::refresh_checkouts,

@@ -992,7 +992,7 @@ fn map_blocker(report: &PromotionReport) -> AppError {
         ),
         "TARGET_DIVERGED" => (
             ErrorCode::PatchConflict,
-            "Adapt the file upstream in the subsystem and re-promote, or exclude the path via excludedPaths and re-promote.",
+            "Adapt the file upstream in the subsystem and re-promote, exclude the path via excludedPaths and re-promote, or re-run with onConflict take_subsystem to overwrite it with the subsystem's version (records Promotion-Conflicts + Promotion-Override trailers).",
         ),
         "GLOBAL_FILE_PROTECTED" => (
             ErrorCode::InvalidRequest,

@@ -1,7 +1,7 @@
 //! Git plumbing: explicit argv (never shell strings), raw bytes for blobs (spec §6).
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone)]
 pub struct GitOutput {
@@ -100,6 +100,38 @@ pub fn run_ok(repo_dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
         });
     }
     Ok(out)
+}
+
+/// Like [`run`] with bytes on stdin (for `--batch-check` style plumbing).
+/// Counts as one spawn for tests, exactly like [`run`].
+pub fn run_with_stdin(repo_dir: &Path, args: &[&str], stdin: &[u8]) -> Result<GitOutput, GitError> {
+    #[cfg(test)]
+    count_spawn_for_tests(repo_dir);
+    use std::io::Write;
+    let mut command = base_command();
+    command.arg("-C").arg(repo_dir).args(args);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|err| GitError {
+        args: args.join(" "),
+        status: None,
+        stderr: err.to_string(),
+    })?;
+    if let Some(mut pipe) = child.stdin.take() {
+        let _ = pipe.write_all(stdin);
+    }
+    let output = child.wait_with_output().map_err(|err| GitError {
+        args: args.join(" "),
+        status: None,
+        stderr: err.to_string(),
+    })?;
+    Ok(GitOutput {
+        status: output.status.code().unwrap_or(-1),
+        stdout: output.stdout,
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
 }
 
 pub fn run_global(args: &[&str]) -> Result<GitOutput, GitError> {

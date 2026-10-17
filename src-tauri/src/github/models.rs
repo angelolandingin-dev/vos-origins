@@ -904,3 +904,191 @@ pub struct CacheStats {
     pub data_source: DataSource,
     pub note: String,
 }
+
+/// Change letter for one path in an integration event audit (wire `change`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IntegrationEventChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationEventCommit {
+    pub sha: String,
+    pub short_sha: String,
+    pub subject: String,
+    pub author: Option<String>,
+    pub authored_at: Option<String>,
+    pub unavailable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationEventChange {
+    pub path: String,
+    pub change: IntegrationEventChangeKind,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationEventTotals {
+    pub files: u32,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationEventProvenance {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationEventAudit {
+    pub main_commit_sha: String,
+    pub kind: IntegrationHistoryKind,
+    pub subsystem_id: String,
+    pub target_branch: String,
+    pub actor: String,
+    pub occurred_at: String,
+    pub detail: String,
+    pub pull_request_number: Option<u64>,
+    pub inherited_from_branch: Option<String>,
+    pub included_commits: Vec<IntegrationEventCommit>,
+    pub changes: Vec<IntegrationEventChange>,
+    pub totals: Option<IntegrationEventTotals>,
+    pub provenance: Vec<IntegrationEventProvenance>,
+    pub reverted_main_commit_sha: Option<String>,
+    pub main_commit_unavailable: bool,
+    pub data_source: DataSource,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = value
+            .as_object()
+            .expect("value must be an object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// The frontend reads these keys verbatim: a renamed field or a dropped
+    /// `rename_all = "camelCase"` renders `undefined` with both gates green.
+    /// This pins the exact wire key sets to `src/api/types.ts`.
+    #[test]
+    fn audit_serialized_keys_match_typescript_contract() {
+        let audit = IntegrationEventAudit {
+            main_commit_sha: "a".repeat(40),
+            kind: IntegrationHistoryKind::Merged,
+            subsystem_id: "hr-management".to_string(),
+            target_branch: "staging".to_string(),
+            actor: "main.reviewer".to_string(),
+            occurred_at: "2026-01-01T00:00:00Z".to_string(),
+            detail: "detail".to_string(),
+            pull_request_number: None,
+            inherited_from_branch: None,
+            included_commits: vec![IntegrationEventCommit {
+                sha: "b".repeat(40),
+                short_sha: "b".repeat(7),
+                subject: "subject".to_string(),
+                author: Some("T".to_string()),
+                authored_at: Some("2026-01-01T00:00:00Z".to_string()),
+                unavailable: false,
+            }],
+            changes: vec![IntegrationEventChange {
+                path: "a.txt".to_string(),
+                change: IntegrationEventChangeKind::Modified,
+                additions: 1,
+                deletions: 1,
+            }],
+            totals: Some(IntegrationEventTotals {
+                files: 1,
+                additions: 1,
+                deletions: 1,
+            }),
+            provenance: vec![IntegrationEventProvenance {
+                key: "Subsystem-ID".to_string(),
+                value: "hr-management".to_string(),
+            }],
+            reverted_main_commit_sha: None,
+            main_commit_unavailable: false,
+            data_source: DataSource::Live,
+        };
+        let value = serde_json::to_value(&audit).expect("audit serializes");
+        assert_eq!(
+            sorted_keys(&value),
+            vec![
+                "actor",
+                "changes",
+                "dataSource",
+                "detail",
+                "includedCommits",
+                "inheritedFromBranch",
+                "kind",
+                "mainCommitSha",
+                "mainCommitUnavailable",
+                "occurredAt",
+                "provenance",
+                "pullRequestNumber",
+                "revertedMainCommitSha",
+                "subsystemId",
+                "targetBranch",
+                "totals",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+            "dropping `rename_all = \"camelCase\"` on IntegrationEventAudit would emit main_commit_sha and silently blank the UI",
+        );
+        assert_eq!(
+            sorted_keys(&value["includedCommits"][0]),
+            vec![
+                "author",
+                "authoredAt",
+                "sha",
+                "shortSha",
+                "subject",
+                "unavailable",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+            "dropping `rename_all = \"camelCase\"` on IntegrationEventCommit would emit short_sha and silently blank the UI",
+        );
+        assert_eq!(
+            sorted_keys(&value["changes"][0]),
+            vec!["additions", "change", "deletions", "path",]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            sorted_keys(&value["totals"]),
+            vec!["additions", "deletions", "files",]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            sorted_keys(&value["provenance"][0]),
+            vec!["key", "value",]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+    }
+}

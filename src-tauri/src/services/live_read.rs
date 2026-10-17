@@ -15,6 +15,8 @@ use crate::github::models::{
     ChangedFile, CommitDetails, CommitDiff, CommitPage, CommitQuery, CommitStatus,
     CommitStatusKind, CommitSummary, DataSource, DependencyChange, DependencyChangeKind,
     DependencySection, DiffHunk, DiffLine, DiffLineKind, FileChangeKind, FileIntegrationPolicy,
+    IntegrationEventAudit, IntegrationEventChange, IntegrationEventChangeKind,
+    IntegrationEventCommit, IntegrationEventProvenance, IntegrationEventTotals,
     IntegrationEvidence, IntegrationHistory, IntegrationHistoryEntry, IntegrationHistoryKind,
     IntegrationPr, IntegrationStatus, PrState, PullRequestRef, ReviewState, SubsystemPolicy,
     SubsystemSummary, TargetBranch, TargetBranchList, TargetBranchPolicy, WorkflowRunStatus,
@@ -1084,6 +1086,456 @@ pub fn integration_history_live(
         entries,
         total,
         fetched_at: now_rfc3339(),
+        data_source: DataSource::Live,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Integration event audit: one event re-derived from git, never fabricated
+// ---------------------------------------------------------------------------
+
+/// Already-cached source checkout only: never clones. `None` means the source
+/// repo is not cached (or the cached copy is unusable) and every included
+/// commit reports `unavailable`; [`warm_checkouts_once`] warms at startup.
+pub fn cached_source_dir(registry: &Registry, subsystem_id: &str) -> AppResult<Option<PathBuf>> {
+    let entry = find_live_subsystem(registry, subsystem_id)?;
+    if let Some(local) = crate::services::checkouts::local_dir_for(&entry.repository) {
+        return Ok(Some(local));
+    }
+    let dir = crate::services::checkouts::checkouts_root()
+        .join(crate::services::checkouts::source_key(entry));
+    if !dir.join(".git").is_dir() {
+        return Ok(None);
+    }
+    if git::rev_parse(&dir, "HEAD").is_none() {
+        return Ok(None);
+    }
+    Ok(Some(dir))
+}
+
+/// Verbatim trailing `Key: value` block of a commit message, in git order.
+/// No allowlist and no SHA validation: this is the audit artefact, surfaced
+/// exactly as written. It shares the trailing-block rule with
+/// [`provenance::parse_trailers`] but never feeds a structured decision —
+/// `source_shas` and the revert link below come only from the already-parsed
+/// event fields, so the two cannot disagree.
+fn verbatim_trailer_block(message: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = message.split('\n').collect();
+    let mut end = lines.len();
+    while end > 0 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    let mut block: Vec<&str> = Vec::new();
+    let mut i = end;
+    while i > 0 {
+        let line = lines[i - 1];
+        let Some(idx) = line.find(':') else {
+            break;
+        };
+        if idx == 0
+            || !line[..idx]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            break;
+        }
+        block.push(line);
+        i -= 1;
+    }
+    block.reverse();
+    let mut out = Vec::new();
+    for line in block {
+        let idx = line.find(':').unwrap_or(0);
+        out.push((line[..idx].to_string(), line[idx + 1..].trim().to_string()));
+    }
+    out
+}
+
+fn unavailable_commit(sha: &str) -> IntegrationEventCommit {
+    IntegrationEventCommit {
+        sha: sha.to_string(),
+        short_sha: sha.chars().take(7).collect(),
+        // Never invent a subject and never fall back to the SHA as one.
+        subject: String::new(),
+        author: None,
+        authored_at: None,
+        unavailable: true,
+    }
+}
+
+/// One batched enrichment for ALL included SHAs (constant spawns, never one
+/// per commit): first a single `cat-file --batch-check` prefilter, then one
+/// `git log --no-walk` for the survivors. The prefilter is required because
+/// `git log` exits 128 on ANY bad object and prints nothing, so one
+/// unreachable SHA would otherwise blank the reachable ones. SHAs absent
+/// from the output are unreachable in the local clone and report
+/// `unavailable` — absence of a record is not evidence.
+fn enrich_included_commits(
+    source_dir: Option<&Path>,
+    shas: &[String],
+) -> Vec<IntegrationEventCommit> {
+    let Some(dir) = source_dir else {
+        // No clone here: reads use the already-cached checkout only.
+        return shas.iter().map(|sha| unavailable_commit(sha)).collect();
+    };
+    if shas.is_empty() {
+        return Vec::new();
+    }
+    let stdin = shas.join("\n");
+    let mut live: Vec<&String> = Vec::new();
+    if let Ok(out) = git::run_with_stdin(dir, &["cat-file", "--batch-check"], stdin.as_bytes()) {
+        if out.status == 0 {
+            let mut missing: HashSet<String> = HashSet::new();
+            for line in out.stdout_str().lines() {
+                let mut cols = line.split_whitespace();
+                if let (Some(sha), Some(kind)) = (cols.next(), cols.next()) {
+                    if kind == "missing" {
+                        missing.insert(sha.to_string());
+                    }
+                }
+            }
+            live = shas.iter().filter(|s| !missing.contains(*s)).collect();
+        }
+    }
+    let mut found: HashMap<String, (String, String, String)> = HashMap::new();
+    if !live.is_empty() {
+        let mut args: Vec<String> = vec![
+            "log".to_string(),
+            "--no-walk".to_string(),
+            "--format=%H%x1f%s%x1f%an%x1f%aI%x1e".to_string(),
+        ];
+        args.extend(live.iter().map(|s| (*s).clone()));
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        if let Ok(out) = git::run(dir, &refs) {
+            if out.status == 0 {
+                for record in out.stdout_str().split('\u{1e}') {
+                    let record = record.trim_start_matches('\n').trim();
+                    if record.is_empty() {
+                        continue;
+                    }
+                    let mut parts = record.split('\u{1f}');
+                    if let (Some(sha), Some(subject), Some(author), Some(at)) =
+                        (parts.next(), parts.next(), parts.next(), parts.next())
+                    {
+                        if !sha.is_empty() {
+                            found.insert(
+                                sha.to_string(),
+                                (subject.to_string(), author.to_string(), at.to_string()),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    shas.iter()
+        .map(|sha| match found.get(sha) {
+            Some((subject, author, at)) => IntegrationEventCommit {
+                sha: sha.clone(),
+                short_sha: sha.chars().take(7).collect(),
+                subject: subject.clone(),
+                author: if author.is_empty() {
+                    None
+                } else {
+                    Some(author.clone())
+                },
+                authored_at: if at.is_empty() {
+                    None
+                } else {
+                    Some(at.clone())
+                },
+                unavailable: false,
+            },
+            None => unavailable_commit(sha),
+        })
+        .collect()
+}
+
+/// New-side keys for a numstat rename path (`old => new`, plus the
+/// `dir/{old => new}.txt` brace form), so the raw display path joins.
+fn rename_new_keys(path: &str) -> Vec<String> {
+    if let (Some(open), Some(close)) = (path.find('{'), path.find('}')) {
+        if open < close {
+            let prefix = &path[..open];
+            let suffix = &path[close + 1..];
+            let inside = &path[open + 1..close];
+            if let Some((_, new_part)) = inside.split_once(" => ") {
+                return vec![format!("{prefix}{new_part}{suffix}")];
+            }
+        }
+    }
+    path.split(" => ")
+        .last()
+        .map(|s| vec![s.trim().to_string()])
+        .unwrap_or_default()
+}
+
+/// The main commit's own changed paths in ONE `git show` spawn: raw status
+/// letters joined with numstat counts (same `--numstat` line grammar as
+/// [`numstat_map`], which stays the single-commit helper for details).
+/// `None` when the commit cannot be read; an empty-change commit yields
+/// `Some` with zero totals, which is truthful, not unavailable.
+fn main_commit_changes(
+    target_dir: &Path,
+    sha: &str,
+) -> Option<(Vec<IntegrationEventChange>, IntegrationEventTotals)> {
+    let out = git::run(
+        target_dir,
+        &["show", "--format=", "--numstat", "--raw", "-M", sha],
+    )
+    .ok()?;
+    if out.status != 0 {
+        return None;
+    }
+    let mut stats: HashMap<String, (u32, u32)> = HashMap::new();
+    let mut raws: Vec<(char, String)> = Vec::new();
+    for line in out.stdout_str().lines() {
+        if let Some(rest) = line.strip_prefix(':') {
+            // `:oldmode newmode oldsha newsha STATUS\tpath[\tnewpath]`.
+            let Some((meta, paths)) = rest.split_once('\t') else {
+                continue;
+            };
+            let status = meta.split_whitespace().last().unwrap_or("");
+            let letter = status.chars().next().unwrap_or('M');
+            let mut sides = paths.split('\t');
+            let (Some(first), second) = (sides.next(), sides.next()) else {
+                continue;
+            };
+            let display = if letter == 'R' || letter == 'C' {
+                second.unwrap_or(first).to_string()
+            } else {
+                first.to_string()
+            };
+            if display.is_empty() {
+                continue;
+            }
+            raws.push((letter, display));
+        } else {
+            let mut cols = line.split('\t');
+            if let (Some(adds), Some(dels), Some(path)) = (cols.next(), cols.next(), cols.next()) {
+                if path.is_empty() {
+                    continue;
+                }
+                let counts = (
+                    adds.parse::<u32>().unwrap_or(0),
+                    dels.parse::<u32>().unwrap_or(0),
+                );
+                stats.insert(path.to_string(), counts);
+                if path.contains(" => ") {
+                    for key in rename_new_keys(path) {
+                        stats.entry(key).or_insert(counts);
+                    }
+                }
+            }
+        }
+    }
+    let mut changes: Vec<IntegrationEventChange> = Vec::new();
+    let (mut total_add, mut total_del) = (0u32, 0u32);
+    for (letter, path) in &raws {
+        let (adds, dels) = stats.get(path).copied().unwrap_or((0, 0));
+        total_add += adds;
+        total_del += dels;
+        changes.push(IntegrationEventChange {
+            path: path.clone(),
+            change: match letter {
+                'A' => IntegrationEventChangeKind::Added,
+                'D' => IntegrationEventChangeKind::Deleted,
+                'R' => IntegrationEventChangeKind::Renamed,
+                _ => IntegrationEventChangeKind::Modified,
+            },
+            additions: adds,
+            deletions: dels,
+        });
+    }
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    let totals = IntegrationEventTotals {
+        files: changes.len() as u32,
+        additions: total_add,
+        deletions: total_del,
+    };
+    Some((changes, totals))
+}
+
+fn unavailable_audit(
+    branch: &str,
+    subsystem_id: &str,
+    main_commit_sha: &str,
+    detail: String,
+) -> IntegrationEventAudit {
+    IntegrationEventAudit {
+        // `kind` has no truthful value without a resolved event; the contract
+        // requires one, so `Merged` is the neutral placeholder and `detail`
+        // carries the actual story.
+        main_commit_sha: main_commit_sha.to_string(),
+        kind: IntegrationHistoryKind::Merged,
+        subsystem_id: subsystem_id.to_string(),
+        target_branch: branch.to_string(),
+        actor: "unknown".to_string(),
+        occurred_at: now_rfc3339(),
+        detail,
+        pull_request_number: None,
+        inherited_from_branch: None,
+        included_commits: Vec::new(),
+        changes: Vec::new(),
+        totals: None,
+        provenance: Vec::new(),
+        reverted_main_commit_sha: None,
+        main_commit_unavailable: true,
+        data_source: DataSource::Live,
+    }
+}
+
+/// One integration event re-derived from git: the event resolves through the
+/// same tip-keyed [`history::cached_replay`] the history list uses (so the two
+/// agree on kind/actor/date/detail), `includedCommits` are exactly the
+/// `Source-Commit` trailers already parsed onto the event, and `changes` come
+/// from one `git show`. A missing/unreachable event is an ordinary truthful
+/// result, never an `Err`.
+pub fn integration_event_audit_live(
+    target_dir: &Path,
+    source_dir: Option<&Path>,
+    registry: &Registry,
+    target_branch: &str,
+    subsystem_id: &str,
+    main_commit_sha: &str,
+) -> AppResult<IntegrationEventAudit> {
+    let branch = require_allowed_target(registry, target_branch)?;
+    find_live_subsystem(registry, subsystem_id)?;
+    let wanted = main_commit_sha.trim();
+    // The ref NAME (not its SHA) keys the tip-keyed replay, exactly like the
+    // history list and status reads, so all three share one scan per tip.
+    let Some(reference) = history::resolve_ref(target_dir, &branch) else {
+        return Err(branch_not_permitted(
+            &branch,
+            "branch does not exist in the target checkout",
+        ));
+    };
+    // Tip-keyed memo shared with the list and status reads: same tip, same
+    // events, and a repeated click reuses the scan instead of re-walking.
+    let replayed = history::cached_replay(target_dir, &reference);
+    let Some(full) = git::rev_parse(target_dir, wanted) else {
+        return Ok(unavailable_audit(
+            &branch,
+            subsystem_id,
+            wanted,
+            format!(
+                "{wanted} could not be resolved in the target checkout: it is outside the scanned range or was stripped by a squash. Nothing was inferred; changes and included commits are empty."
+            ),
+        ));
+    };
+    let Some(event) = replayed
+        .history
+        .iter()
+        .find(|e| e.commit == full && e.subsystem.as_deref() == Some(subsystem_id))
+    else {
+        return Ok(unavailable_audit(
+            &branch,
+            subsystem_id,
+            &full,
+            format!(
+                "{} was not found in the reachable history of '{branch}' for subsystem '{subsystem_id}': no integration event trailers reference it here (a squash-merge strips trailers, or it is outside the scanned range). Nothing was inferred; changes and included commits are empty.",
+                full.chars().take(7).collect::<String>(),
+            ),
+        ));
+    };
+    // Same mapping the history list uses, so the two agree.
+    let (kind, detail) = match event.kind {
+        history::EventType::Integrate => (IntegrationHistoryKind::Merged, event.subject.clone()),
+        history::EventType::Revert => (
+            IntegrationHistoryKind::Reverted,
+            format!(
+                "Reverted {}. {}",
+                event
+                    .reverts_integration
+                    .clone()
+                    .unwrap_or_else(|| "an integration".to_string()),
+                event.subject
+            ),
+        ),
+        history::EventType::Restore => (IntegrationHistoryKind::Restored, event.subject.clone()),
+    };
+    // What a `Reverted` event undid is the replay's already-resolved
+    // `reverts_integration` (exact, then unique prefix, then newest subject —
+    // see `revert_resolution_prefers_exact_then_unique_prefix_then_newest_subject`).
+    // Never re-parsed from message text.
+    let reverted_main_commit_sha = if matches!(event.kind, history::EventType::Revert) {
+        event.reverts_integration.clone()
+    } else {
+        None
+    };
+    let provenance: Vec<IntegrationEventProvenance> = replayed
+        .details
+        .get(&event.commit)
+        .map(|d| verbatim_trailer_block(&d.message))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| IntegrationEventProvenance { key, value })
+        .collect();
+    let included_commits = enrich_included_commits(source_dir, &event.source_commits);
+    let (changes, totals) = match main_commit_changes(target_dir, &event.commit) {
+        Some((changes, totals)) => (changes, Some(totals)),
+        None => {
+            return Ok(IntegrationEventAudit {
+                main_commit_sha: event.commit.clone(),
+                kind,
+                subsystem_id: event
+                    .subsystem
+                    .clone()
+                    .unwrap_or_else(|| subsystem_id.to_string()),
+                target_branch: event.target.clone().unwrap_or_else(|| branch.clone()),
+                actor: if event.author.trim().is_empty() {
+                    "unknown".to_string()
+                } else {
+                    event.author.clone()
+                },
+                occurred_at: if event.committed_iso.is_empty() {
+                    now_rfc3339()
+                } else {
+                    event.committed_iso.clone()
+                },
+                detail: format!(
+                    "{} resolved as an event but its commit body could not be read. Nothing was inferred; changes are empty.",
+                    event.commit.chars().take(7).collect::<String>(),
+                ),
+                pull_request_number: None,
+                inherited_from_branch: None,
+                included_commits,
+                changes: Vec::new(),
+                totals: None,
+                provenance,
+                reverted_main_commit_sha,
+                main_commit_unavailable: true,
+                data_source: DataSource::Live,
+            });
+        }
+    };
+    Ok(IntegrationEventAudit {
+        main_commit_sha: event.commit.clone(),
+        kind,
+        subsystem_id: event
+            .subsystem
+            .clone()
+            .unwrap_or_else(|| subsystem_id.to_string()),
+        target_branch: event.target.clone().unwrap_or_else(|| branch.clone()),
+        actor: if event.author.trim().is_empty() {
+            "unknown".to_string()
+        } else {
+            event.author.clone()
+        },
+        occurred_at: if event.committed_iso.is_empty() {
+            now_rfc3339()
+        } else {
+            event.committed_iso.clone()
+        },
+        detail,
+        pull_request_number: None,
+        inherited_from_branch: None,
+        included_commits,
+        changes,
+        totals,
+        provenance,
+        reverted_main_commit_sha,
+        main_commit_unavailable: false,
         data_source: DataSource::Live,
     })
 }
@@ -3074,5 +3526,382 @@ mod tests {
             "history shares the same tip-keyed scan"
         );
         let _ = src;
+    }
+
+    // --- integration event audit -----------------------------------------
+
+    /// Source with three commits; main with one staging integration commit
+    /// carrying all three `Source-Commit` trailers in a non-alphabetical
+    /// order. Returns `(source_dir, target_dir, trailer_order, main_sha)`.
+    fn sandbox_audit_three() -> (PathBuf, PathBuf, Vec<String>, String, Registry) {
+        let src = tmp("audit-src");
+        init(&src, "master");
+        write(&src, "a.txt", "a\n");
+        let a = commit_all(&src, "Alpha feature");
+        write(&src, "b.txt", "b\n");
+        let b = commit_all(&src, "Beta feature");
+        write(&src, "c.txt", "c\n");
+        let c = commit_all(&src, "Gamma feature");
+
+        let main = tmp("audit-main");
+        init(&main, "master");
+        write(&main, "base.txt", "base\n");
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+        git(&main, &["checkout", "-q", "staging"]);
+        write(&main, "x.txt", "x\n");
+        write(&main, "y.txt", "y\n");
+        let order = vec![c.clone(), a.clone(), b.clone()];
+        let trailer = format!(
+            "integrate(hr-management): trio\n\nSubsystem-ID: hr-management\nSource-Repo: ORG/hr-management\nSource-Commit: {}\nSource-Commit: {}\nSource-Commit: {}\nPromotion-Mode: individual\nPromotion-Target: staging\n",
+            order[0], order[1], order[2]
+        );
+        let m = commit_all(&main, &trailer);
+        (src, main, order, m, single_registry())
+    }
+
+    #[test]
+    fn audit_included_commits_match_source_commit_trailers_in_order() {
+        let (src, main, order, m, registry) = sandbox_audit_three();
+        let audit = integration_event_audit_live(
+            &main,
+            Some(&src),
+            &registry,
+            "staging",
+            "hr-management",
+            &m,
+        )
+        .expect("audit");
+        assert!(!audit.main_commit_unavailable);
+        assert_eq!(audit.kind, IntegrationHistoryKind::Merged);
+        assert_eq!(audit.main_commit_sha, m);
+        assert_eq!(audit.included_commits.len(), 3);
+        let got: Vec<&str> = audit
+            .included_commits
+            .iter()
+            .map(|c| c.sha.as_str())
+            .collect();
+        assert_eq!(
+            got,
+            order.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "included commits are exactly the Source-Commit trailers, in trailer order"
+        );
+        assert_eq!(audit.included_commits[0].subject, "Gamma feature");
+        assert_eq!(audit.included_commits[1].subject, "Alpha feature");
+        assert_eq!(audit.included_commits[2].subject, "Beta feature");
+        for commit in &audit.included_commits {
+            assert!(!commit.unavailable);
+            assert_eq!(
+                commit.short_sha,
+                commit.sha.chars().take(7).collect::<String>()
+            );
+        }
+        // Verbatim trailer block, in git order — the audit artefact.
+        let keys: Vec<&str> = audit.provenance.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "Subsystem-ID",
+                "Source-Repo",
+                "Source-Commit",
+                "Source-Commit",
+                "Source-Commit",
+                "Promotion-Mode",
+                "Promotion-Target",
+            ]
+        );
+        let sources: Vec<&str> = audit
+            .provenance
+            .iter()
+            .filter(|p| p.key == "Source-Commit")
+            .map(|p| p.value.as_str())
+            .collect();
+        assert_eq!(
+            sources,
+            order.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn audit_unreachable_source_commit_is_unavailable_without_fabrication() {
+        let src = tmp("audit-unreach-src");
+        init(&src, "master");
+        write(&src, "a.txt", "a\n");
+        let real = commit_all(&src, "Real work");
+        let bogus = "f".repeat(40);
+
+        let main = tmp("audit-unreach-main");
+        init(&main, "master");
+        write(&main, "base.txt", "base\n");
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+        git(&main, &["checkout", "-q", "staging"]);
+        write(&main, "x.txt", "x\n");
+        let trailer = format!(
+            "integrate(hr-management): mixed\n\nSubsystem-ID: hr-management\nSource-Repo: ORG/hr-management\nSource-Commit: {real}\nSource-Commit: {bogus}\nPromotion-Mode: individual\nPromotion-Target: staging\n"
+        );
+        let m = commit_all(&main, &trailer);
+
+        let audit = integration_event_audit_live(
+            &main,
+            Some(&src),
+            &single_registry(),
+            "staging",
+            "hr-management",
+            &m,
+        )
+        .expect("audit");
+        assert!(!audit.main_commit_unavailable);
+        assert_eq!(audit.included_commits.len(), 2);
+        assert!(!audit.included_commits[0].unavailable);
+        assert_eq!(audit.included_commits[0].subject, "Real work");
+        let missing = &audit.included_commits[1];
+        assert_eq!(missing.sha, bogus);
+        assert!(missing.unavailable);
+        assert!(
+            missing.subject.is_empty(),
+            "no fabricated subject for an unreachable source commit"
+        );
+        assert_ne!(
+            missing.subject, missing.sha,
+            "the SHA must never stand in as the subject"
+        );
+        assert!(missing.author.is_none());
+        assert!(missing.authored_at.is_none());
+    }
+
+    #[test]
+    fn audit_changes_and_totals_match_real_numstat_for_multi_file_commit() {
+        let main = tmp("audit-changes");
+        init(&main, "master");
+        write(&main, "a.txt", "l1\nl2\nl3\n");
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+        git(&main, &["checkout", "-q", "staging"]);
+        write(&main, "a.txt", "l1\nl2 changed\nl3\nl4\n");
+        write(&main, "b.txt", "n1\nn2\nn3\n");
+        let trailer = format!(
+            "integrate(hr-management): two files\n\nSubsystem-ID: hr-management\nSource-Repo: ORG/hr-management\nSource-Commit: {}\nPromotion-Mode: individual\nPromotion-Target: staging\n",
+            "a".repeat(40)
+        );
+        let m = commit_all(&main, &trailer);
+
+        // Independent ground truth straight from git (test `Command`, uncounted).
+        let numstat = git(&main, &["show", "--numstat", "--format=", &m]);
+        let mut expected: HashMap<String, (u32, u32)> = HashMap::new();
+        for line in numstat.lines() {
+            let mut cols = line.split('\t');
+            if let (Some(a), Some(d), Some(p)) = (cols.next(), cols.next(), cols.next()) {
+                expected.insert(
+                    p.to_string(),
+                    (a.parse().unwrap_or(0), d.parse().unwrap_or(0)),
+                );
+            }
+        }
+
+        // No source checkout needed here: enrichment reports unavailable.
+        let audit = integration_event_audit_live(
+            &main,
+            None,
+            &single_registry(),
+            "staging",
+            "hr-management",
+            &m,
+        )
+        .expect("audit");
+        assert!(!audit.main_commit_unavailable);
+        assert_eq!(audit.changes.len(), expected.len());
+        for change in &audit.changes {
+            let (adds, dels) = expected
+                .get(&change.path)
+                .copied()
+                .unwrap_or_else(|| panic!("unexpected path {}", change.path));
+            assert_eq!(
+                (change.additions, change.deletions),
+                (adds, dels),
+                "per-file counts match numstat for {}",
+                change.path
+            );
+        }
+        let by_path: HashMap<&str, &str> = audit
+            .changes
+            .iter()
+            .map(|c| {
+                (
+                    c.path.as_str(),
+                    match c.change {
+                        IntegrationEventChangeKind::Added => "added",
+                        IntegrationEventChangeKind::Modified => "modified",
+                        IntegrationEventChangeKind::Deleted => "deleted",
+                        IntegrationEventChangeKind::Renamed => "renamed",
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(by_path["a.txt"], "modified");
+        assert_eq!(by_path["b.txt"], "added");
+        let totals = audit
+            .totals
+            .expect("totals are present for a readable commit");
+        assert_eq!(totals.files as usize, audit.changes.len());
+        assert_eq!(
+            totals.additions,
+            audit.changes.iter().map(|c| c.additions).sum::<u32>()
+        );
+        assert_eq!(
+            totals.deletions,
+            audit.changes.iter().map(|c| c.deletions).sum::<u32>()
+        );
+        assert_eq!((totals.additions, totals.deletions), (5, 1));
+    }
+
+    #[test]
+    fn audit_trailerless_commit_reports_unavailable_without_fabricated_commits() {
+        let main = tmp("audit-plain");
+        init(&main, "master");
+        write(&main, "base.txt", "base\n");
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+        git(&main, &["checkout", "-q", "staging"]);
+        write(&main, "work.txt", "work\n");
+        let plain = commit_all(&main, "ordinary work without trailers");
+
+        let audit = integration_event_audit_live(
+            &main,
+            None,
+            &single_registry(),
+            "staging",
+            "hr-management",
+            &plain,
+        )
+        .expect("audit is a truthful result, not an error");
+        assert!(audit.main_commit_unavailable);
+        assert!(
+            audit.included_commits.is_empty(),
+            "a commit with no trailers yields no fabricated commits"
+        );
+        assert!(audit.changes.is_empty());
+        assert!(audit.totals.is_none());
+        assert!(
+            audit.detail.contains("reachable history"),
+            "detail says why: {}",
+            audit.detail
+        );
+    }
+
+    #[test]
+    fn audit_reverted_event_names_the_commit_it_undid() {
+        let src = tmp("audit-revert-src");
+        init(&src, "master");
+        write(&src, "f.txt", "feature\n");
+        let s = commit_all(&src, "Feature work");
+
+        let main = tmp("audit-revert-main");
+        init(&main, "master");
+        write(&main, "base.txt", "base\n");
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+        git(&main, &["checkout", "-q", "staging"]);
+        write(&main, "f.txt", "feature\n");
+        let integrate_msg = crate::services::engine::provenance::build_provenance_message(
+            &crate::services::engine::provenance::ProvenanceInput {
+                subsystem_id: "hr-management",
+                source_repo: "ORG/hr-management",
+                source_commits: std::slice::from_ref(&s),
+                mode: "individual",
+                target: "staging",
+                subject: "Feature work",
+                gap_shas: &[],
+                gap_override: false,
+            },
+        );
+        let i = commit_all(&main, &integrate_msg);
+        // Revert through the existing builder: the `Reverts-Integration`
+        // trailer carries the undone commit and the replay resolves it.
+        write(&main, "f.txt", "undone\n");
+        let revert_msg = crate::services::engine::provenance::build_revert_message(
+            "hr-management",
+            std::slice::from_ref(&s),
+            &i,
+            "Feature work",
+        );
+        let r = commit_all(&main, &revert_msg);
+
+        let registry = single_registry();
+        let undone = integration_event_audit_live(
+            &main,
+            Some(&src),
+            &registry,
+            "staging",
+            "hr-management",
+            &r,
+        )
+        .expect("audit");
+        assert!(!undone.main_commit_unavailable);
+        assert_eq!(undone.kind, IntegrationHistoryKind::Reverted);
+        assert_eq!(
+            undone.reverted_main_commit_sha.as_deref(),
+            Some(i.as_str()),
+            "a Reverted event names the commit it undid via the structured revert link"
+        );
+        let kept = integration_event_audit_live(
+            &main,
+            Some(&src),
+            &registry,
+            "staging",
+            "hr-management",
+            &i,
+        )
+        .expect("audit");
+        assert_eq!(kept.kind, IntegrationHistoryKind::Merged);
+        assert_eq!(kept.reverted_main_commit_sha, None);
+    }
+
+    /// One batched prefilter plus one batch `git log` for every included SHA,
+    /// plus one `git show` for the commit's changes: a 3-commit event costs a
+    /// small constant, proving no per-commit spawn loop (the defect this crate
+    /// already paid ~12 spawns per row for).
+    #[test]
+    fn audit_three_commit_event_costs_one_batch_call_not_one_per_commit() {
+        let (src, main, _order, m, registry) = sandbox_audit_three();
+        let audit = integration_event_audit_live(
+            &main,
+            Some(&src),
+            &registry,
+            "staging",
+            "hr-management",
+            &m,
+        )
+        .expect("audit");
+        assert_eq!(audit.included_commits.len(), 3);
+        let src_spawns = crate::services::engine::git::git_spawns_for_tests(&src);
+        assert_eq!(
+            src_spawns, 2,
+            "3 included commits must cost two batched calls (one `cat-file --batch-check` prefilter + one `git log --no-walk`), not one spawn per commit (got {src_spawns})"
+        );
+        let target_spawns = crate::services::engine::git::git_spawns_for_tests(&main);
+        assert!(
+            target_spawns <= 8,
+            "one event audit cost {target_spawns} target spawns, expected O(1): branch resolution + one tip-keyed walk + one `git show`"
+        );
+        assert_eq!(
+            crate::services::engine::history::replay_scans_for_tests(&main, "staging"),
+            1,
+            "the audit shares the tip-keyed replay instead of re-walking history"
+        );
+        let _ = integration_event_audit_live(
+            &main,
+            Some(&src),
+            &registry,
+            "staging",
+            "hr-management",
+            &m,
+        )
+        .expect("second audit");
+        assert_eq!(
+            crate::services::engine::history::replay_scans_for_tests(&main, "staging"),
+            1,
+            "a repeated click reuses the tip-keyed replay"
+        );
     }
 }

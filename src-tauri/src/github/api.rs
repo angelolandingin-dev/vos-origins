@@ -487,6 +487,116 @@ impl GitHubAdapter {
         })
     }
 
+    /// Fixture audit for one history row: the row resolves through the same
+    /// fixture history list above, `includedCommits` enrich from fixture
+    /// commits without fabrication, and what a `Reverted` row undid resolves
+    /// through the structured `reverts_event_id` link onto the same event
+    /// list — never inferred from message text. Fixtures carry no git
+    /// objects, so `changes`/`totals`/`provenance` stay empty rather than
+    /// invented.
+    pub fn integration_event_audit(
+        &self,
+        world: &FixtureWorld,
+        target_branch: &str,
+        subsystem_id: &str,
+        main_commit_sha: &str,
+    ) -> AppResult<IntegrationEventAudit> {
+        let target_branch = self.require_target_branch(world, target_branch)?;
+        let subsystem = self.subsystem(world, subsystem_id)?;
+        let wanted = main_commit_sha.trim();
+        let Some(entry) = world.history.iter().find(|entry| {
+            entry.target_branch == target_branch
+                && entry.subsystem_id == subsystem.id
+                && entry.main_commit_sha.as_deref() == Some(wanted)
+        }) else {
+            return Ok(IntegrationEventAudit {
+                main_commit_sha: wanted.to_string(),
+                kind: IntegrationHistoryKind::Merged,
+                subsystem_id: subsystem.id.clone(),
+                target_branch,
+                actor: "unknown".to_string(),
+                occurred_at: now_rfc3339(),
+                detail: format!(
+                    "{wanted} is not an integration event in the fixture history. Nothing was inferred."
+                ),
+                pull_request_number: None,
+                inherited_from_branch: None,
+                included_commits: Vec::new(),
+                changes: Vec::new(),
+                totals: None,
+                provenance: Vec::new(),
+                reverted_main_commit_sha: None,
+                main_commit_unavailable: true,
+                data_source: self.data_source,
+            });
+        };
+        let included_commits = entry
+            .source_shas
+            .iter()
+            .map(|sha| match world.find_commit(&subsystem.id, sha) {
+                Some(commit) => IntegrationEventCommit {
+                    sha: sha.clone(),
+                    short_sha: commit.short_sha.clone(),
+                    subject: commit.subject.clone(),
+                    author: Some(commit.author_name.clone()),
+                    authored_at: Some(commit.authored_at.clone()),
+                    unavailable: false,
+                },
+                None => IntegrationEventCommit {
+                    sha: sha.clone(),
+                    short_sha: sha.chars().take(7).collect(),
+                    subject: String::new(),
+                    author: None,
+                    authored_at: None,
+                    unavailable: true,
+                },
+            })
+            .collect();
+        // Structured revert link only: the fixture event for this row names
+        // the undone event by id; take that event's `main_commit_sha`. When
+        // the referenced event is not in the window, stay null and let
+        // `detail` explain rather than guessing from message text.
+        let reverted_main_commit_sha = if entry.kind == IntegrationHistoryKind::Reverted {
+            world
+                .events
+                .iter()
+                .find(|event| {
+                    event.main_commit_sha == entry.main_commit_sha.clone().unwrap_or_default()
+                })
+                .and_then(|event| event.reverts_event_id.clone())
+                .and_then(|id| {
+                    world
+                        .events
+                        .iter()
+                        .find(|event| event.id == id)
+                        .map(|event| event.main_commit_sha.clone())
+                })
+        } else {
+            None
+        };
+        Ok(IntegrationEventAudit {
+            main_commit_sha: entry
+                .main_commit_sha
+                .clone()
+                .unwrap_or_else(|| wanted.to_string()),
+            kind: entry.kind,
+            subsystem_id: entry.subsystem_id.clone(),
+            target_branch: entry.target_branch.clone(),
+            actor: entry.actor.clone(),
+            occurred_at: entry.occurred_at.clone(),
+            detail: entry.detail.clone(),
+            pull_request_number: entry.pull_request_number,
+            inherited_from_branch: entry.inherited_from_branch.clone(),
+            included_commits,
+            changes: Vec::new(),
+            totals: None,
+            provenance: Vec::new(),
+            reverted_main_commit_sha,
+            main_commit_unavailable: false,
+            data_source: self.data_source,
+        })
+    }
+
     pub fn require_target_branch(
         &self,
         world: &FixtureWorld,

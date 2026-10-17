@@ -4427,3 +4427,350 @@ fn worktree_ignored_is_named_skip_crlf_passes_extra_names_paths() {
     // `staged_mismatch_names_extra_and_missing_paths` unit test (same
     // `check_staged_matches` helper the promotion path calls).
 }
+
+// ===========================================================================
+// Selective re-promotion over the subsystem's own earlier content (§3
+// containment fix) + take_subsystem override with trailers
+// ===========================================================================
+
+/// The regression, as a fixture: promote C1, then select ONLY C5 while the
+/// target holds C1's version of the path. C1's bytes are subsystem content
+/// outside the selected range, so preflight must be Clean (not Conflict) and
+/// the apply must write C5's bytes.
+#[test]
+fn selective_repromotion_over_previously_promoted_content_is_clean() {
+    use vos_origins_lib::services::engine::preflight::{
+        compute_preflight, PreflightOutcome, PreflightRequest,
+    };
+
+    let src_dir = make_temp_dir("src-reselect");
+    let main_dir = make_temp_dir("main-reselect");
+    init_repo(&src_dir, "master");
+    commit_files(&src_dir, "A base", &[("shared.txt", b"v0\n")], &[]);
+    let bodies = ["c1\n", "c2\n", "c3\n", "c4\n", "c5\n"];
+    let mut versions = Vec::new();
+    for (i, body) in bodies.iter().enumerate() {
+        versions.push(commit_files(
+            &src_dir,
+            &format!("C{} selective", i + 1),
+            &[("shared.txt", body.as_bytes())],
+            &[],
+        ));
+    }
+    let main = create_main_repo(&main_dir, &[], &[("shared.txt", b"v0\n")]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    // Promote C1 first; the target now holds C1's version of the path.
+    let first = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![versions[0].clone()],
+            ..Default::default()
+        },
+    );
+    assert!(first.ok, "{:?}", first.blockers);
+    advance_ref(
+        &main.dir,
+        "staging",
+        &sha(&main.dir, &first.integration_branch.clone().unwrap()),
+    );
+    assert_eq!(branch_file_text(&main.dir, "staging", "shared.txt"), "c1\n");
+
+    // Preflight selecting ONLY C5: the target's C1 bytes are the subsystem's
+    // own earlier content (outside the range) → Clean, never Conflict.
+    let scratch = make_temp_dir("reselect-scratch");
+    let empty: Vec<String> = Vec::new();
+    let request = PreflightRequest {
+        policy: &registry.subsystems[0].integration_policy,
+        commits: std::slice::from_ref(&versions[4]),
+        mode: PromotionMode::Individual,
+        base_sha: None,
+        target_branch: "staging",
+        on_conflict: PromotionOnConflict::Fail,
+        allow_gaps: false,
+        excluded_paths: &empty,
+        global_files: &empty,
+    };
+    let preflight =
+        compute_preflight(&src_dir, &main.dir, &request, &scratch).expect("preflight computes");
+    let file = preflight
+        .files
+        .iter()
+        .find(|f| f.path == "shared.txt")
+        .expect("shared.txt in preflight");
+    assert_eq!(file.outcome, PreflightOutcome::Clean, "{preflight:?}");
+    assert!(preflight.conflicts.is_empty(), "{preflight:?}");
+
+    // And the apply writes C5's bytes.
+    let second = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![versions[4].clone()],
+            ..Default::default()
+        },
+    );
+    assert!(second.ok, "{:?}", second.blockers);
+    let branch = second.integration_branch.clone().unwrap();
+    assert_eq!(branch_file_text(&main.dir, &branch, "shared.txt"), "c5\n");
+}
+
+/// A target blob that exists nowhere in the source repo is main-system-only
+/// content: preflight stays Conflict and the apply still refuses.
+#[test]
+fn target_blob_absent_from_source_repo_stays_refused() {
+    use vos_origins_lib::services::engine::preflight::{compute_preflight, PreflightRequest};
+
+    let src_dir = make_temp_dir("src-mainonly");
+    let main_dir = make_temp_dir("main-mainonly");
+    init_repo(&src_dir, "master");
+    commit_files(&src_dir, "A base", &[("notes.txt", b"v1\n")], &[]);
+    let b = commit_files(&src_dir, "B edit", &[("notes.txt", b"v2\n")], &[]);
+    let main = create_main_repo(&main_dir, &[], &[("notes.txt", b"v1\n")]);
+    // Main-system-only bytes: no source commit ever produced them.
+    commit_message_on_branch(
+        &main.dir,
+        "staging",
+        "staging: main-only edit",
+        &[("notes.txt", b"main-only content\n")],
+        &[],
+    );
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    let scratch = make_temp_dir("mainonly-scratch");
+    let empty: Vec<String> = Vec::new();
+    let request = PreflightRequest {
+        policy: &registry.subsystems[0].integration_policy,
+        commits: std::slice::from_ref(&b),
+        mode: PromotionMode::Individual,
+        base_sha: None,
+        target_branch: "staging",
+        on_conflict: PromotionOnConflict::Fail,
+        allow_gaps: false,
+        excluded_paths: &empty,
+        global_files: &empty,
+    };
+    let preflight =
+        compute_preflight(&src_dir, &main.dir, &request, &scratch).expect("preflight computes");
+    assert_eq!(
+        preflight.conflicts,
+        vec!["notes.txt".to_string()],
+        "{preflight:?}"
+    );
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![b],
+            ..Default::default()
+        },
+    );
+    assert!(!report.ok);
+    assert!(
+        codes(&report).contains(&"TARGET_DIVERGED".to_string()),
+        "{:?}",
+        codes(&report)
+    );
+}
+
+/// `take_subsystem` overwrites the diverged path with the subsystem's copy,
+/// reports it as replaced + conflict-taken, and records the override in the
+/// commit trailers (`Promotion-Conflicts` + `Promotion-Override`).
+#[test]
+fn take_subsystem_overwrites_diverged_path_reports_replaced_and_trailers_override() {
+    let src_dir = make_temp_dir("src-takesub");
+    let main_dir = make_temp_dir("main-takesub");
+    init_repo(&src_dir, "master");
+    commit_files(&src_dir, "A base", &[("notes.txt", b"v1\n")], &[]);
+    let b = commit_files(&src_dir, "B edit", &[("notes.txt", b"v2\n")], &[]);
+    let main = create_main_repo(&main_dir, &[], &[("notes.txt", b"v1\n")]);
+    commit_message_on_branch(
+        &main.dir,
+        "staging",
+        "staging: main-only edit",
+        &[("notes.txt", b"main-only content\n")],
+        &[],
+    );
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![b],
+            on_conflict: PromotionOnConflict::TakeSubsystem,
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "notes.txt"),
+        "v2\n",
+        "the subsystem's copy wins"
+    );
+    assert!(
+        report.changes.replaced.iter().any(|p| p == "notes.txt"),
+        "overwritten path is reported as replaced: {:?}",
+        report.changes
+    );
+    assert!(
+        report
+            .changes
+            .conflict_taken
+            .iter()
+            .any(|p| p == "notes.txt"),
+        "overwritten path is reported as taken from subsystem: {:?}",
+        report.changes
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.code == "conflict_taken_from_subsystem"),
+        "override warning is emitted: {:?}",
+        report.warnings
+    );
+    let msg = report.provenance_message.clone().unwrap_or_default();
+    assert!(msg.contains("Promotion-Conflicts:"), "{msg}");
+    assert!(msg.contains("notes.txt"), "{msg}");
+    assert!(msg.contains("Promotion-Override: true"), "{msg}");
+}
+
+/// `take_subsystem` does NOT bypass the hard guards: global-file protection,
+/// lockfile failure, and secret/main-owned skips all stand.
+#[test]
+fn take_subsystem_does_not_bypass_global_secret_or_lockfile_guards() {
+    // (a) Protected app-shell file: still GLOBAL_FILE_PROTECTED.
+    let src_dir = make_temp_dir("src-takeglobal");
+    init_repo(&src_dir, "master");
+    commit_files(&src_dir, "A base", &[("app/shell.tsx", b"v1\n")], &[]);
+    let b = commit_files(&src_dir, "B shell edit", &[("app/shell.tsx", b"v2\n")], &[]);
+    let main_dir = make_temp_dir("main-takeglobal");
+    let main = create_main_repo(&main_dir, &[], &[("app/shell.tsx", b"main shell\n")]);
+    let github = StubGitHubOps::new();
+    let text = registry_json(&subsystem_json_global());
+    let registry = Registry::from_json(&text, "t").expect("registry with globalFiles");
+    let global = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![b],
+            on_conflict: PromotionOnConflict::TakeSubsystem,
+            ..Default::default()
+        },
+    );
+    assert!(!global.ok);
+    assert!(
+        codes(&global).contains(&"GLOBAL_FILE_PROTECTED".to_string()),
+        "{:?}",
+        codes(&global)
+    );
+
+    // (b) Lockfile failure: still LOCKFILE_MANAGER_UNSUPPORTED.
+    let src2_dir = make_temp_dir("src-takelock");
+    let main2_dir = make_temp_dir("main-takelock");
+    let src2 = create_source_chain(&src2_dir);
+    init_repo(&main2_dir, "master");
+    write(&main2_dir, "package.json", BASE_MAIN_PKG.as_bytes());
+    write(&main2_dir, "bun.lockb", b"bun-binary-lockfile\n");
+    commit_all(&main2_dir, "main: bun baseline");
+    git_out(&main2_dir, &["branch", "staging"]);
+    git_out(&main2_dir, &["branch", "development"]);
+    let locked = promote(
+        &src2_dir,
+        &main2_dir,
+        &github,
+        &test_registry(),
+        PromoteOptions {
+            commits: vec![src2.c.clone()],
+            real_lockfile: true,
+            on_conflict: PromotionOnConflict::TakeSubsystem,
+            ..Default::default()
+        },
+    );
+    assert!(!locked.ok);
+    assert!(
+        codes(&locked).contains(&"LOCKFILE_MANAGER_UNSUPPORTED".to_string()),
+        "{:?}",
+        codes(&locked)
+    );
+
+    // (c) Secret + main-owned files: still skipped, never imported.
+    let src3_dir = make_temp_dir("src-takesecret");
+    let main3_dir = make_temp_dir("main-takesecret");
+    init_repo(&src3_dir, "master");
+    commit_files(
+        &src3_dir,
+        "A base",
+        &[
+            ("notes.txt", b"v1\n"),
+            ("package.json", b"{\"name\":\"x\"}\n"),
+        ],
+        &[],
+    );
+    let tip = commit_files(
+        &src3_dir,
+        "B notes plus guarded files",
+        &[
+            ("notes.txt", b"v2\n"),
+            (".env.local", b"SECRET=super-secret\n"),
+            (".github/workflows/x.yml", b"name: x\non: push\n"),
+        ],
+        &[],
+    );
+    let main3 = create_main_repo(&main3_dir, &[], &[("notes.txt", b"v1\n")]);
+    let guarded = promote(
+        &src3_dir,
+        &main3.dir,
+        &github,
+        &test_registry(),
+        PromoteOptions {
+            commits: vec![tip],
+            on_conflict: PromotionOnConflict::TakeSubsystem,
+            ..Default::default()
+        },
+    );
+    assert!(guarded.ok, "{:?}", guarded.blockers);
+    assert!(
+        guarded
+            .changes
+            .secret_excluded
+            .iter()
+            .any(|p| p == ".env.local"),
+        "secret stays excluded: {:?}",
+        guarded.changes
+    );
+    assert!(
+        guarded
+            .changes
+            .main_owned_skipped
+            .iter()
+            .any(|p| p == ".github/workflows/x.yml"),
+        "main-owned stays skipped: {:?}",
+        guarded.changes
+    );
+    let branch = guarded.integration_branch.clone().unwrap();
+    assert!(!try_branch_has(&main3.dir, &branch, ".env.local"));
+    assert!(!try_branch_has(
+        &main3.dir,
+        &branch,
+        ".github/workflows/x.yml"
+    ));
+    assert_eq!(branch_file_text(&main3.dir, &branch, "notes.txt"), "v2\n");
+}

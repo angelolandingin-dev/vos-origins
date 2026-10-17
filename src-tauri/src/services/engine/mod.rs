@@ -878,6 +878,28 @@ fn run_inner(
         }
         None => std::collections::HashMap::new(),
     };
+    // Shared overwrite-allowance (the SAME function the preflight calls):
+    // range membership widened by one batched selected-history probe, so a
+    // target holding the subsystem's own earlier content (a previous
+    // promotion outside the selected range) is behind-or-equal, not diverged.
+    // The fetched source objects live in this same checkout, so it is both
+    // the target repo and the source object DB here; the probe is scoped to
+    // the SELECTED ancestry (not the whole DB, which also holds target-only
+    // objects), so main-system-only content still refuses.
+    let history_tips: Vec<String> = ordered_selection
+        .iter()
+        .map(|(sha, _)| sha.clone())
+        .collect();
+    let overwrite_ok = crate::services::engine::blobset::overwrite_allowed(
+        &options.target_repo_dir,
+        &blob_sets,
+        &target_tree,
+        &apply_paths,
+        &history_tips,
+    );
+    // Paths a `take_subsystem` policy overwrites despite membership failure
+    // (reported as replaced + conflict-taken and trailered below).
+    let mut conflict_takeover: Vec<String> = Vec::new();
 
     // Map path -> newest selected toucher SHA (last in ancestry order whose
     // delta touches the path). Needed for gap content-awareness.
@@ -1130,13 +1152,10 @@ fn run_inner(
                 if !is_global_match(path, &global_files) {
                     continue;
                 }
-                let target_blob = target_tree.get(path).cloned();
-                let set = blob_sets.get(path);
-                let allowed = match set {
-                    Some(s) => s.contains(&target_blob),
-                    None => target_blob.is_none(),
-                };
-                if !allowed {
+                // Shared allowance (range membership OR source containment).
+                // Protected shell files stay refused regardless of policy:
+                // `take_subsystem` never rescues them.
+                if !overwrite_ok.get(path).copied().unwrap_or(false) {
                     violations.push(path.clone());
                 }
             }
@@ -1162,9 +1181,12 @@ fn run_inner(
     // --- Overwrite refusal by blob membership (§3) -------------------------
     // For each touched path: if the target-tip blob IS in that path's blob
     // set (or both sides are absent), the target is behind-or-equal — allow.
-    // Otherwise it has diverged — refuse. This REPLACES any timestamps /
-    // `ours != base` logic: dates determine display order only, never
-    // correctness — blob membership decides (addendum E3).
+    // Otherwise the shared allowance probes source containment: a target blob
+    // the subsystem itself produced (a previous promotion outside this
+    // selection) is still behind-or-equal — allow. Anything else has diverged
+    // — refuse. This REPLACES any timestamps / `ours != base` logic: dates
+    // determine display order only, never correctness — blob membership
+    // decides (addendum E3).
     {
         let mut diverged: Vec<(String, String, Option<String>)> = Vec::new();
         for path in &apply_paths {
@@ -1173,12 +1195,22 @@ fn run_inner(
             if is_global_match(path, &global_files) {
                 continue;
             }
-            let target_blob = target_tree.get(path).cloned();
-            let allowed = match blob_sets.get(path) {
-                Some(set) => set.contains(&target_blob),
-                None => target_blob.is_none(),
-            };
-            if !allowed {
+            // Shared allowance (range membership OR source containment).
+            if overwrite_ok.get(path).copied().unwrap_or(false) {
+                continue;
+            }
+            // `take_subsystem` overwrites the diverged path with the
+            // subsystem's copy instead of refusing: the copy below writes it,
+            // and it is reported as replaced + conflict-taken and recorded in
+            // the commit trailers. Every other guard (unsafe, secret,
+            // main-owned, global, dependency, lockfile, gaps) stays hard.
+            if request.on_conflict == PromotionOnConflict::TakeSubsystem {
+                if !conflict_takeover.contains(path) {
+                    conflict_takeover.push(path.clone());
+                }
+                continue;
+            }
+            {
                 let (sha_opt, subject, subsys) =
                     target_last_changer(&options.target_repo_dir, &target_tip, path);
                 diverged.push((path.clone(), subject, subsys.clone().or(sha_opt.clone())));
@@ -1230,7 +1262,7 @@ fn run_inner(
             report.blockers.push(Blocker::new(
                 "TARGET_DIVERGED",
                 format!(
-                    "Target has diverged on {}: {}. The target copy is not in the source blob set (it matches no version from the oldest selected base through the selected tip), so overwriting would discard independent work. Remedies: adapt the file upstream in the subsystem and re-promote; or exclude the path via excludedPaths and re-promote.",
+                    "Target has diverged on {}: {}. The target copy is not in the source blob set and its bytes exist nowhere in the source repository, so overwriting would discard independent work. Remedies: adapt the file upstream in the subsystem and re-promote; exclude the path via excludedPaths and re-promote; or re-run with onConflict take_subsystem to overwrite it with the subsystem's version (records Promotion-Conflicts + Promotion-Override trailers).",
                     paths,
                     parts.join("; ")
                 ),
@@ -1369,6 +1401,14 @@ fn run_inner(
         }
     }
 
+    // `take_subsystem` takeovers: the membership refusal was skipped above so
+    // the copy overwrote these with the subsystem's version. Report them as
+    // subsystem-won (the warning below fires on this same list).
+    conflict_takeover.sort();
+    report
+        .changes
+        .conflict_taken
+        .extend(conflict_takeover.iter().cloned());
     report.changes.conflict_taken.sort();
     report.changes.conflict_taken.dedup();
     if !report.changes.conflict_taken.is_empty() {
@@ -1403,6 +1443,14 @@ fn run_inner(
         report.changes.replaced.dedup();
         // `replaced` mirrors `updated` (overwrites) for the canonical list.
         for p in report.changes.updated.iter() {
+            if !report.changes.replaced.contains(p) {
+                report.changes.replaced.push(p.clone());
+            }
+        }
+        // Takeover paths the apply did not record as `updated` (e.g. the
+        // target was absent so the copy reported an add) are still
+        // force-overwrites under the active policy: list them as replaced.
+        for p in conflict_takeover.iter() {
             if !report.changes.replaced.contains(p) {
                 report.changes.replaced.push(p.clone());
             }
@@ -1650,7 +1698,7 @@ fn run_inner(
         return Ok(());
     }
 
-    let message = provenance::build_provenance_message(&provenance::ProvenanceInput {
+    let mut message = provenance::build_provenance_message(&provenance::ProvenanceInput {
         subsystem_id: &subsystem.id,
         source_repo: &subsystem.repository,
         source_commits: &request.commits,
@@ -1660,6 +1708,20 @@ fn run_inner(
         gap_shas: &gap_override_shas,
         gap_override: request.allow_gaps,
     });
+    // `take_subsystem` override record, mirroring the gap pattern so the audit
+    // survives a squash: which paths were force-overwritten plus the shared
+    // override flag, appended inside the trailing trailer block. (The
+    // `Promotion-Conflicts` key is new to this message writer; older trailer
+    // parsers ignore unknown keys, but the line stays in the raw message.)
+    if !conflict_takeover.is_empty() {
+        message.push_str(&format!(
+            "Promotion-Conflicts: {}\n",
+            conflict_takeover.join(", ")
+        ));
+        if !message.contains("Promotion-Override: true") {
+            message.push_str("Promotion-Override: true\n");
+        }
+    }
     report.provenance_message = Some(message.clone());
     let message_file = options
         .temp_root

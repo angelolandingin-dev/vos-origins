@@ -131,6 +131,119 @@ pub fn collect_blob_set(
         .unwrap_or_default()
 }
 
+/// Blobs reachable from `tips`' ancestry, in ONE `git rev-list --objects`
+/// spawn over all tips (never one spawn per blob — the crate already paid for
+/// the per-path-spawn lesson).
+///
+/// Why reachability, not mere existence: after the fetch the engine's
+/// checkout holds BOTH source and target objects, so `cat-file -e` on a
+/// target-tip blob is trivially true and can never discriminate the
+/// subsystem's own content from main-system-only content. Reachability from
+/// the selected ancestry can: an earlier subsystem version (a previous
+/// promotion outside the selected range) is an ancestor of the selection,
+/// while main-system-only bytes committed on the target branch are not.
+///
+/// Fail-closed: any spawn failure or non-zero exit yields the empty set, so
+/// every caller falls back to the range-only refusal standing. Empty tips
+/// cost zero spawns.
+pub fn blobs_in_selected_history(repo_dir: &Path, tips: &[String]) -> HashSet<String> {
+    let mut found = HashSet::new();
+    let mut uniq: Vec<&str> = Vec::with_capacity(tips.len());
+    for tip in tips {
+        if tip.is_empty() || uniq.contains(&tip.as_str()) {
+            continue;
+        }
+        uniq.push(tip.as_str());
+    }
+    if uniq.is_empty() {
+        return found;
+    }
+    let mut args: Vec<&str> = Vec::with_capacity(uniq.len() + 2);
+    args.push("rev-list");
+    args.push("--objects");
+    args.extend(uniq);
+    let Ok(out) = git::run(repo_dir, &args) else {
+        return found;
+    };
+    if out.status != 0 {
+        return found;
+    }
+    for line in out.stdout_str().lines() {
+        if let Some(sha) = line.split_whitespace().next() {
+            if !sha.is_empty() {
+                found.insert(sha.to_string());
+            }
+        }
+    }
+    found
+}
+
+/// Overwrite-allowance for MANY paths sharing ONE history spawn.
+///
+/// `true` when the target copy is safe to overwrite — either it is
+/// behind-or-equal by range membership (the target blob is in the path's blob
+/// set, with `None` meaning absent on both sides), OR the target blob is
+/// reachable from the SELECTED ancestry (`history_tips`, usually the selected
+/// commit SHAs), meaning the subsystem itself produced those bytes (typically
+/// an earlier promotion outside the selected range) and overwriting loses
+/// nothing that only the main system had.
+///
+/// This predicate is deliberately PATH-AGNOSTIC: identical content appearing
+/// elsewhere in the source still means the bytes are not unique to the main
+/// system, and the overwritten content remains in git history regardless. A
+/// blob reachable from NO selected tip is main-system-only content and stays
+/// refused — that is the case this refusal exists to protect.
+///
+/// Both the engine (`mod.rs`: global guard + overwrite refusal) and the
+/// preflight (`preflight.rs`: same two guards) call THIS function, so preview
+/// and apply cannot drift — the same sharing that kept the last defect in
+/// this area fixed.
+///
+/// Spawn cost: exactly one `rev-list --objects` when at least one path needs
+/// the history probe, zero otherwise (range-allowed and absent-target paths
+/// never spawn).
+pub fn overwrite_allowed(
+    repo_dir: &Path,
+    blob_sets: &HashMap<String, HashSet<Option<String>>>,
+    target_tree: &HashMap<String, String>,
+    paths: &[String],
+    history_tips: &[String],
+) -> HashMap<String, bool> {
+    let mut out: HashMap<String, bool> = HashMap::with_capacity(paths.len());
+    // Target blob -> paths waiting on the history probe.
+    let mut pending: HashMap<String, Vec<String>> = HashMap::new();
+    for path in paths {
+        let target_blob: Option<String> = target_tree.get(path).cloned();
+        let range_ok = match blob_sets.get(path) {
+            Some(set) => set.contains(&target_blob),
+            None => target_blob.is_none(),
+        };
+        if range_ok {
+            out.insert(path.clone(), true);
+            continue;
+        }
+        match target_blob {
+            Some(blob) => {
+                pending.entry(blob).or_default().push(path.clone());
+            }
+            None => {
+                out.insert(path.clone(), false);
+            }
+        }
+    }
+    if pending.is_empty() {
+        return out;
+    }
+    let history = blobs_in_selected_history(repo_dir, history_tips);
+    for (blob, owners) in &pending {
+        let ok = history.contains(blob);
+        for path in owners {
+            out.insert(path.clone(), ok);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +415,151 @@ mod tests {
         assert!(!skipped_ships_through(&repo, &c, &b));
         // Self is never smuggling.
         assert!(!skipped_ships_through(&repo, &c, &c));
+    }
+
+    #[test]
+    fn earlier_promoted_blob_is_subsystem_content_path_agnostic() {
+        // The regression: the target holds C1's version of a path while the
+        // selection is [C5]. Range membership alone refuses; containment in
+        // the source object DB must allow — even when the same bytes only
+        // appear under a DIFFERENT path (path-agnostic by design).
+        let repo = tmp("contain");
+        init(&repo);
+        write(&repo, "shared.txt", "v0\n");
+        write(&repo, "elsewhere.txt", "unrelated-bytes\n");
+        let _a = commit(&repo, "A base");
+        write(&repo, "shared.txt", "v1\n");
+        let c1 = commit(&repo, "C1 selective");
+        write(&repo, "shared.txt", "v4\n");
+        let c4 = commit(&repo, "C4 selective");
+        write(&repo, "shared.txt", "v5\n");
+        let c5 = commit(&repo, "C5 edit");
+        let parent_c5 = git(&repo, &["rev-parse", &format!("{c5}^")]);
+        assert_eq!(parent_c5, c4, "C4 must be the parent of C5");
+        let ordered = vec![(c5.clone(), Some(parent_c5))];
+        let paths = vec!["shared.txt".to_string()];
+        let sets = collect_blob_sets(&repo, &ordered, &paths);
+        // Target tree holding v1 (the subsystem's own earlier content,
+        // outside the [C5] range whose set is {v4, v5}).
+        let v1_blob = blob_id(&repo, &c1, "shared.txt").expect("v1 blob");
+        // Sanity: v1 is NOT in the [C5] range set…
+        assert!(
+            !sets["shared.txt"].contains(&Some(v1_blob.clone())),
+            "v1 must be outside the selected range: {:?}",
+            sets["shared.txt"]
+        );
+        // …but containment allows it: the bytes are subsystem content.
+        let mut target_at_v1: HashMap<String, String> = HashMap::new();
+        target_at_v1.insert("shared.txt".to_string(), v1_blob);
+        let allowed = overwrite_allowed(
+            &repo,
+            &sets,
+            &target_at_v1,
+            &paths,
+            std::slice::from_ref(&c5),
+        );
+        assert_eq!(allowed.get("shared.txt"), Some(&true));
+        // Path-agnostic: bytes that exist in the source ONLY under a different
+        // path are still subsystem content, never main-system-only content.
+        let x_blob = blob_id(&repo, "HEAD", "elsewhere.txt").expect("x blob");
+        assert!(
+            !sets["shared.txt"].contains(&Some(x_blob.clone())),
+            "x must be outside the range set too: {:?}",
+            sets["shared.txt"]
+        );
+        let mut target_at_x: HashMap<String, String> = HashMap::new();
+        target_at_x.insert("shared.txt".to_string(), x_blob);
+        let allowed = overwrite_allowed(
+            &repo,
+            &sets,
+            &target_at_x,
+            &paths,
+            std::slice::from_ref(&c5),
+        );
+        assert_eq!(allowed.get("shared.txt"), Some(&true));
+    }
+
+    #[test]
+    fn main_only_blob_absent_from_source_stays_refused() {
+        let repo = tmp("mainonly");
+        init(&repo);
+        write(&repo, "app.txt", "v1\n");
+        let _a = commit(&repo, "A base");
+        write(&repo, "app.txt", "v2\n");
+        let b = commit(&repo, "B edit");
+        let parent_b = git(&repo, &["rev-parse", &format!("{b}^")]);
+        let ordered = vec![(b.clone(), Some(parent_b))];
+        let paths = vec!["app.txt".to_string()];
+        let sets = collect_blob_sets(&repo, &ordered, &paths);
+        // A blob the source never produced (main-system-only content).
+        let mut target_tree: HashMap<String, String> = HashMap::new();
+        target_tree.insert(
+            "app.txt".to_string(),
+            "0123456789abcdef0123456789abcdef01234567".to_string(),
+        );
+        let allowed =
+            overwrite_allowed(&repo, &sets, &target_tree, &paths, std::slice::from_ref(&b));
+        assert_eq!(allowed.get("app.txt"), Some(&false));
+    }
+
+    #[test]
+    fn containment_check_costs_one_batched_spawn_regardless_of_path_count() {
+        let repo = tmp("spawnbound");
+        init(&repo);
+        // 12 paths, each at v1.
+        let mut paths: Vec<String> = Vec::new();
+        for i in 0..12 {
+            let name = format!("f{i}.txt");
+            write(&repo, &name, "v1\n");
+            paths.push(name);
+        }
+        let _a = commit(&repo, "A base");
+        for i in 0..12 {
+            write(&repo, &format!("f{i}.txt"), "v2\n");
+        }
+        let b = commit(&repo, "B edit all");
+        for i in 0..12 {
+            write(&repo, &format!("f{i}.txt"), "v3\n");
+        }
+        let c = commit(&repo, "C edit all");
+        // Select [B] only: the range set is {v1, v2} while the target holds
+        // v3 — subsystem content outside the range, so every path needs the
+        // history probe (scoped to a tip whose ancestry contains v3).
+        let parent_b = git(&repo, &["rev-parse", &format!("{b}^")]);
+        let ordered = vec![(b.clone(), Some(parent_b))];
+        let sets = collect_blob_sets(&repo, &ordered, &paths);
+        for p in &paths {
+            let v3 = blob_id(&repo, "HEAD", p).expect("v3 blob");
+            assert!(
+                !sets[p].contains(&Some(v3)),
+                "v3 must be outside the [B] range set"
+            );
+        }
+        let target_at_v3 = tree_blob_map(&repo, "HEAD");
+        let before = super::git::git_spawns_for_tests(&repo);
+        let allowed = overwrite_allowed(
+            &repo,
+            &sets,
+            &target_at_v3,
+            &paths,
+            std::slice::from_ref(&c),
+        );
+        let after = super::git::git_spawns_for_tests(&repo);
+        assert_eq!(
+            after - before,
+            1,
+            "12 history probes must cost one batched spawn, not one per path"
+        );
+        assert!(
+            allowed.values().all(|v| *v),
+            "every v3 blob is subsystem content: {allowed:?}"
+        );
+        // No candidates at all costs zero spawns.
+        let tip_tree = tree_blob_map(&repo, &b);
+        let before = super::git::git_spawns_for_tests(&repo);
+        let allowed = overwrite_allowed(&repo, &sets, &tip_tree, &paths, std::slice::from_ref(&b));
+        let after = super::git::git_spawns_for_tests(&repo);
+        assert_eq!(after - before, 0, "range-allowed paths must not spawn");
+        assert!(allowed.values().all(|v| *v));
     }
 }

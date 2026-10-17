@@ -3,7 +3,7 @@
 use tauri::State;
 
 use crate::error::{AppError, AppResult, ErrorCode};
-use crate::github::models::{IntegrationHistory, IntegrationPr};
+use crate::github::models::{IntegrationEventAudit, IntegrationHistory, IntegrationPr};
 use crate::services::engine::github_ops::RealGitHubOps;
 use crate::services::live_read;
 use crate::AppState;
@@ -31,6 +31,15 @@ pub(crate) fn history_cache_key(
         target_branch.unwrap_or("<default>"),
         subsystem_id.unwrap_or("<all>")
     )
+}
+
+pub(crate) fn event_audit_cache_key(
+    mode: &str,
+    target_branch: &str,
+    subsystem_id: &str,
+    main_commit_sha: &str,
+) -> String {
+    format!("{mode}::event-audit::{target_branch}::{subsystem_id}::{main_commit_sha}")
 }
 
 #[tauri::command]
@@ -97,6 +106,58 @@ pub async fn list_integration_history(
             target_branch.as_deref(),
             subsystem_id.as_deref(),
             capped,
+        )
+    })
+}
+
+/// One integration event re-derived from git: the main commit is the natural
+/// key and every field is resolved server-side, never trusted from the
+/// frontend. A repeated click hits the response cache; the first call shares
+/// the tip-keyed history replay with the list.
+#[tauri::command]
+pub async fn get_integration_event(
+    state: State<'_, AppState>,
+    target_branch: String,
+    subsystem_id: String,
+    main_commit_sha: String,
+) -> AppResult<IntegrationEventAudit> {
+    let key = event_audit_cache_key(
+        if live_read::use_fixtures() {
+            "fixture"
+        } else {
+            "live"
+        },
+        &target_branch,
+        &subsystem_id,
+        &main_commit_sha,
+    );
+    cached_json(&state, &key, || {
+        if live_read::use_fixtures() {
+            return read_world(&state, |world| {
+                state.adapter.integration_event_audit(
+                    world,
+                    &target_branch,
+                    &subsystem_id,
+                    &main_commit_sha,
+                )
+            });
+        }
+        let registry = live_read::load_live_registry()?;
+        let token = live_token()?;
+        let (target_dir, _) = live_read::resolve_target_checkout(
+            &registry.main_repository,
+            registry.local_main_repository_path.as_deref(),
+            Some(&token),
+        )?;
+        // Already-cached source checkout only: never clones here.
+        let source_dir = live_read::cached_source_dir(&registry, &subsystem_id)?;
+        live_read::integration_event_audit_live(
+            &target_dir,
+            source_dir.as_deref(),
+            &registry,
+            &target_branch,
+            &subsystem_id,
+            &main_commit_sha,
         )
     })
 }
