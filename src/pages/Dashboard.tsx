@@ -164,7 +164,7 @@ export function Dashboard() {
                 size="sm"
                 variant="secondary"
                 icon={Plus}
-                onClick={() => app.navigate('subsystems')}
+                onClick={() => app.navigate('settings')}
               >
                 Register
               </Button>
@@ -207,7 +207,7 @@ export function Dashboard() {
                           type="button"
                           onClick={() => {
                             app.selectSubsystem(entry.subsystem.id);
-                            app.navigate('subsystems');
+                            app.navigate('commit-browser');
                           }}
                           className="block min-w-0 text-left text-fg hover:underline"
                         >

@@ -7,7 +7,6 @@ import { Dashboard } from '../pages/Dashboard';
 import { IntegrationHistory } from '../pages/IntegrationHistory';
 import { PromoteCommits } from '../pages/PromoteCommits';
 import { Settings } from '../pages/Settings';
-import { Subsystems } from '../pages/Subsystems';
 import { WorkflowRuns } from '../pages/WorkflowRuns';
 import { useApp } from './context';
 
@@ -55,7 +54,6 @@ export default function App() {
         onDismissNotice={app.dismissNotice}
       >
         {route === 'dashboard' ? <Dashboard /> : null}
-        {route === 'subsystems' ? <Subsystems /> : null}
         {route === 'commit-browser' ? <CommitBrowser /> : null}
         {route === 'promote-commits' ? <PromoteCommits /> : null}
         {route === 'workflow-runs' ? <WorkflowRuns /> : null}

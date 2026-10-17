@@ -26,7 +26,7 @@ type PromotionInternal = Omit<
 >;
 
 export function AppDataProvider({ children }: { children: ReactNode }) {
-  const [route, setRoute] = useState<Route>('subsystems');
+  const [route, setRoute] = useState<Route>('commit-browser');
   const [dataVersion, setDataVersion] = useState(0);
   const [selectedSubsystemIdSetting, setSelectedSubsystemId] = useState<string | null>(null);
   const [targetBranchSetting, setTargetBranch] = useState(DEFAULT_TARGET_BRANCH);

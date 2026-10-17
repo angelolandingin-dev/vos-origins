@@ -32,10 +32,10 @@ export function PromoteCommits() {
         <EmptyState
           icon={GitPullRequestArrow}
           title="Select a subsystem first"
-          message="Open Subsystems or the Commit Browser and pick the subsystem whose commits you want to promote."
+          message="Open the Commit Browser and pick the subsystem whose commits you want to promote."
           action={
-            <Button variant="primary" onClick={() => app.navigate('subsystems')}>
-              Open Subsystems
+            <Button variant="primary" onClick={() => app.navigate('commit-browser')}>
+              Open Commit Browser
             </Button>
           }
         />

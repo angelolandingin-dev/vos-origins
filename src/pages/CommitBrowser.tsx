@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { GitBranch, RefreshCw } from 'lucide-react';
 
+import { api, asApiError } from '../api/invoke';
 import { useApp } from '../app/context';
 import { CommitWorkspace } from '../components/CommitWorkspace';
 import { SubsystemFilterList } from '../components/SubsystemFilterList';
@@ -8,8 +10,31 @@ import { Button, EmptyState, LoadingState, Select } from '../components/ui/primi
 /** Commit Browser (spec §3.3): commit-focused framing of the shared workspace. */
 export function CommitBrowser() {
   const app = useApp();
+  const [pulling, setPulling] = useState(false);
   const subsystems = app.subsystems.data ?? [];
   const branches = (app.targetBranches.data?.branches ?? []).filter((branch) => branch.allowed);
+
+  const pullLatest = () => {
+    setPulling(true);
+    void api
+      .refreshCheckouts(app.selectedSubsystemId)
+      .then((result) => {
+        app.pushNotice({
+          tone: result.failed.length > 0 ? 'warning' : 'success',
+          title: 'Repositories refreshed',
+          message: result.message,
+        });
+        app.bumpDataVersion();
+      })
+      .catch((error: unknown) => {
+        app.pushNotice({
+          tone: 'danger',
+          title: 'Refresh failed',
+          message: asApiError(error).message,
+        });
+      })
+      .finally(() => setPulling(false));
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -39,6 +64,15 @@ export function CommitBrowser() {
           >
             Refresh
           </Button>
+          <Button
+            variant="secondary"
+            icon={RefreshCw}
+            disabled={pulling}
+            onClick={pullLatest}
+            title="Fetch the cached checkouts"
+          >
+            {pulling ? 'Pulling…' : 'Pull latest'}
+          </Button>
         </div>
       </header>
 
@@ -65,7 +99,7 @@ export function CommitBrowser() {
             <EmptyState
               icon={GitBranch}
               title="No registered subsystem"
-              message="Register a subsystem on the Subsystems screen, then refresh to browse its commit history."
+              message="Register a subsystem in Settings → Main system registry, then refresh to browse its commit history."
             />
           ) : (
             <CommitWorkspace />

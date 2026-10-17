@@ -1,7 +1,6 @@
 /** Every screen required by the spec (section 3.3). */
 export type Route =
   | 'dashboard'
-  | 'subsystems'
   | 'commit-browser'
   | 'promote-commits'
   | 'workflow-runs'
@@ -20,11 +19,6 @@ export const NAV_ITEMS: NavItem[] = [
     id: 'dashboard',
     label: 'Dashboard',
     description: 'Status by branch and recent runs',
-  },
-  {
-    id: 'subsystems',
-    label: 'Subsystems',
-    description: 'Registry and subsystem detail',
   },
   {
     id: 'commit-browser',
@@ -57,10 +51,6 @@ export const ROUTE_META: Record<Route, { title: string; subtitle: string }> = {
   dashboard: {
     title: 'Dashboard',
     subtitle: 'Status by branch and recent runs',
-  },
-  subsystems: {
-    title: 'Subsystems',
-    subtitle: 'Registry and subsystem detail',
   },
   'commit-browser': {
     title: 'Commit Browser',
