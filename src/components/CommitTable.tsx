@@ -70,8 +70,9 @@ export interface CommitTableProps {
   selectedShas?: string[];
   onToggleSha?: (sha: string) => void;
   onSelectShas?: (shas: string[]) => void;
-  focusedSha: string | null;
-  onFocusSha: (sha: string) => void;
+  /** Row selection for the details rail; omitted where a click leads nowhere. */
+  focusedSha?: string | null;
+  onFocusSha?: (sha: string) => void;
   onPromoteSelected?: () => void;
   onClearSelection?: () => void;
   /** Details-rail toggle; omitted where there is no rail to toggle. */
@@ -321,9 +322,10 @@ export function CommitTable({
                 return (
                   <tr
                     key={commit.sha}
-                    onClick={() => onFocusSha(commit.sha)}
+                    onClick={onFocusSha ? () => onFocusSha(commit.sha) : undefined}
                     className={cx(
-                      'row-hover h-[50px] cursor-pointer border-b border-line',
+                      'row-hover h-[50px] border-b border-line',
+                      onFocusSha && 'cursor-pointer',
                       (focused || selected) && 'bg-selection',
                     )}
                   >
