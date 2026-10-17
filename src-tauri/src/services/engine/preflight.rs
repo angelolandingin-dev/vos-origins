@@ -578,14 +578,13 @@ fn is_global_match(path: &str, global_files: &[String]) -> bool {
 /// three-way would have called `Merged` now report `Clean` (will be replaced)
 /// when blob membership allows, else `Conflict` (would refuse). Dates never
 /// decide — blob membership does (addendum E3).
+/// Tip of the target branch the preflight evaluates against: the shared branch
+/// resolver (local ref, then bare name, then ANY remote-tracking ref — see
+/// [`git::resolve_branch_ref`]) resolved to a commit SHA, so the preview and
+/// the engine agree on the same tip object.
 fn resolve_target_tip(target_dir: &Path, branch: &str) -> Option<String> {
-    [
-        format!("refs/heads/{branch}"),
-        format!("refs/remotes/origin/{branch}"),
-        branch.to_string(),
-    ]
-    .into_iter()
-    .find_map(|candidate| git::rev_parse(target_dir, &candidate))
+    git::resolve_branch_ref(target_dir, branch)
+        .and_then(|reference| git::rev_parse(target_dir, &reference))
 }
 
 #[cfg(test)]
@@ -1320,5 +1319,61 @@ mod tests {
             "a behind target needs no overwrite record: {report:?}"
         );
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// The preflight tip resolver must agree with the engine: a branch that
+    /// exists only as a non-`origin` remote-tracking ref resolves, so the
+    /// preview is computed against the same tip the promotion would use.
+    #[test]
+    fn resolve_target_tip_accepts_a_branch_only_on_a_non_origin_remote() {
+        let root = tmp("non-origin-tip");
+        let upstream = root.join("upstream");
+        let clone = root.join("clone");
+        init(&upstream);
+        write(&upstream, "base.txt", "base\n");
+        let _ = commit_all(&upstream, "base");
+        git(&upstream, &["branch", "UAT"]);
+        let uat = git(&upstream, &["rev-parse", "UAT"]);
+
+        // A fork: `origin` carries only `master`; the second remote carries
+        // `UAT`.
+        git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                "--single-branch",
+                "--branch",
+                "master",
+                upstream.to_str().expect("utf8"),
+                clone.to_str().expect("utf8"),
+            ],
+        );
+        git(
+            &clone,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                upstream.to_str().expect("utf8"),
+            ],
+        );
+        git(&clone, &["fetch", "-q", "upstream"]);
+
+        assert!(
+            git::rev_parse(&clone, "refs/remotes/upstream/UAT").is_some(),
+            "precondition: UAT exists only as a remote-tracking ref on upstream"
+        );
+        assert!(
+            git::rev_parse(&clone, "refs/remotes/origin/UAT").is_none(),
+            "precondition: origin does not carry UAT"
+        );
+        assert_eq!(
+            resolve_target_tip(&clone, "UAT"),
+            Some(uat),
+            "the preflight tip must resolve a branch on a non-origin remote"
+        );
+        assert_eq!(resolve_target_tip(&clone, "does-not-exist"), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

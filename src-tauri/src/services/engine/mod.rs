@@ -1717,17 +1717,18 @@ pub fn integration_branch_name(
 /// reported as replaced). Dates determine display order only, never
 /// correctness (addendum E3). The function is deleted, not deprecated, so no
 /// caller can accidentally consult timestamps.
+///
+/// Pinned tip of the promotion target: the shared branch resolver (local ref,
+/// then bare name, then ANY remote-tracking ref — see
+/// [`git::resolve_branch_ref`]) resolved to a commit SHA.
+///
+/// Returns a SHA, not a ref name, exactly as before: the tip is pinned for the
+/// whole run (`report.start_point`, the worktree base, the ancestry check) and
+/// `local_direct` compares it against `git::local_tip` and hands it to
+/// `update-ref` as the expected old value, so it must be a stable object name.
 fn resolve_local_ref(repo_dir: &Path, branch: &str) -> Option<String> {
-    for candidate in [
-        format!("refs/heads/{branch}"),
-        format!("refs/remotes/origin/{branch}"),
-        branch.to_string(),
-    ] {
-        if let Some(sha) = git::rev_parse(repo_dir, &candidate) {
-            return Some(sha);
-        }
-    }
-    None
+    git::resolve_branch_ref(repo_dir, branch)
+        .and_then(|reference| git::rev_parse(repo_dir, &reference))
 }
 
 /// Manifest/lockfile paths the engine may rewrite outside the copied delta
@@ -2457,5 +2458,103 @@ mod tests {
         );
         assert_ne!(err.code, "ENGINE_ERROR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The promotion-path resolver must accept a branch that exists ONLY as a
+    /// non-`origin` remote-tracking ref: a fork clone keeps the real branch on
+    /// `upstream`, and the old three-form pattern (`refs/heads/`,
+    /// `refs/remotes/origin/`, bare) reported it missing — so the promotion was
+    /// refused with `TARGET_NOT_LOCAL`. A real second remote is set up so the
+    /// test proves the glob resolves it, not a hand-made ref.
+    #[test]
+    fn promotion_resolver_accepts_a_branch_only_on_a_non_origin_remote() {
+        use std::process::Command;
+
+        let root = std::env::temp_dir().join(format!(
+            "vos-promote-ref-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let upstream = root.join("upstream");
+        let clone = root.join("clone");
+        let git = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("spawn git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        std::fs::create_dir_all(&upstream).expect("mkdir upstream");
+        git(&upstream, &["init", "-q", "-b", "master"]);
+        git(
+            &upstream,
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+        );
+        git(&upstream, &["branch", "UAT"]);
+        let uat_sha = git(&upstream, &["rev-parse", "UAT"]);
+
+        // A fork: `origin` carries only `master`; the second remote carries
+        // `UAT`, which lands under `refs/remotes/upstream/`.
+        git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                "--single-branch",
+                "--branch",
+                "master",
+                upstream.to_str().expect("utf8"),
+                clone.to_str().expect("utf8"),
+            ],
+        );
+        git(
+            &clone,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                upstream.to_str().expect("utf8"),
+            ],
+        );
+        git(&clone, &["fetch", "-q", "upstream"]);
+
+        assert!(
+            git::rev_parse(&clone, "refs/remotes/upstream/UAT").is_some(),
+            "precondition: UAT exists only as a remote-tracking ref on upstream"
+        );
+        assert!(
+            git::rev_parse(&clone, "refs/remotes/origin/UAT").is_none(),
+            "precondition: origin does not carry UAT"
+        );
+        assert_eq!(
+            resolve_local_ref(&clone, "UAT"),
+            Some(uat_sha),
+            "the promotion path must accept a branch that lives only on a non-origin remote"
+        );
+        // A local branch is still preferred, and an absent branch still misses.
+        let master_sha = git(&clone, &["rev-parse", "refs/heads/master"]);
+        assert_eq!(resolve_local_ref(&clone, "master"), Some(master_sha));
+        assert_eq!(resolve_local_ref(&clone, "does-not-exist"), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -379,13 +379,17 @@ struct StatusEnrichment {
 }
 
 fn status_enrichment_for(repo_dir: &Path, queried_branch: &str) -> StatusEnrichment {
-    let remote_ref = format!("refs/remotes/origin/{queried_branch}");
     let local_ref = format!("refs/heads/{queried_branch}");
     let primary = history::resolve_ref(repo_dir, queried_branch)
         .map(|reference| history::cached_replay(repo_dir, &reference))
         .unwrap_or_default();
     StatusEnrichment {
-        remote: history::cached_replay_if_resolvable(repo_dir, &remote_ref),
+        // The remote-tracking ref is RESOLVED (any remote), never hardcoded to
+        // `origin`: a fork clone keeps the branch on a non-`origin` remote, and
+        // a hardcoded origin ref would report a reachable integration as
+        // `Unknown (stale)` instead of `Integrated`.
+        remote: git::remote_tracking_ref(repo_dir, queried_branch)
+            .and_then(|reference| history::cached_replay_if_resolvable(repo_dir, &reference)),
         local: history::cached_replay_if_resolvable(repo_dir, &local_ref),
         primary,
     }
@@ -520,7 +524,8 @@ fn branch_result_to_status_with(
             };
             let mut label_override: Option<String> = None;
             // Remote-tracking resolution (§8, G4): Integrated iff reachable
-            // from refs/remotes/origin/<branch>; local-only iff reachable from
+            // from the RESOLVED remote-tracking ref (any remote, never a
+            // hardcoded `origin`); local-only iff reachable from
             // refs/heads/<branch> alone; stale when the remote ref can't be
             // read. Additive: kind stays Integrated for local-only (label
             // carries the qualifier); stale without local proof is Unknown.
@@ -554,7 +559,7 @@ fn branch_result_to_status_with(
                             label: "Unknown (stale)".to_string(),
                             target_branch: queried_branch.to_string(),
                             detail: Some(format!(
-                                "Unknown (stale, as of {}): the remote-tracking ref 'refs/remotes/origin/{queried_branch}' cannot be read and the commit is not reachable locally. A squash-merge strips trailers, so absence proves nothing — needs verification, never Eligible.",
+                                "Unknown (stale, as of {}): no remote-tracking ref for '{queried_branch}' can be read and the commit is not reachable locally. A squash-merge strips trailers, so absence proves nothing — needs verification, never Eligible.",
                                 fetch_time_str(repo_dir),
                             )),
                             evidence,
@@ -3422,6 +3427,52 @@ mod tests {
         // directly (remote unreadable → stale string contains time).
         let stale = fetch_time_str(&main);
         assert!(!stale.is_empty());
+    }
+
+    /// The status qualification must ask "is this commit on a remote?" against
+    /// the RESOLVED remote-tracking ref, not a hardcoded `origin`: a fork clone
+    /// keeps the branch on `upstream`, so an integration reachable only from
+    /// `refs/remotes/upstream/<branch>` must report plain `Integrated`, never
+    /// `Unknown (stale)`.
+    #[test]
+    fn integration_on_a_non_origin_remote_reports_integrated_not_stale() {
+        let (_src, main, _a, b, registry) = sandbox_status();
+        // Move `staging` out of the local refs into a non-origin
+        // remote-tracking ref, exactly like a fork clone whose real branch
+        // lives on `upstream`, and leave no `origin` ref behind.
+        git(
+            &main,
+            &[
+                "update-ref",
+                "refs/remotes/upstream/staging",
+                "refs/heads/staging",
+            ],
+        );
+        git(&main, &["branch", "-D", "staging"]);
+        assert!(git::rev_parse(&main, "refs/heads/staging").is_none());
+        assert!(git::rev_parse(&main, "refs/remotes/origin/staging").is_none());
+        assert!(git::rev_parse(&main, "refs/remotes/upstream/staging").is_some());
+
+        let empty = StubGitHubOps::new();
+        let statuses = integration_statuses_live(
+            &main,
+            &registry,
+            &empty,
+            "staging",
+            Some("hr-management"),
+            std::slice::from_ref(&b),
+        )
+        .expect("a branch on a non-origin remote must resolve, not error");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(
+            statuses[0].status.kind,
+            CommitStatusKind::Integrated,
+            "reachable from a non-origin remote-tracking ref must stay Integrated"
+        );
+        assert_eq!(
+            statuses[0].status.label, "Integrated",
+            "on a remote ⇒ plain Integrated, never Unknown (stale)"
+        );
     }
 
     /// A: claimed Integrated without trailers → Unknown, never Eligible.

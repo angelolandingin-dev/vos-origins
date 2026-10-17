@@ -428,9 +428,15 @@ pub fn resolve_branch_ref(repo_dir: &Path, branch: &str) -> Option<String> {
 }
 
 /// First `refs/remotes/<remote>/<branch>` that exists, resolved in ONE
-/// `for-each-ref` call (git expands the `*` glob). Remotes are never
-/// enumerated in Rust; this runs only after the cheap local checks fail.
-fn remote_tracking_ref(repo_dir: &Path, branch: &str) -> Option<String> {
+/// `for-each-ref` call (git expands the `*` glob; refnames come back sorted,
+/// so the pick is deterministic). Remotes are never enumerated in Rust.
+///
+/// [`resolve_branch_ref`] calls this only after the cheap local checks fail.
+/// The status qualification calls it directly to ask "is this branch on a
+/// remote?" without hardcoding `origin` — a fork clone keeps the branch on a
+/// non-`origin` remote, and a hardcoded origin ref would report a reachable
+/// integration as stale.
+pub fn remote_tracking_ref(repo_dir: &Path, branch: &str) -> Option<String> {
     let pattern = format!("refs/remotes/*/{branch}");
     let out = run(
         repo_dir,
