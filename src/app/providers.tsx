@@ -436,6 +436,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       auth,
       subsystems,
       targetBranches,
+      setTargetBranch,
       dataVersion,
       bumpDataVersion,
       selectedSubsystemId,
