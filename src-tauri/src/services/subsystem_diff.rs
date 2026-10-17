@@ -287,16 +287,20 @@ pub fn subsystem_diff_live(
 ) -> AppResult<SubsystemDiff> {
     let entry = live_read::find_live_subsystem(registry, subsystem_id)?;
     let branch = live_read::require_allowed_target(registry, target_branch)?;
-    let target_tip = [format!("refs/heads/{branch}"), format!("refs/remotes/origin/{branch}"), branch.clone()]
-        .into_iter()
-        .find_map(|candidate| git::rev_parse(target_dir, &candidate))
-        .ok_or_else(|| {
-            AppError::new(
-                ErrorCode::BranchNotPermitted,
-                format!("Target branch '{branch}' does not exist in the target checkout."),
-            )
-            .with_remedy("Choose a target branch that exists and is allowed by promotion.allowedTargetBranches / allowedTargetBranchPatterns.")
-        })?;
+    let target_ref = git::resolve_branch_ref(target_dir, &branch).ok_or_else(|| {
+        AppError::new(
+            ErrorCode::BranchNotPermitted,
+            format!("Target branch '{branch}' does not exist in the target checkout."),
+        )
+        .with_remedy("Choose a target branch that exists and is allowed by promotion.allowedTargetBranches / allowedTargetBranchPatterns.")
+    })?;
+    let target_tip = git::rev_parse(target_dir, &target_ref).ok_or_else(|| {
+        AppError::new(
+            ErrorCode::BranchNotPermitted,
+            format!("Target branch '{branch}' does not exist in the target checkout."),
+        )
+        .with_remedy("Choose a target branch that exists and is allowed by promotion.allowedTargetBranches / allowedTargetBranchPatterns.")
+    })?;
     let source_tip = git::rev_parse(source_dir, &entry.source_branch).ok_or_else(|| {
         AppError::new(
             ErrorCode::RepositoryInaccessible,

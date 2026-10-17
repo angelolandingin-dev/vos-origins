@@ -410,6 +410,52 @@ pub fn local_branch_exists(repo_dir: &Path, branch: &str) -> bool {
     rev_parse(repo_dir, &format!("refs/heads/{branch}")).is_some()
 }
 
+/// Resolve `branch` to a revision name [`rev_parse`] can consume: the local
+/// ref (`refs/heads/<branch>`), then the bare name, then any remote-tracking
+/// ref. The remote case is required because a fork clone keeps the real
+/// branches on a non-`origin` remote (e.g. `upstream`), so
+/// `refs/remotes/origin/<branch>` alone would report an existing branch as
+/// missing.
+pub fn resolve_branch_ref(repo_dir: &Path, branch: &str) -> Option<String> {
+    let local = format!("refs/heads/{branch}");
+    if rev_parse(repo_dir, &local).is_some() {
+        return Some(local);
+    }
+    if rev_parse(repo_dir, branch).is_some() {
+        return Some(branch.to_string());
+    }
+    remote_tracking_ref(repo_dir, branch)
+}
+
+/// First `refs/remotes/<remote>/<branch>` that exists, resolved in ONE
+/// `for-each-ref` call (git expands the `*` glob). Remotes are never
+/// enumerated in Rust; this runs only after the cheap local checks fail.
+fn remote_tracking_ref(repo_dir: &Path, branch: &str) -> Option<String> {
+    let pattern = format!("refs/remotes/*/{branch}");
+    let out = run(
+        repo_dir,
+        &["for-each-ref", "--count=1", "--format=%(refname)", &pattern],
+    )
+    .ok()?;
+    if out.status != 0 {
+        return None;
+    }
+    let name = out.stdout_trimmed();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// True when `branch` exists in `repo_dir`: `refs/heads/<branch>` or the bare
+/// name resolves, OR any remote-tracking ref matches (a fork clone whose
+/// branches live on `upstream`). The remote glob costs one extra call and
+/// runs only when the local checks fail.
+pub fn branch_exists(repo_dir: &Path, branch: &str) -> bool {
+    resolve_branch_ref(repo_dir, branch).is_some()
+}
+
 /// Short name of the currently checked-out branch (`None` when detached or
 /// unresolvable). `local_direct` delivery uses it to decide between a
 /// checkout fast-forward and a ref-only move.
@@ -954,6 +1000,99 @@ mod tests {
             split_credentials("https://x-access-token:ghs_secret@github.com/ORG/repo.git");
         assert_eq!(clean, "https://github.com/ORG/repo.git");
         assert_eq!(token.as_deref(), Some("ghs_secret"));
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A fork clone keeps the real branches on a non-`origin` remote, so the
+    /// existence test must find `refs/remotes/<remote>/<branch>`, not only
+    /// `refs/heads/` and `refs/remotes/origin/`.
+    #[test]
+    fn branch_exists_finds_a_branch_on_a_non_origin_remote() {
+        let root = std::env::temp_dir().join(format!(
+            "vos-branch-exists-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let upstream = root.join("upstream");
+        let clone = root.join("clone");
+        std::fs::create_dir_all(&upstream).expect("mkdir upstream");
+        run_git(&upstream, &["init", "-q", "-b", "master"]);
+        run_git(
+            &upstream,
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+        );
+        run_git(&upstream, &["branch", "UAT"]);
+
+        // A fork: `origin` carries only `master`; the second remote carries
+        // `UAT`, which lands under `refs/remotes/upstream/`.
+        run_git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                "--single-branch",
+                "--branch",
+                "master",
+                upstream.to_str().expect("utf8"),
+                clone.to_str().expect("utf8"),
+            ],
+        );
+        run_git(
+            &clone,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                upstream.to_str().expect("utf8"),
+            ],
+        );
+        run_git(&clone, &["fetch", "-q", "upstream"]);
+
+        assert!(
+            rev_parse(&clone, "refs/remotes/upstream/UAT").is_some(),
+            "precondition: UAT exists only as a remote-tracking ref on upstream"
+        );
+        assert!(
+            rev_parse(&clone, "refs/remotes/origin/UAT").is_none(),
+            "precondition: origin does not carry UAT"
+        );
+        assert!(
+            branch_exists(&clone, "UAT"),
+            "a branch on a non-origin remote must count as existing"
+        );
+        assert!(branch_exists(&clone, "master"), "local branch still exists");
+        assert!(
+            !branch_exists(&clone, "does-not-exist"),
+            "an absent branch must not be reported as existing"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

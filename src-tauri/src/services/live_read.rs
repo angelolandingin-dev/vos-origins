@@ -636,10 +636,7 @@ pub fn integration_statuses_with_prs(
     shas: &[String],
 ) -> AppResult<Vec<IntegrationStatus>> {
     let target_branch = require_allowed_target(registry, target_branch)?;
-    if git::rev_parse(target_dir, &format!("refs/heads/{target_branch}")).is_none()
-        && git::rev_parse(target_dir, &format!("refs/remotes/origin/{target_branch}")).is_none()
-        && git::rev_parse(target_dir, &target_branch).is_none()
-    {
+    if !git::branch_exists(target_dir, &target_branch) {
         return Err(branch_not_permitted(
             &target_branch,
             "branch does not exist in the target checkout",
@@ -736,11 +733,15 @@ fn target_policy(registry: &Registry) -> TargetBranchPolicy {
 }
 
 /// Existing branches from GitHub, filtered by registry policy. Every returned
-/// branch exists; disallowed ones carry `allowed=false` + the policy reason.
+/// branch exists; disallowed ones carry `allowed=false` + the reason. When a
+/// target checkout is supplied, a branch that policy allows but the checkout
+/// does not contain is also reported `allowed=false` (with a checkout reason)
+/// instead of failing the whole list.
 pub fn target_branches_live(
     registry: &Registry,
     github: &dyn GitHubOps,
     selected: Option<&str>,
+    target_dir: Option<&Path>,
 ) -> AppResult<TargetBranchList> {
     let remote: Vec<BranchInfo> = github
         .list_branches(&registry.main_repository)
@@ -762,6 +763,13 @@ pub fn target_branches_live(
     let mut branches: Vec<TargetBranch> = Vec::new();
     for info in &remote {
         let decision = registry.is_target_allowed(&info.name);
+        // Policy is one gate; presence in the checkout is another. A branch
+        // the policy allows but the checkout genuinely lacks is marked
+        // not-allowed here rather than making a later read fail the whole
+        // page. With no checkout resolved the list stays policy-only.
+        let missing_from_checkout =
+            decision.allowed && target_dir.is_some_and(|dir| !git::branch_exists(dir, &info.name));
+        let allowed = decision.allowed && !missing_from_checkout;
         // Best-effort open-PR count; a lookup failure leaves 0 rather than
         // failing the whole branch list.
         let open_count = github
@@ -773,9 +781,11 @@ pub fn target_branches_live(
             head_sha: info.sha.clone(),
             protected: info.protected,
             is_default: info.name == default_branch,
-            allowed: decision.allowed,
-            disallowed_reason: if decision.allowed {
+            allowed,
+            disallowed_reason: if allowed {
                 None
+            } else if missing_from_checkout {
+                Some("Branch does not exist in the target checkout.".to_string())
             } else {
                 Some(format!(
                     "Not permitted by registry policy ({}).",
@@ -943,10 +953,7 @@ fn resolve_history_branch(
     match requested {
         Some(branch) => {
             let allowed = require_allowed_target(registry, branch)?;
-            if git::rev_parse(target_dir, &format!("refs/heads/{allowed}")).is_none()
-                && git::rev_parse(target_dir, &format!("refs/remotes/origin/{allowed}")).is_none()
-                && git::rev_parse(target_dir, &allowed).is_none()
-            {
+            if !git::branch_exists(target_dir, &allowed) {
                 return Err(branch_not_permitted(
                     &allowed,
                     "branch does not exist in the target checkout",
@@ -980,12 +987,9 @@ pub fn integration_history_live(
     if let Some(id) = subsystem_id {
         find_live_subsystem(registry, id)?;
     }
-    let reference = git::rev_parse(target_dir, &format!("refs/heads/{branch}"))
-        .or_else(|| git::rev_parse(target_dir, &format!("refs/remotes/origin/{branch}")))
-        .or_else(|| git::rev_parse(target_dir, &branch))
-        .ok_or_else(|| {
-            branch_not_permitted(&branch, "branch does not exist in the target checkout")
-        })?;
+    let reference = git::resolve_branch_ref(target_dir, &branch).ok_or_else(|| {
+        branch_not_permitted(&branch, "branch does not exist in the target checkout")
+    })?;
     // Shares the tip-keyed scan with the status reads above: same tip, same
     // events, one `git log` per tip instead of one per command.
     let replayed = history::cached_replay(target_dir, &reference);
@@ -1928,10 +1932,7 @@ pub fn commit_page_live(
 ) -> AppResult<CommitPage> {
     let entry = find_live_subsystem(registry, &query.subsystem_id)?;
     let target_branch = require_allowed_target(registry, &query.target_branch)?;
-    if git::rev_parse(target_dir, &format!("refs/heads/{target_branch}")).is_none()
-        && git::rev_parse(target_dir, &format!("refs/remotes/origin/{target_branch}")).is_none()
-        && git::rev_parse(target_dir, &target_branch).is_none()
-    {
+    if !git::branch_exists(target_dir, &target_branch) {
         return Err(branch_not_permitted(
             &target_branch,
             "branch does not exist in the target checkout",
@@ -3018,6 +3019,14 @@ mod tests {
     #[test]
     fn target_branch_policy_filtering_marks_allowed_and_reason() {
         let registry = single_registry();
+        // The allowed branches are present in the checkout, so only policy
+        // decides their fate here.
+        let checkout = tmp("branch-list-policy");
+        init(&checkout, "master");
+        write(&checkout, "x.txt", "x\n");
+        let _ = commit_all(&checkout, "base");
+        git(&checkout, &["branch", "staging"]);
+        git(&checkout, &["branch", "release/2026-01"]);
         let github = StubGitHubOps::new()
             .with_branches(vec![
                 BranchInfo {
@@ -3037,7 +3046,8 @@ mod tests {
                 },
             ])
             .with_default_branch("staging");
-        let list = target_branches_live(&registry, &github, Some("staging")).expect("branches");
+        let list = target_branches_live(&registry, &github, Some("staging"), Some(&checkout))
+            .expect("branches");
         assert_eq!(list.data_source, DataSource::Live);
         let by_name: HashMap<&str, &TargetBranch> =
             list.branches.iter().map(|b| (b.name.as_str(), b)).collect();
@@ -3058,6 +3068,87 @@ mod tests {
             reason.contains("registry policy") || reason.contains("Not permitted"),
             "excluded branches carry the policy reason: {reason}"
         );
+    }
+
+    /// A branch the policy allows but the checkout genuinely lacks must still
+    /// be listed — as not-allowed with a checkout reason — rather than making
+    /// the whole branch list fail.
+    #[test]
+    fn policy_allowed_branch_missing_from_checkout_is_listed_not_allowed() {
+        let registry = single_registry();
+        // Checkout has only `master`; `staging` is policy-allowed but absent.
+        let checkout = tmp("branch-list-missing");
+        init(&checkout, "master");
+        write(&checkout, "x.txt", "x\n");
+        let _ = commit_all(&checkout, "base");
+        let github = StubGitHubOps::new()
+            .with_branches(vec![
+                BranchInfo {
+                    name: "staging".to_string(),
+                    sha: "a".repeat(40),
+                    protected: true,
+                },
+                BranchInfo {
+                    name: "master".to_string(),
+                    sha: "b".repeat(40),
+                    protected: true,
+                },
+            ])
+            .with_default_branch("master");
+        let list = target_branches_live(&registry, &github, Some("staging"), Some(&checkout))
+            .expect("a missing branch must not fail the whole list");
+        let by_name: HashMap<&str, &TargetBranch> =
+            list.branches.iter().map(|b| (b.name.as_str(), b)).collect();
+        assert!(
+            by_name.contains_key("staging"),
+            "the absent branch is still listed, not dropped"
+        );
+        assert!(
+            !by_name["staging"].allowed,
+            "policy-allowed but absent from the checkout → not allowed"
+        );
+        let reason = by_name["staging"]
+            .disallowed_reason
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            reason.contains("checkout"),
+            "the reason names the checkout: {reason}"
+        );
+    }
+
+    /// The Dashboard bug end-to-end: a fork clone keeps the real target branch
+    /// on a non-`origin` remote, so a read of that branch must resolve
+    /// `refs/remotes/upstream/<branch>` instead of erroring.
+    #[test]
+    fn status_read_resolves_a_branch_that_lives_only_on_a_non_origin_remote() {
+        let (_src, main, _a, b, registry) = sandbox_status();
+        // Move `staging` out of the local refs into a non-origin
+        // remote-tracking ref, exactly like a fork clone whose real branches
+        // live on `upstream`.
+        git(
+            &main,
+            &[
+                "update-ref",
+                "refs/remotes/upstream/staging",
+                "refs/heads/staging",
+            ],
+        );
+        git(&main, &["branch", "-D", "staging"]);
+        assert!(git::rev_parse(&main, "refs/heads/staging").is_none());
+        assert!(git::rev_parse(&main, "refs/remotes/origin/staging").is_none());
+        assert!(git::rev_parse(&main, "refs/remotes/upstream/staging").is_some());
+        let statuses = integration_statuses_live(
+            &main,
+            &registry,
+            &StubGitHubOps::new(),
+            "staging",
+            Some("hr-management"),
+            std::slice::from_ref(&b),
+        )
+        .expect("a branch on a non-origin remote must resolve, not error");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].target_branch, "staging");
     }
 
     #[test]

@@ -210,9 +210,24 @@ pub async fn list_target_branches(state: State<'_, AppState>) -> AppResult<Targe
     }
     let registry = live_read::load_live_registry()?;
     let token = live_token()?;
+    // Best-effort checkout so a policy-allowed branch the checkout lacks is
+    // reported as not-allowed with a reason instead of failing the list. A
+    // resolution failure (e.g. offline) leaves the list policy-only.
+    let target_dir = live_read::resolve_target_checkout(
+        &registry.main_repository,
+        registry.local_main_repository_path.as_deref(),
+        Some(&token),
+    )
+    .ok()
+    .map(|(dir, _)| dir);
     let github = crate::services::engine::github_ops::RealGitHubOps::new(token);
     // Selected defaults to the fixture default when it exists and is allowed.
-    live_read::target_branches_live(&registry, &github, Some(fixtures::DEFAULT_TARGET_BRANCH))
+    live_read::target_branches_live(
+        &registry,
+        &github,
+        Some(fixtures::DEFAULT_TARGET_BRANCH),
+        target_dir.as_deref(),
+    )
 }
 
 /// Duplicates are `duplicate_registration`; other failures are `invalid_registry`.

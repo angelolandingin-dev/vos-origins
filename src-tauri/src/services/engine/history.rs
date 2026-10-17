@@ -464,13 +464,10 @@ pub struct BranchStatusResult {
 }
 
 pub fn resolve_ref(repo_dir: &Path, branch: &str) -> Option<String> {
-    [
-        format!("refs/heads/{branch}"),
-        format!("refs/remotes/origin/{branch}"),
-        branch.to_string(),
-    ]
-    .into_iter()
-    .find(|candidate| git::rev_parse(repo_dir, candidate).is_some())
+    // Delegates to the shared resolver so a fork clone's branches on a
+    // non-`origin` remote resolve here too (status reads and the audit share
+    // this path).
+    git::resolve_branch_ref(repo_dir, branch)
 }
 
 /// Memoized replay for a reference that may not resolve (e.g. a missing
