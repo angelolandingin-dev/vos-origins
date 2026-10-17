@@ -88,8 +88,18 @@ function lineClasses(kind: DiffLine['kind'] | 'empty'): string {
   }
 }
 
+/**
+ * The render-relevant subset shared by a subsystem `CommitDiff` and a
+ * `MainCommitFileDiff` (main repository): the two differ only in identity
+ * fields this viewer never renders, so both feed the same renderer.
+ */
+export type RenderedDiff = Pick<
+  CommitDiff,
+  'language' | 'hunks' | 'binary' | 'truncated' | 'sourceUrl' | 'note'
+>;
+
 export interface DiffViewerProps {
-  diff: CommitDiff | null;
+  diff: RenderedDiff | null;
   loading: boolean;
   error: ApiError | null;
   onRetry: () => void;

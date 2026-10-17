@@ -15,6 +15,7 @@ import type {
   IntegrationHistory,
   IntegrationPr,
   IntegrationStatus,
+  MainCommitDiff,
   PromotionDispatchResult,
   PromotionPreflight,
   PromotionRequest,
@@ -168,6 +169,10 @@ export const api = {
     subsystemId: string;
     mainCommitSha: string;
   }) => call<IntegrationEventAudit>('get_integration_event', { ...args }),
+
+  /** The whole main commit's per-file diff in one call, keyed by path. */
+  getMainCommitDiff: (args: { targetBranch: string; mainCommitSha: string }) =>
+    call<MainCommitDiff>('get_main_commit_diff', { ...args }),
 
   getRegistry: () => call<RegistrySnapshot>('get_registry'),
 

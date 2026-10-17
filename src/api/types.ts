@@ -293,6 +293,35 @@ export interface CommitDiff {
   note: string | null;
 }
 
+/**
+ * One changed file's bounded diff inside a `MainCommitDiff` (wire, camelCase).
+ * Mirrors the render-relevant subset of `CommitDiff`: the main commit lives in
+ * the MAIN repository, so there is deliberately no `subsystemId`/`sha` here.
+ */
+export interface MainCommitFileDiff {
+  path: string;
+  language: string;
+  hunks: DiffHunk[];
+  totalLines: number;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  truncated: boolean;
+  sourceUrl: string;
+  note: string | null;
+}
+
+/**
+ * The whole main commit's per-file diff in ONE call (wire, camelCase). `files`
+ * is keyed by `path` so a single backend read serves every file — never a
+ * fetch per file. The audit page renders the same files column + selected-file
+ * diff the commit browser uses.
+ */
+export interface MainCommitDiff {
+  mainCommitSha: string;
+  files: MainCommitFileDiff[];
+}
+
 export interface IntegrationStatus {
   subsystemId: string;
   sourceSha: string;

@@ -549,6 +549,23 @@ impl GitHubAdapter {
         })
     }
 
+    /// Fixture main-commit diff: fixtures carry no git objects, so no per-file
+    /// diff content exists. The requested commit resolves to an empty file list
+    /// rather than invented hunks; the audit's own `changes` list is empty for
+    /// the same reason, so the two agree.
+    pub fn main_commit_diff(
+        &self,
+        world: &FixtureWorld,
+        target_branch: &str,
+        main_commit_sha: &str,
+    ) -> AppResult<MainCommitDiff> {
+        let _ = self.require_target_branch(world, target_branch)?;
+        Ok(MainCommitDiff {
+            main_commit_sha: main_commit_sha.trim().to_string(),
+            files: Vec::new(),
+        })
+    }
+
     pub fn require_target_branch(
         &self,
         world: &FixtureWorld,

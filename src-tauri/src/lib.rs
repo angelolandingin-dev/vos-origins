@@ -65,6 +65,7 @@ pub fn run() {
             commands::history::list_integration_prs,
             commands::history::list_integration_history,
             commands::history::get_integration_event,
+            commands::history::get_main_commit_diff,
             commands::system::get_cache_stats,
             commands::system::clear_cache,
             commands::system::refresh_checkouts,

@@ -547,6 +547,37 @@ pub struct CommitDiff {
     pub note: Option<String>,
 }
 
+/// One changed file's bounded diff inside a [`MainCommitDiff`] (wire,
+/// camelCase). Mirrors the render-relevant subset of [`CommitDiff`]: the main
+/// commit lives in the MAIN repository, so `subsystemId`/`sha` would name the
+/// wrong repository and are deliberately absent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MainCommitFileDiff {
+    pub path: String,
+    pub language: String,
+    pub hunks: Vec<DiffHunk>,
+    pub total_lines: u32,
+    pub additions: u32,
+    pub deletions: u32,
+    pub binary: bool,
+    pub truncated: bool,
+    pub source_url: String,
+    pub note: Option<String>,
+}
+
+/// The whole main commit's per-file diff in ONE call (wire, camelCase). `files`
+/// is keyed by `path` so a single `git show` serves every file — never a fetch
+/// per file. The audit page renders the same files-column + selected-file diff
+/// the commit browser uses; the main commit lives in the MAIN repository, so
+/// the subsystem-scoped per-file `get_commit_diff` does not apply.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MainCommitDiff {
+    pub main_commit_sha: String,
+    pub files: Vec<MainCommitFileDiff>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationStatus {
@@ -1112,6 +1143,82 @@ mod tests {
                 .into_iter()
                 .map(str::to_string)
                 .collect::<Vec<_>>(),
+        );
+    }
+
+    /// Pins the whole-commit diff wire shape to `src/api/types.ts`. The main
+    /// commit lives in the MAIN repository, so this carries no `subsystemId`:
+    /// a dropped `rename_all = "camelCase"` here would render every diff field
+    /// `undefined` with `cargo test` and `tsc` both green.
+    #[test]
+    fn main_commit_diff_serialized_keys_match_typescript_contract() {
+        let diff = MainCommitDiff {
+            main_commit_sha: "a".repeat(40),
+            files: vec![MainCommitFileDiff {
+                path: "src/modules/mod/a.ts".to_string(),
+                language: "TypeScript".to_string(),
+                hunks: vec![DiffHunk {
+                    header: "@@ -1 +1 @@".to_string(),
+                    lines: vec![DiffLine {
+                        kind: DiffLineKind::Added,
+                        old_line: None,
+                        new_line: Some(1),
+                        text: "line".to_string(),
+                    }],
+                }],
+                total_lines: 1,
+                additions: 1,
+                deletions: 0,
+                binary: false,
+                truncated: false,
+                source_url: "https://github.com/ORG/main-system/commit/abc#diff-a".to_string(),
+                note: None,
+            }],
+        };
+        let value = serde_json::to_value(&diff).expect("main commit diff serializes");
+        assert_eq!(
+            sorted_keys(&value),
+            vec!["files", "mainCommitSha"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            sorted_keys(&value["files"][0]),
+            vec![
+                "additions",
+                "binary",
+                "deletions",
+                "hunks",
+                "language",
+                "note",
+                "path",
+                "sourceUrl",
+                "totalLines",
+                "truncated",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            sorted_keys(&value["files"][0]["hunks"][0]),
+            vec!["header", "lines"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            sorted_keys(&value["files"][0]["hunks"][0]["lines"][0]),
+            vec!["kind", "newLine", "oldLine", "text"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            value["files"][0]["hunks"][0]["lines"][0]["kind"].as_str(),
+            Some("added"),
+            "diff line kinds stay snake_case"
         );
     }
 }

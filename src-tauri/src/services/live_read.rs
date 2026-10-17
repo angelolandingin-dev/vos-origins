@@ -18,8 +18,9 @@ use crate::github::models::{
     IntegrationEventAudit, IntegrationEventChange, IntegrationEventChangeKind,
     IntegrationEventCommit, IntegrationEventProvenance, IntegrationEventTotals,
     IntegrationEvidence, IntegrationHistory, IntegrationHistoryEntry, IntegrationHistoryKind,
-    IntegrationPr, IntegrationStatus, PrState, PullRequestRef, ReviewState, SubsystemPolicy,
-    SubsystemSummary, TargetBranch, TargetBranchList, TargetBranchPolicy,
+    IntegrationPr, IntegrationStatus, MainCommitDiff, MainCommitFileDiff, PrState, PullRequestRef,
+    ReviewState, SubsystemPolicy, SubsystemSummary, TargetBranch, TargetBranchList,
+    TargetBranchPolicy,
 };
 use crate::services::engine::github_ops::{BranchInfo, GitHubOps, PullRequestInfo};
 use crate::services::engine::history::BranchStatusKind;
@@ -2549,6 +2550,131 @@ fn parse_hunk_header(header: &str) -> (u32, u32) {
     (old_start, new_start)
 }
 
+/// Metadata lines `git show -p` emits around hunks (`diff --git`, `index`,
+/// `---`/`+++`, mode/rename headers, binary markers). Skipped only BEFORE a
+/// file's first hunk: inside a hunk a removed line whose content starts with
+/// `-- ` renders as `--- …` and must never be mistaken for a header.
+fn is_diff_metadata(raw: &str) -> bool {
+    raw.starts_with("diff --git")
+        || raw.starts_with("index ")
+        || raw.starts_with("--- ")
+        || raw.starts_with("+++ ")
+        || raw.starts_with("new file mode")
+        || raw.starts_with("deleted file mode")
+        || raw.starts_with("old mode")
+        || raw.starts_with("new mode")
+        || raw.starts_with("similarity index")
+        || raw.starts_with("dissimilarity index")
+        || raw.starts_with("rename ")
+        || raw.starts_with("copy ")
+        || raw.starts_with("Binary files")
+}
+
+/// Parse unified-diff hunk lines into hunks plus `+`/`−` counts. Shared by the
+/// single-file diff and the whole-commit diff so the two can never disagree on
+/// what a hunk is or how many lines it added.
+fn parse_unified_hunks<'a>(lines: impl Iterator<Item = &'a str>) -> (Vec<DiffHunk>, u32, u32) {
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut current: Option<DiffHunk> = None;
+    let mut old_line = 1_u32;
+    let mut new_line = 1_u32;
+    let mut additions = 0_u32;
+    let mut deletions = 0_u32;
+    for raw in lines {
+        if current.is_none() && is_diff_metadata(raw) {
+            continue;
+        }
+        if let Some(header) = raw.strip_prefix("@@") {
+            if let Some(hunk) = current.take() {
+                hunks.push(hunk);
+            }
+            let (old_start, new_start) = parse_hunk_header(header);
+            old_line = old_start;
+            new_line = new_start;
+            current = Some(DiffHunk {
+                header: format!("@@{header}"),
+                lines: Vec::new(),
+            });
+            continue;
+        }
+        if raw.starts_with('\\') {
+            continue;
+        }
+        let Some(hunk) = current.as_mut() else {
+            continue;
+        };
+        if let Some(content) = raw.strip_prefix('+') {
+            // `+++` was already skipped above.
+            hunk.lines.push(DiffLine {
+                kind: DiffLineKind::Added,
+                old_line: None,
+                new_line: Some(new_line),
+                text: content.to_string(),
+            });
+            new_line += 1;
+            additions += 1;
+        } else if let Some(content) = raw.strip_prefix('-') {
+            hunk.lines.push(DiffLine {
+                kind: DiffLineKind::Removed,
+                old_line: Some(old_line),
+                new_line: None,
+                text: content.to_string(),
+            });
+            old_line += 1;
+            deletions += 1;
+        } else if let Some(content) = raw.strip_prefix(' ') {
+            hunk.lines.push(DiffLine {
+                kind: DiffLineKind::Context,
+                old_line: Some(old_line),
+                new_line: Some(new_line),
+                text: content.to_string(),
+            });
+            old_line += 1;
+            new_line += 1;
+        } else if raw.is_empty() {
+            hunk.lines.push(DiffLine {
+                kind: DiffLineKind::Context,
+                old_line: Some(old_line),
+                new_line: Some(new_line),
+                text: String::new(),
+            });
+            old_line += 1;
+            new_line += 1;
+        }
+    }
+    if let Some(hunk) = current.take() {
+        hunks.push(hunk);
+    }
+    (hunks, additions, deletions)
+}
+
+/// Bound hunks to [`MAX_DIFF_LINES`] total lines across the file, returning
+/// whether anything was dropped. Shared so single-file and whole-commit diffs
+/// bound identically.
+fn bound_hunks(hunks: &mut [DiffHunk]) -> bool {
+    let mut budget = MAX_DIFF_LINES;
+    let mut truncated = false;
+    for hunk in hunks.iter_mut() {
+        if budget == 0 {
+            truncated = true;
+            hunk.lines.clear();
+            continue;
+        }
+        if hunk.lines.len() > budget {
+            hunk.lines.truncate(budget);
+            budget = 0;
+            truncated = true;
+        } else {
+            budget -= hunk.lines.len();
+        }
+    }
+    truncated
+}
+
+fn truncation_note() -> String {
+    format!("Response bounded at {MAX_DIFF_LINES} lines to keep the window responsive; open the file on GitHub for the rest.")
+}
+
 /// Bounded unified diff for one path from the source repo.
 pub fn commit_diff_live(
     source_dir: &Path,
@@ -2663,88 +2789,7 @@ pub fn commit_diff_live(
             note: Some("Binary file: no text diff is shown.".to_string()),
         });
     }
-    let mut hunks: Vec<DiffHunk> = Vec::new();
-    let mut current: Option<DiffHunk> = None;
-    let mut old_line = 1_u32;
-    let mut new_line = 1_u32;
-    let mut additions = 0_u32;
-    let mut deletions = 0_u32;
-    let flush = |current: &mut Option<DiffHunk>, hunks: &mut Vec<DiffHunk>| {
-        if let Some(hunk) = current.take() {
-            hunks.push(hunk);
-        }
-    };
-    for raw in text.lines() {
-        if raw.starts_with("diff --git")
-            || raw.starts_with("index ")
-            || raw.starts_with("--- ")
-            || raw.starts_with("+++ ")
-            || raw.starts_with("new file mode")
-            || raw.starts_with("deleted file mode")
-            || raw.starts_with("old mode")
-            || raw.starts_with("new mode")
-            || raw.starts_with("similarity index")
-            || raw.starts_with("rename ")
-        {
-            continue;
-        }
-        if let Some(header) = raw.strip_prefix("@@") {
-            flush(&mut current, &mut hunks);
-            let (old_start, new_start) = parse_hunk_header(header);
-            old_line = old_start;
-            new_line = new_start;
-            current = Some(DiffHunk {
-                header: format!("@@{header}"),
-                lines: Vec::new(),
-            });
-            continue;
-        }
-        if raw.starts_with('\\') {
-            continue;
-        }
-        let Some(hunk) = current.as_mut() else {
-            continue;
-        };
-        if let Some(content) = raw.strip_prefix('+') {
-            // `+++` already skipped above.
-            hunk.lines.push(DiffLine {
-                kind: DiffLineKind::Added,
-                old_line: None,
-                new_line: Some(new_line),
-                text: content.to_string(),
-            });
-            new_line += 1;
-            additions += 1;
-        } else if let Some(content) = raw.strip_prefix('-') {
-            hunk.lines.push(DiffLine {
-                kind: DiffLineKind::Removed,
-                old_line: Some(old_line),
-                new_line: None,
-                text: content.to_string(),
-            });
-            old_line += 1;
-            deletions += 1;
-        } else if let Some(content) = raw.strip_prefix(' ') {
-            hunk.lines.push(DiffLine {
-                kind: DiffLineKind::Context,
-                old_line: Some(old_line),
-                new_line: Some(new_line),
-                text: content.to_string(),
-            });
-            old_line += 1;
-            new_line += 1;
-        } else if raw.is_empty() {
-            hunk.lines.push(DiffLine {
-                kind: DiffLineKind::Context,
-                old_line: Some(old_line),
-                new_line: Some(new_line),
-                text: String::new(),
-            });
-            old_line += 1;
-            new_line += 1;
-        }
-    }
-    flush(&mut current, &mut hunks);
+    let (mut hunks, additions, deletions) = parse_unified_hunks(text.lines());
     if hunks.is_empty() {
         return Err(AppError::not_found(format!(
             "No diff is available for '{chosen}' in commit {sha}."
@@ -2753,22 +2798,7 @@ pub fn commit_diff_live(
     }
     let total_lines: u32 = hunks.iter().map(|h| h.lines.len() as u32).sum();
     // Bound the response; never embed a full editor.
-    let mut budget = MAX_DIFF_LINES;
-    let mut truncated = false;
-    for hunk in &mut hunks {
-        if budget == 0 {
-            truncated = true;
-            hunk.lines.clear();
-            continue;
-        }
-        if hunk.lines.len() > budget {
-            hunk.lines.truncate(budget);
-            budget = 0;
-            truncated = true;
-        } else {
-            budget -= hunk.lines.len();
-        }
-    }
+    let truncated = bound_hunks(&mut hunks);
     Ok(CommitDiff {
         subsystem_id: entry.id.clone(),
         sha: full_sha.clone(),
@@ -2785,12 +2815,182 @@ pub fn commit_diff_live(
             entry.repository, chosen
         ),
         note: if truncated {
-            Some(format!(
-                "Response bounded at {MAX_DIFF_LINES} lines to keep the window responsive; open the file on GitHub for the rest."
-            ))
+            Some(truncation_note())
         } else {
             None
         },
+    })
+}
+
+/// Path for a `---`/`+++` diff header line, with git's `a/`/`b/` prefix
+/// stripped. `None` for `/dev/null` (the other side names the file). Git is
+/// invoked with `core.quotePath=false`, so the path arrives verbatim.
+fn diff_header_path(line: &str) -> Option<String> {
+    let rest = line
+        .strip_prefix("+++ ")
+        .or_else(|| line.strip_prefix("--- "))?;
+    let rest = rest.trim_end();
+    if rest == "/dev/null" {
+        return None;
+    }
+    let path = rest
+        .strip_prefix("b/")
+        .or_else(|| rest.strip_prefix("a/"))
+        .unwrap_or(rest);
+    if path.is_empty() {
+        None
+    } else {
+        Some(path.to_string())
+    }
+}
+
+/// One file's raw patch slice from a whole-commit `git show -p`.
+struct RawFilePatch<'a> {
+    /// Resolved display path; `+++` (the new side) wins, `---` covers a
+    /// deletion. `None` for a mode-only change that emits no path headers.
+    path: Option<String>,
+    binary: bool,
+    body: Vec<&'a str>,
+}
+
+/// Split a whole-commit patch body into per-file slices in one pass. Renames
+/// resolve to the new path (the audit's `changes` list uses the same side), and
+/// a deletion keeps its `---` path because `+++` is `/dev/null`.
+fn split_commit_patch(text: &str) -> Vec<RawFilePatch<'_>> {
+    let mut files: Vec<RawFilePatch> = Vec::new();
+    let mut current: Option<RawFilePatch> = None;
+    for raw in text.lines() {
+        if raw.starts_with("diff --git ") {
+            if let Some(file) = current.take() {
+                files.push(file);
+            }
+            current = Some(RawFilePatch {
+                path: None,
+                binary: false,
+                body: Vec::new(),
+            });
+            continue;
+        }
+        let Some(file) = current.as_mut() else {
+            continue;
+        };
+        // A pure rename (identical content) emits no `---`/`+++` lines, only
+        // `rename to <new>`: recover the new path so it still keys a diff.
+        if let Some(rest) = raw.strip_prefix("rename to ") {
+            let renamed = rest.trim();
+            if !renamed.is_empty() {
+                file.path = Some(renamed.to_string());
+            }
+        }
+        // The `+++` side (new path) always wins; the `---` side is a fallback
+        // only for a deletion, whose `+++` is `/dev/null`.
+        let is_new_side = raw.starts_with("+++ ");
+        let is_old_side = raw.starts_with("--- ");
+        if is_new_side || (is_old_side && file.path.is_none()) {
+            if let Some(path) = diff_header_path(raw) {
+                file.path = Some(path);
+            }
+        }
+        if raw.starts_with("Binary files") && raw.ends_with("differ") {
+            file.binary = true;
+        }
+        file.body.push(raw);
+    }
+    if let Some(file) = current.take() {
+        files.push(file);
+    }
+    files
+}
+
+/// The main commit's per-file diff in ONE `git show` spawn: every changed
+/// file's bounded hunks keyed by path, so the audit page renders the same
+/// files-column + selected-file diff the commit browser uses without a fetch
+/// per file. The main commit lives in the MAIN repository, so `main_commit_sha`
+/// resolves in the target checkout, never a subsystem.
+///
+/// `--first-parent -m` is required: a merge commit's plain `git show -p` is
+/// empty, while the audit's own `changes` (and the promotion engine's
+/// "first parent of the merge" content) are the first-parent delta — the two
+/// must describe the same change.
+pub fn main_commit_diff_live(
+    target_dir: &Path,
+    registry: &Registry,
+    target_branch: &str,
+    main_commit_sha: &str,
+) -> AppResult<MainCommitDiff> {
+    require_allowed_target(registry, target_branch)?;
+    let wanted = main_commit_sha.trim();
+    let full = git::rev_parse(target_dir, wanted).ok_or_else(|| {
+        AppError::not_found(format!(
+            "Commit '{wanted}' was not found in the target checkout."
+        ))
+        .with_remedy("Refresh the integration history and try again.")
+    })?;
+    let out = git::run(
+        target_dir,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--format=",
+            "--no-color",
+            "--unified=3",
+            "-M",
+            "--first-parent",
+            "-m",
+            "--root",
+            &full,
+        ],
+    )
+    .map_err(|err| {
+        AppError::new(
+            ErrorCode::RepositoryInaccessible,
+            "Could not read the commit diff.",
+        )
+        .with_remedy("Refresh and retry.")
+        .with_details(git::sanitize(&err.to_string()))
+    })?;
+    if out.status != 0 {
+        return Err(
+            AppError::not_found(format!("No diff is available for commit {wanted}."))
+                .with_remedy("Refresh the integration history and try again."),
+        );
+    }
+    let text = out.stdout_str();
+    let mut files: Vec<MainCommitFileDiff> = Vec::new();
+    for raw in split_commit_patch(&text) {
+        let Some(path) = raw.path else {
+            continue;
+        };
+        let (mut hunks, additions, deletions) = parse_unified_hunks(raw.body.iter().copied());
+        let total_lines: u32 = hunks.iter().map(|h| h.lines.len() as u32).sum();
+        let truncated = bound_hunks(&mut hunks);
+        files.push(MainCommitFileDiff {
+            language: fixtures::language_for(&path).to_string(),
+            path: path.clone(),
+            hunks,
+            total_lines,
+            additions,
+            deletions,
+            binary: raw.binary,
+            truncated,
+            source_url: format!(
+                "https://github.com/{}/commit/{full}#diff-{path}",
+                registry.main_repository
+            ),
+            note: if raw.binary {
+                Some("Binary file: no text diff is shown.".to_string())
+            } else if truncated {
+                Some(truncation_note())
+            } else {
+                None
+            },
+        });
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(MainCommitDiff {
+        main_commit_sha: full,
+        files,
     })
 }
 
@@ -4101,5 +4301,114 @@ mod tests {
             1,
             "a repeated click reuses the tip-keyed replay"
         );
+    }
+
+    // --- main commit diff (whole commit, one call) ------------------------
+
+    #[test]
+    fn main_commit_diff_returns_every_changed_file_in_one_call() {
+        let (_src, main, _order, m, registry) = sandbox_audit_three();
+        let before = crate::services::engine::git::git_spawns_for_tests(&main);
+        let diff = main_commit_diff_live(&main, &registry, "staging", &m).expect("diff");
+        let after = crate::services::engine::git::git_spawns_for_tests(&main);
+        assert_eq!(diff.main_commit_sha, m);
+        let paths: Vec<&str> = diff.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["x.txt", "y.txt"],
+            "one entry per changed file, sorted by path"
+        );
+        for file in &diff.files {
+            assert!(!file.binary, "{} is text", file.path);
+            assert!(!file.hunks.is_empty(), "{} carries its hunks", file.path);
+            assert_eq!(file.additions, 1, "{} adds one line", file.path);
+            assert_eq!(file.deletions, 0);
+            assert_eq!(file.language, fixtures::language_for(&file.path));
+            assert!(
+                file.source_url.contains("/commit/") && file.source_url.contains(&file.path),
+                "source url names the main repo commit and path: {}",
+                file.source_url
+            );
+        }
+        assert_eq!(
+            after - before,
+            2,
+            "one rev-parse + one whole-commit `git show`, never a spawn per file"
+        );
+    }
+
+    #[test]
+    fn main_commit_diff_resolves_rename_and_delete_paths_like_the_audit() {
+        let main = tmp("main-rename");
+        init(&main, "master");
+        write(&main, "keep.txt", "keep\n");
+        write(&main, "old.txt", "old\n");
+        write(&main, "gone.txt", "gone\n");
+        let _ = commit_all(&main, "base");
+        git(&main, &["branch", "staging"]);
+        git(&main, &["checkout", "-q", "staging"]);
+        git(&main, &["mv", "old.txt", "new.txt"]);
+        git(&main, &["rm", "-q", "gone.txt"]);
+        write(&main, "keep.txt", "keep\nmore\n");
+        let c = commit_all(&main, "rename delete edit");
+
+        let diff = main_commit_diff_live(&main, &single_registry(), "staging", &c).expect("diff");
+        let paths: Vec<&str> = diff.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(
+            paths.contains(&"new.txt"),
+            "a pure rename resolves to its new path: {paths:?}"
+        );
+        assert!(
+            !paths.contains(&"old.txt"),
+            "the pre-rename path is never listed: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"gone.txt"),
+            "a deletion keeps its path: {paths:?}"
+        );
+        let keep = diff.files.iter().find(|f| f.path == "keep.txt").unwrap();
+        assert!(keep.hunks.iter().any(|h| h.header.starts_with("@@")));
+        assert_eq!((keep.additions, keep.deletions), (1, 0));
+        let gone = diff.files.iter().find(|f| f.path == "gone.txt").unwrap();
+        assert_eq!((gone.additions, gone.deletions), (0, 1));
+    }
+
+    #[test]
+    fn main_commit_diff_uses_the_first_parent_delta_for_a_merge() {
+        let main = tmp("main-merge");
+        init(&main, "master");
+        write(&main, "base.txt", "base\n");
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+        git(&main, &["checkout", "-q", "staging"]);
+        write(&main, "base.txt", "base\nstaging\n");
+        let _ = commit_all(&main, "staging edit");
+        git(&main, &["checkout", "-q", "master"]);
+        write(&main, "other.txt", "other\n");
+        let _ = commit_all(&main, "master work");
+        git(
+            &main,
+            &["merge", "-q", "--no-ff", "-m", "merge staging", "staging"],
+        );
+        let merge = git(&main, &["rev-parse", "HEAD"]);
+
+        // A plain `git show -p` on a merge is empty; the audit's own `changes`
+        // (and the promotion engine) read the first-parent delta, so this must
+        // too — otherwise a merged integration would show no diff at all.
+        let diff =
+            main_commit_diff_live(&main, &single_registry(), "staging", &merge).expect("diff");
+        assert!(
+            diff.files.iter().any(|f| f.path == "base.txt"),
+            "the merge's first-parent delta lists base.txt: {:?}",
+            diff.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn main_commit_diff_unknown_sha_is_a_truthful_not_found() {
+        let (_src, main, _order, _m, registry) = sandbox_audit_three();
+        let err = main_commit_diff_live(&main, &registry, "staging", &"f".repeat(40))
+            .expect_err("an unknown sha is not found, never fabricated");
+        assert_eq!(err.code, ErrorCode::NotFound);
     }
 }
