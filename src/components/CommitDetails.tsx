@@ -342,6 +342,32 @@ export function CommitDetailsPanel({
           )}
         </div>
 
+        {details.relatedPullRequests.length > 0 ? (
+          <div className="space-y-1.5">
+            <h3 className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">
+              <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
+              Related Pull Requests
+            </h3>
+            <ul className="divide-y divide-line border-y border-line">
+              {details.relatedPullRequests.map((pr) => (
+                <li key={pr.htmlUrl}>
+                  <button
+                    type="button"
+                    onClick={() => onOpenExternal(pr.htmlUrl)}
+                    aria-label={`Open pull request #${pr.number} on GitHub`}
+                    title={`${pr.title}\n${pr.htmlUrl}`}
+                    className="flex w-full items-center gap-1.5 py-1 text-left text-[11px] transition-colors hover:bg-hover"
+                  >
+                    <span className="mono shrink-0 text-accent-ink">#{pr.number}</span>
+                    <span className="min-w-0 flex-1 truncate text-muted">{pr.title}</span>
+                    <ExternalLink className="h-3 w-3 shrink-0 text-disabled" aria-hidden="true" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
         {hasOpenPr || alreadyIntegrated ? (
           <InlineAlert tone="warning" title="Not promotable on this branch">
             {alreadyIntegrated
