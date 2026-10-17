@@ -11,6 +11,7 @@ import type {
   CommitDiff,
   CommitPage,
   CommitQuery,
+  IntegrationEventAudit,
   IntegrationHistory,
   IntegrationPr,
   IntegrationStatus,
@@ -165,6 +166,12 @@ export const api = {
     subsystemId: string | null,
     limit: number,
   ) => call<IntegrationHistory>('list_integration_history', { targetBranch, subsystemId, limit }),
+
+  getIntegrationEvent: (args: {
+    targetBranch: string;
+    subsystemId: string;
+    mainCommitSha: string;
+  }) => call<IntegrationEventAudit>('get_integration_event', { ...args }),
 
   getRegistry: () => call<RegistrySnapshot>('get_registry'),
 

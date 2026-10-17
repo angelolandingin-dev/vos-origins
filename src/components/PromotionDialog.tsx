@@ -16,6 +16,7 @@ import type {
   PromotionDelivery,
   PromotionDispatchResult,
   PromotionMode,
+  PromotionOnConflict,
   PromotionPreflight,
   SubsystemSummary,
   TargetBranchList,
@@ -60,6 +61,8 @@ export interface PromotionDialogProps {
   onMessageChange: (message: string) => void;
   allowGaps: boolean;
   onAllowGapsChange: (allowGaps: boolean) => void;
+  onConflict: PromotionOnConflict;
+  onConflictChange: (onConflict: PromotionOnConflict) => void;
   excludedPaths: string[];
   onAddExcludedPath: (path: string) => void;
   onRemoveExcludedPath: (path: string) => void;
@@ -80,7 +83,7 @@ export function PromotionDialog(props: PromotionDialogProps) {
   if (!props.open) return null;
   return (
     <PromotionDialogContent
-      key={JSON.stringify([props.sourceShas, props.targetBranch, props.delivery])}
+      key={JSON.stringify([props.sourceShas, props.targetBranch, props.delivery, props.onConflict])}
       {...props}
     />
   );
@@ -140,6 +143,8 @@ function PromotionDialogContent({
   onMessageChange,
   allowGaps,
   onAllowGapsChange,
+  onConflict,
+  onConflictChange,
   excludedPaths,
   onAddExcludedPath,
   onRemoveExcludedPath,
@@ -174,6 +179,8 @@ function PromotionDialogContent({
   const refusedPaths = Array.from(new Set([...(preflight?.conflicts ?? []), ...skippedFiles]));
   const isExcluded = (path: string) =>
     excludedPaths.includes(path) || preflightExcluded.includes(path);
+  const keepSubsystem = onConflict === 'take_subsystem';
+  const overwritePaths = refusedPaths.filter((path) => !isExcluded(path));
   const isDirect = delivery === 'local_direct';
   const isWorktree = delivery === 'worktree';
   const isLocal = delivery === 'local';
@@ -342,6 +349,13 @@ function PromotionDialogContent({
           <PathList title="Deleted" paths={result.deleted ?? []} />
           <PathList title="Unchanged" paths={result.unchanged ?? []} />
           <PathList title="Excluded" paths={result.excluded ?? []} />
+          {(result.replaced ?? []).length > 0 ? (
+            <p className="text-[11px] leading-relaxed text-muted">
+              Overwrote {(result.replaced ?? []).length} diverged path
+              {(result.replaced ?? []).length === 1 ? '' : 's'} with the subsystem&apos;s version —
+              the override is recorded in the commit trailers.
+            </p>
+          ) : null}
 
           <ul className="space-y-2">
             {result.findings.map((finding) => (
@@ -424,6 +438,26 @@ function PromotionDialogContent({
               />
               <span>Allow gaps — a skipped commit&apos;s changes are included</span>
             </label>
+            <label className="flex items-start gap-2 text-xs text-fg">
+              <Checkbox
+                checked={keepSubsystem}
+                onChange={(event) =>
+                  onConflictChange(event.target.checked ? 'take_subsystem' : 'fail')
+                }
+                label="Keep the subsystem's copy"
+                className="mt-0.5"
+              />
+              <span>
+                Keep the subsystem&apos;s copy — overwrites paths the main system changed since the
+                last promotion.
+              </span>
+            </label>
+            {keepSubsystem ? (
+              <p className="text-[11px] leading-relaxed text-muted">
+                Unsafe paths, secrets, main-owned files, and dependency or lockfile failures still
+                block the promotion.
+              </p>
+            ) : null}
             <div className="space-y-1.5">
               <div className="flex h-[29px] items-center justify-between gap-2">
                 <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
@@ -635,7 +669,12 @@ function PromotionDialogContent({
                 tone={preflight.conflict > 0 ? 'warning' : 'info'}
                 title={preflightSummary(preflight)}
               >
-                {preflight.conflict > 0 ? (
+                {keepSubsystem && overwritePaths.length > 0 ? (
+                  <p>
+                    {overwritePaths.length} path{overwritePaths.length === 1 ? '' : 's'} the main
+                    system changed will be overwritten with the subsystem&apos;s version.
+                  </p>
+                ) : preflight.conflict > 0 ? (
                   <p>Resolve, exclude, or drop the conflicting commit, then re-promote.</p>
                 ) : (
                   <p>Ready to promote.</p>
@@ -753,6 +792,19 @@ function PromotionDialogContent({
                 </span>
               )}
             </label>
+            {keepSubsystem ? (
+              <p className="text-[11px] leading-relaxed text-muted">
+                {overwritePaths.length > 0 ? (
+                  <span>
+                    This overwrites {overwritePaths.length} path
+                    {overwritePaths.length === 1 ? '' : 's'} the main system changed with the
+                    subsystem&apos;s version.
+                  </span>
+                ) : (
+                  <span>No diverged paths right now — nothing will be overwritten.</span>
+                )}
+              </p>
+            ) : null}
             {acknowledged ? (
               <p className="flex items-center gap-1.5 text-[11px] text-status-applied-ink">
                 <Check className="h-3.5 w-3.5" aria-hidden="true" />

@@ -347,7 +347,7 @@ export interface PreflightFileResult {
   outcome: PreflightOutcome;
 }
 
-/** Dry-run mergeability summary: per-file outcomes plus the actionable `conflicts` path list. Counts sum to `files.length`. */
+/** Dry-run mergeability summary: per-file outcomes plus `conflicts`, the paths the main system changed — refused under `fail`, overwritten under `take_subsystem`. Counts sum to `files.length`. */
 export interface PromotionPreflight {
   files: PreflightFileResult[];
   clean: number;
@@ -501,6 +501,41 @@ export interface IntegrationHistory {
   entries: IntegrationHistoryEntry[];
   total: number;
   fetchedAt: string;
+  dataSource: DataSource;
+}
+
+export interface IntegrationEventCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string | null;
+  authoredAt: string | null;
+  unavailable: boolean;
+}
+
+export interface IntegrationEventChange {
+  path: string;
+  change: 'added' | 'modified' | 'deleted' | 'renamed';
+  additions: number;
+  deletions: number;
+}
+
+export interface IntegrationEventAudit {
+  mainCommitSha: string;
+  kind: IntegrationHistoryKind;
+  subsystemId: string;
+  targetBranch: string;
+  actor: string;
+  occurredAt: string;
+  detail: string;
+  pullRequestNumber: number | null;
+  inheritedFromBranch: string | null;
+  includedCommits: IntegrationEventCommit[];
+  changes: IntegrationEventChange[];
+  totals: { files: number; additions: number; deletions: number } | null;
+  provenance: { key: string; value: string }[];
+  revertedMainCommitSha: string | null;
+  mainCommitUnavailable: boolean;
   dataSource: DataSource;
 }
 

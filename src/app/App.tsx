@@ -82,6 +82,8 @@ export default function App() {
         onMessageChange={app.setPromotionMessage}
         allowGaps={app.promotion.allowGaps}
         onAllowGapsChange={app.setPromotionAllowGaps}
+        onConflict={app.promotion.onConflict}
+        onConflictChange={app.setPromotionOnConflict}
         excludedPaths={app.promotion.excludedPaths}
         onAddExcludedPath={app.addPromotionExcludedPath}
         onRemoveExcludedPath={app.removePromotionExcludedPath}
