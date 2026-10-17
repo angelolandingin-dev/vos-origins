@@ -3852,8 +3852,7 @@ fn worktree_wire_value_parses_and_next_commands_carry_diff_and_commit() {
 /// the promotion ALLOWS, naming nothing.
 #[test]
 fn gap_refusal_allows_when_newest_toucher_predates_skip() {
-    init_repo(&make_temp_dir("gap-src"), "master");
-    let src_dir = make_temp_dir("gap-src2");
+    let src_dir = make_temp_dir("gap-src");
     init_repo(&src_dir, "master");
     // A base, B touches P+R, C touches P only, D touches Q only.
     commit_files(
