@@ -4552,6 +4552,7 @@ fn selective_repromotion_over_previously_promoted_content_is_clean() {
     // own earlier content (outside the range) → Clean, never Conflict.
     let scratch = make_temp_dir("reselect-scratch");
     let empty: Vec<String> = Vec::new();
+    let source_tip = sha(&src_dir, "master");
     let request = PreflightRequest {
         policy: &registry.subsystems[0].integration_policy,
         commits: std::slice::from_ref(&versions[4]),
@@ -4562,6 +4563,7 @@ fn selective_repromotion_over_previously_promoted_content_is_clean() {
         allow_gaps: false,
         excluded_paths: &empty,
         global_files: &empty,
+        source_tip: Some(source_tip.as_str()),
     };
     let preflight =
         compute_preflight(&src_dir, &main.dir, &request, &scratch).expect("preflight computes");
@@ -4572,6 +4574,12 @@ fn selective_repromotion_over_previously_promoted_content_is_clean() {
         .expect("shared.txt in preflight");
     assert_eq!(file.outcome, PreflightOutcome::Clean, "{preflight:?}");
     assert!(preflight.conflicts.is_empty(), "{preflight:?}");
+    // The target holds an ANCESTOR version (C1 behind C5), not newer work: no
+    // backwards-write warning.
+    assert!(
+        file.reverts_newer.is_none(),
+        "an ancestor target version is simply behind, never a reverts-newer warning: {preflight:?}"
+    );
 
     // And the apply writes C5's bytes.
     let second = promote(
@@ -4616,6 +4624,7 @@ fn target_blob_absent_from_source_repo_is_overwritten() {
 
     let scratch = make_temp_dir("mainonly-scratch");
     let empty: Vec<String> = Vec::new();
+    let source_tip = sha(&src_dir, "master");
     let request = PreflightRequest {
         policy: &registry.subsystems[0].integration_policy,
         commits: std::slice::from_ref(&b),
@@ -4626,12 +4635,24 @@ fn target_blob_absent_from_source_repo_is_overwritten() {
         allow_gaps: false,
         excluded_paths: &empty,
         global_files: &empty,
+        source_tip: Some(source_tip.as_str()),
     };
     let preflight =
         compute_preflight(&src_dir, &main.dir, &request, &scratch).expect("preflight computes");
     assert!(preflight.conflicts.is_empty(), "{preflight:?}");
     assert_eq!(preflight.conflict, 0);
     assert_eq!(preflight.replaced, vec!["notes.txt".to_string()]);
+    // Main-system-only bytes came from nowhere in subsystem history, so there
+    // is no newer subsystem commit to name: no backwards-write warning.
+    let file = preflight
+        .files
+        .iter()
+        .find(|f| f.path == "notes.txt")
+        .expect("notes.txt in preflight");
+    assert!(
+        file.reverts_newer.is_none(),
+        "main-only content never warns: {preflight:?}"
+    );
 
     let report = promote(
         &src_dir,

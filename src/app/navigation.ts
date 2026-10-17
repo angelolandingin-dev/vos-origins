@@ -1,6 +1,11 @@
 /** Every screen required by the spec (section 3.3). */
 export type Route =
-  'dashboard' | 'commit-browser' | 'promote-commits' | 'integration-history' | 'settings';
+  | 'dashboard'
+  | 'commit-browser'
+  | 'subsystem-diff'
+  | 'promote-commits'
+  | 'integration-history'
+  | 'settings';
 
 export interface NavItem {
   id: Route;
@@ -19,6 +24,11 @@ export const NAV_ITEMS: NavItem[] = [
     id: 'commit-browser',
     label: 'Commit Browser',
     description: 'Browse source history and inspect commits',
+  },
+  {
+    id: 'subsystem-diff',
+    label: 'Subsystem Diff',
+    description: 'Files missing or diverged versus the target branch',
   },
   {
     id: 'promote-commits',
@@ -45,6 +55,10 @@ export const ROUTE_META: Record<Route, { title: string; subtitle: string }> = {
   'commit-browser': {
     title: 'Commit Browser',
     subtitle: 'Browse source history and inspect commits',
+  },
+  'subsystem-diff': {
+    title: 'Subsystem Diff',
+    subtitle: 'Files missing or diverged versus the target branch',
   },
   'promote-commits': {
     title: 'Promote Commits',

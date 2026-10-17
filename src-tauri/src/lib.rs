@@ -58,6 +58,7 @@ pub fn run() {
             commands::commits::get_commit_details,
             commands::commits::get_commit_diff,
             commands::commits::get_integration_statuses,
+            commands::diff::get_subsystem_diff,
             commands::promotion::dispatch_promotion,
             commands::promotion::preflight_promotion,
             commands::history::list_integration_prs,

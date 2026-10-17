@@ -423,6 +423,11 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
     let allow_gaps = request.allow_gaps;
     let excluded_paths = request.excluded_paths.clone();
     let global_files = subsystem.global_files.clone().unwrap_or_default();
+    // The source tip feeds the "reverts newer work" warning (information
+    // only): `None` when the branch is unreadable skips the check, never
+    // refuses.
+    let source_tip =
+        crate::services::engine::git::rev_parse(&source_repo_dir, &subsystem.source_branch);
     let report = tauri::async_runtime::spawn_blocking(move || {
         let scratch_root = std::env::temp_dir().join("vos-integration");
         let _ = std::fs::create_dir_all(&scratch_root);
@@ -436,6 +441,7 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
             allow_gaps,
             excluded_paths: &excluded_paths,
             global_files: &global_files,
+            source_tip: source_tip.as_deref(),
         };
         crate::services::engine::preflight::compute_preflight(
             &source_repo_dir,
@@ -475,6 +481,12 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
                         PreflightOutcome::Skipped
                     }
                 },
+                reverts_newer: file.reverts_newer.map(|warn| {
+                    crate::github::models::RevertsNewerWork {
+                        sha: warn.sha,
+                        subject: warn.subject,
+                    }
+                }),
             })
             .collect(),
         clean: report.clean,

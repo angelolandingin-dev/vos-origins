@@ -675,6 +675,11 @@ pub enum PreflightOutcome {
 pub struct PreflightFileResult {
     pub path: String,
     pub outcome: PreflightOutcome,
+    /// Set when writing this path would move it backwards: the target blob
+    /// is reachable from the source tip but not from the selected commit
+    /// producing the write. Warning only — never a conflict, never a refusal.
+    #[serde(default)]
+    pub reverts_newer: Option<RevertsNewerWork>,
 }
 
 /// In-tool promotion result (§9.2).
@@ -823,6 +828,82 @@ pub struct CacheStats {
     pub rebuildable: bool,
     pub data_source: DataSource,
     pub note: String,
+}
+
+/// Bucket for one subsystem path against the target branch tip (wire
+/// `bucket`, snake_case). Blob identity only: `missing` is absent in main,
+/// `behind` is a main blob reachable from the source tip (safe to sync),
+/// `main_side_changed` is a main blob from nowhere in subsystem history,
+/// `identical` matches on both sides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubsystemDiffBucket {
+    Missing,
+    Behind,
+    MainSideChanged,
+    Identical,
+}
+
+/// The newer subsystem commit a backwards write would revert (wire,
+/// camelCase): main's copy of the path came from this commit, which is newer
+/// than the commit producing the write. Naming it lets the operator verify
+/// the warning instead of taking it on trust.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevertsNewerWork {
+    pub sha: String,
+    pub subject: String,
+}
+
+/// One subsystem commit touching a diff path (wire, camelCase):
+/// newest-first per path, each carrying its per-branch status from the
+/// existing status machinery plus every path it touched (for the exclusions
+/// prefill). A main-side changed path lists the same factual touchers — the
+/// UI must say plainly that none of them produced main's copy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubsystemDiffCommit {
+    pub sha: String,
+    pub short_sha: String,
+    pub subject: String,
+    pub author_name: String,
+    pub committed_at: String,
+    pub status: CommitStatus,
+    pub touched_paths: Vec<String>,
+}
+
+/// One subsystem-tree path against the target tip (wire, camelCase).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubsystemDiffEntry {
+    pub path: String,
+    pub bucket: SubsystemDiffBucket,
+    pub change: FileChangeKind,
+    pub subsystem_blob: Option<String>,
+    pub main_blob: Option<String>,
+    pub commits: Vec<SubsystemDiffCommit>,
+    pub commits_truncated: bool,
+    /// Set when writing this path would move it backwards: main's blob came
+    /// from a later subsystem commit than the newest toucher. Warning only —
+    /// never a refusal, and un-excluding the path is how the operator does it
+    /// on purpose.
+    pub reverts_newer: Option<RevertsNewerWork>,
+}
+
+/// Subsystem-versus-main diff for one subsystem against one target branch
+/// (wire, camelCase). The universe is the subsystem's tracked tree: main-only
+/// paths are out of scope and never listed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubsystemDiff {
+    pub subsystem_id: String,
+    pub source_branch: String,
+    pub source_tip: String,
+    pub target_branch: String,
+    pub target_tip: String,
+    pub entries: Vec<SubsystemDiffEntry>,
+    pub fetched_at: String,
+    pub data_source: DataSource,
 }
 
 /// Change letter for one path in an integration event audit (wire `change`).

@@ -21,6 +21,7 @@ import type {
   TargetBranchList,
   ValidationFinding,
 } from '../api/types';
+import { RevertsNewerLine } from './RevertsNewer';
 import { CommitStatusBadge } from './StatusBadge';
 import {
   Button,
@@ -263,6 +264,7 @@ function PromotionDialogContent({
     .filter((file) => file.outcome === 'skipped')
     .map((file) => file.path);
   const refusedPaths = Array.from(new Set([...(preflight?.conflicts ?? []), ...skippedFiles]));
+  const revertsNewerFiles = (preflight?.files ?? []).filter((file) => file.revertsNewer);
   const isExcluded = (path: string) =>
     excludedPaths.includes(path) || preflightExcluded.includes(path);
   const isDirect = delivery === 'local_direct';
@@ -492,24 +494,28 @@ function PromotionDialogContent({
               {excludedPaths.length === 0 ? (
                 <p className="text-[11px] text-muted">No paths excluded.</p>
               ) : (
-                <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
-                  {excludedPaths.map((path) => (
-                    <li key={path} className="flex h-[29px] items-center gap-2 px-2.5">
-                      <span
-                        className="mono min-w-0 flex-1 truncate text-[11px] text-muted"
-                        title={path}
-                      >
-                        {path}
-                      </span>
-                      <IconButton
-                        icon={X}
-                        label={`Stop excluding ${path}`}
-                        onClick={() => onRemoveExcludedPath(path)}
-                        className="h-[21px] w-[21px]"
-                      />
-                    </li>
-                  ))}
-                </ul>
+                <>
+                  <p className="text-[11px] leading-relaxed text-muted">
+                    Excluded paths are skipped. Uncheck one to include it — it will be written.
+                  </p>
+                  <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+                    {excludedPaths.map((path) => (
+                      <li key={path} className="flex h-[29px] items-center gap-2 px-2.5">
+                        <Checkbox
+                          checked
+                          onChange={() => onRemoveExcludedPath(path)}
+                          label={`Include ${path} in this promotion`}
+                        />
+                        <span
+                          className="mono min-w-0 flex-1 truncate text-[11px] text-muted"
+                          title={path}
+                        >
+                          {path}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
               )}
               <div className="flex gap-1.5">
                 <input
@@ -697,6 +703,46 @@ function PromotionDialogContent({
                 )}
               </InlineAlert>
               <ExpandablePathList title="Will be overwritten" paths={replaced} />
+              {revertsNewerFiles.length > 0 ? (
+                <InlineAlert
+                  tone="warning"
+                  title={`Reverts newer work — ${revertsNewerFiles.length} path${revertsNewerFiles.length === 1 ? '' : 's'}`}
+                >
+                  <p>
+                    Main already holds newer subsystem content here. Promoting moves it back —
+                    proceed to overwrite deliberately, or exclude the path.
+                  </p>
+                </InlineAlert>
+              ) : null}
+              {revertsNewerFiles.length > 0 ? (
+                <ul className="divide-y divide-line overflow-hidden overflow-y-auto rounded-md border border-line bg-surface max-h-40">
+                  {revertsNewerFiles.map((file) => (
+                    <li key={file.path} className="flex items-start gap-2 px-2.5 py-1.5">
+                      <TriangleAlert
+                        className="mt-0.5 h-3 w-3 shrink-0 text-status-unknown"
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="mono truncate text-[11px] text-fg" title={file.path}>
+                          {file.path}
+                        </p>
+                        {file.revertsNewer ? <RevertsNewerLine warn={file.revertsNewer} /> : null}
+                      </div>
+                      {isExcluded(file.path) ? (
+                        <span className="shrink-0 text-[11px] text-muted">excluded</span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => onAddExcludedPath(file.path)}
+                        >
+                          Exclude
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               {refusedPaths.length > 0 ? (
                 <ul className="divide-y divide-line overflow-hidden overflow-y-auto rounded-md border border-line bg-surface max-h-40">
                   {refusedPaths.map((path) => (

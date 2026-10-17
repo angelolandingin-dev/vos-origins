@@ -7,6 +7,7 @@ import { Dashboard } from '../pages/Dashboard';
 import { IntegrationHistory } from '../pages/IntegrationHistory';
 import { PromoteCommits } from '../pages/PromoteCommits';
 import { Settings } from '../pages/Settings';
+import { SubsystemDiff } from '../pages/SubsystemDiff';
 import { useApp } from './context';
 
 /** Shell + active screen + the app-level promotion dialog shared by multiple screens. */
@@ -54,6 +55,7 @@ export default function App() {
       >
         {route === 'dashboard' ? <Dashboard /> : null}
         {route === 'commit-browser' ? <CommitBrowser /> : null}
+        {route === 'subsystem-diff' ? <SubsystemDiff /> : null}
         {route === 'promote-commits' ? <PromoteCommits /> : null}
         {route === 'integration-history' ? <IntegrationHistory /> : null}
         {route === 'settings' ? <Settings /> : null}

@@ -5,3 +5,4 @@ pub mod engine;
 pub mod live_read;
 pub mod registration;
 pub mod registry;
+pub mod subsystem_diff;

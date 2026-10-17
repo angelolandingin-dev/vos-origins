@@ -21,6 +21,7 @@ import type {
   RegistrationResult,
   RegistryConfig,
   RegistrySnapshot,
+  SubsystemDiff,
   SubsystemRegistrationRequest,
   SubsystemSummary,
   SubsystemSummaryCounts,
@@ -138,6 +139,9 @@ export const api = {
 
   getIntegrationStatuses: (targetBranch: string, subsystemId: string | null, shas: string[]) =>
     call<IntegrationStatus[]>('get_integration_statuses', { targetBranch, subsystemId, shas }),
+
+  getSubsystemDiff: (subsystemId: string, targetBranch: string) =>
+    call<SubsystemDiff>('get_subsystem_diff', { subsystemId, targetBranch }),
 
   submitSubsystemRegistration: (request: SubsystemRegistrationRequest) =>
     call<RegistrationResult>('submit_subsystem_registration', { request }),

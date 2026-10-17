@@ -63,6 +63,8 @@ impl PreflightOutcome {
 pub struct PreflightFile {
     pub path: String,
     pub outcome: PreflightOutcome,
+    /// Set when writing this path would move it backwards (warning only).
+    pub reverts_newer: Option<crate::github::models::RevertsNewerWork>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -109,6 +111,12 @@ pub struct PreflightRequest<'a> {
     pub excluded_paths: &'a [String],
     /// Snapshot of `globalFiles` (exact paths or directory prefixes).
     pub global_files: &'a [String],
+    /// The source branch tip the selection is promoted from. Feeds the
+    /// "reverts newer work" warning: a write moves a path backwards when the
+    /// target blob is reachable from this tip but not from the selected commit
+    /// producing the write. `None` skips the check (no warning, never a
+    /// refusal).
+    pub source_tip: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +177,7 @@ pub fn compute_preflight(
         request.allow_gaps,
         request.excluded_paths,
         request.global_files,
+        request.source_tip,
     );
     Ok(report)
 }
@@ -241,6 +250,7 @@ fn evaluate_plan(
     allow_gaps: bool,
     excluded_paths: &[String],
     global_files: &[String],
+    source_tip: Option<&str>,
 ) -> PreflightReport {
     // Copy semantics, same rules as the engine (addendum §7 + E3):
     // blob membership decides, dates never do. ONE ls-tree per revision for
@@ -334,6 +344,23 @@ fn evaluate_plan(
     let mut by_path: HashMap<String, PreflightOutcome> = HashMap::new();
     let mut replaced: Vec<String> = Vec::new();
     let mut excluded_hit: Vec<String> = Vec::new();
+    // "Reverts newer work" warning (information only, never a refusal): one
+    // `rev-list --objects <write>..<tip>` per distinct selected write commit
+    // (bounded by the selection size), intersected in memory with the target
+    // blobs. A path warns when the target holds content from a LATER
+    // subsystem commit than the selected commit producing the write.
+    let newer_by_write: HashMap<String, HashSet<String>> = match source_tip {
+        Some(tip) => {
+            let mut writes: Vec<String> = newest_toucher.values().cloned().collect();
+            writes.sort();
+            writes.dedup();
+            blobset::blobs_after(source_dir, &writes, tip)
+        }
+        None => HashMap::new(),
+    };
+    let tip_str = source_tip.unwrap_or("");
+    // path -> target blob for Clean non-delete writes that move backwards.
+    let mut warned_paths: HashMap<String, String> = HashMap::new();
     for delta in plan {
         for entry in &delta.entries {
             for rel_path in expanded_paths(entry) {
@@ -360,6 +387,27 @@ fn evaluate_plan(
                 if excluded.contains(&rel_path) && !excluded_hit.contains(&rel_path) {
                     excluded_hit.push(rel_path.clone());
                 }
+                // Backwards-write candidate (warning only, never a refusal):
+                // a Clean non-delete write whose target blob is reachable
+                // from the source tip but not from the selected commit
+                // producing it — main already holds a later version.
+                let is_delete_side = entry.status == 'D'
+                    || (entry.is_rename_or_copy()
+                        && Some(rel_path.as_str()) == entry.old_path.as_deref());
+                if outcome == PreflightOutcome::Clean && !is_delete_side {
+                    if let (Some(write), Some(target_blob)) =
+                        (newest_toucher.get(&rel_path), target_tree.get(&rel_path))
+                    {
+                        let newer = newer_by_write
+                            .get(write)
+                            .is_some_and(|set| set.contains(target_blob));
+                        if newer {
+                            warned_paths
+                                .entry(rel_path.clone())
+                                .or_insert_with(|| target_blob.clone());
+                        }
+                    }
+                }
                 by_path
                     .entry(rel_path)
                     .and_modify(|kept| {
@@ -371,10 +419,33 @@ fn evaluate_plan(
             }
         }
     }
-    let mut files: Vec<PreflightFile> = by_path
-        .into_iter()
-        .map(|(path, outcome)| PreflightFile { path, outcome })
-        .collect();
+    let mut files: Vec<PreflightFile> = {
+        // One naming lookup per warned path (zero when nothing warns): the
+        // newer commit is part of the warning so the operator can verify it.
+        // Unresolvable falls back to a nameless warning rather than a guess.
+        let mut warned: Vec<(&String, &String)> = warned_paths.iter().collect();
+        warned.sort_by(|a, b| a.0.cmp(b.0));
+        let mut named: HashMap<String, crate::github::models::RevertsNewerWork> = HashMap::new();
+        for (path, blob) in warned {
+            let (sha, subject) = blobset::newest_commit_for_blob(source_dir, blob, tip_str, path)
+                .unwrap_or_default();
+            named.insert(
+                (*path).clone(),
+                crate::github::models::RevertsNewerWork { sha, subject },
+            );
+        }
+        by_path
+            .into_iter()
+            .map(|(path, outcome)| {
+                let reverts_newer = named.remove(&path);
+                PreflightFile {
+                    path,
+                    outcome,
+                    reverts_newer,
+                }
+            })
+            .collect()
+    };
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let mut report = PreflightReport::default();
     for file in &files {
@@ -726,6 +797,7 @@ mod tests {
             allow_gaps: false,
             excluded_paths: &empty,
             global_files: &empty,
+            source_tip: None,
         };
         let report = compute_preflight(repo, repo, &request, &scratch).expect("preflight computes");
         let _ = std::fs::remove_dir_all(&scratch);
@@ -939,6 +1011,7 @@ mod tests {
             allow_gaps: false,
             excluded_paths: &empty,
             global_files: &empty,
+            source_tip: None,
         };
         let report =
             compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
@@ -1024,6 +1097,7 @@ mod tests {
             allow_gaps: false,
             excluded_paths: &empty,
             global_files: &empty,
+            source_tip: None,
         };
         let report =
             compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
@@ -1196,6 +1270,7 @@ mod tests {
                 allow_gaps: false,
                 excluded_paths: &empty,
                 global_files: &empty,
+                source_tip: None,
             };
             let report =
                 compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
@@ -1212,5 +1287,127 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&scratch);
         }
+    }
+
+    /// Selecting an older commit while the target already holds a later
+    /// subsystem version warns — naming the newer commit — without refusing:
+    /// the write would move the path backwards.
+    #[test]
+    fn selecting_older_commit_over_newer_target_warns_with_name() {
+        let repo = tmp("reverts");
+        init(&repo);
+        write(&repo, "f.txt", "v1\n");
+        let a = commit_all(&repo, "A base");
+        git(&repo, &["branch", "source"]);
+        git(&repo, &["branch", "target"]);
+        git(&repo, &["checkout", "-q", "source"]);
+        write(&repo, "f.txt", "v2\n");
+        let b = commit_all(&repo, "B second version");
+        // The target independently holds v2 (same bytes as B).
+        git(&repo, &["checkout", "-q", "target"]);
+        write(&repo, "f.txt", "v2\n");
+        let _ = commit_all(&repo, "target takes v2");
+
+        let registry = test_registry();
+        let scratch = tmp("reverts-scratch");
+        let empty: Vec<String> = Vec::new();
+        let tip = git(&repo, &["rev-parse", "source"]);
+        let request = PreflightRequest {
+            policy: &registry.subsystems[0].integration_policy,
+            commits: std::slice::from_ref(&a),
+            mode: PromotionMode::Individual,
+            base_sha: None,
+            target_branch: "target",
+            on_conflict: PromotionOnConflict::Fail,
+            allow_gaps: false,
+            excluded_paths: &empty,
+            global_files: &empty,
+            source_tip: Some(tip.as_str()),
+        };
+        let report =
+            compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
+        let file = report
+            .files
+            .iter()
+            .find(|f| f.path == "f.txt")
+            .expect("f.txt in preflight");
+        assert_eq!(file.outcome, PreflightOutcome::Clean, "{report:?}");
+        let warn = file
+            .reverts_newer
+            .as_ref()
+            .expect("writing v1 over the target's v2 warns");
+        assert_eq!(warn.sha, b, "the warning names the newer commit");
+        assert_eq!(warn.subject, "B second version");
+        // Warning only: never a conflict, never a refusal.
+        assert!(report.conflicts.is_empty(), "{report:?}");
+        assert_eq!(report.conflict, 0);
+        assert_eq!(report.replaced, vec!["f.txt".to_string()]);
+
+        // Without a source tip the check is skipped — still no refusal, and
+        // no warning rather than a guessed one.
+        let request = PreflightRequest {
+            source_tip: None,
+            ..request
+        };
+        let report =
+            compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
+        let file = report
+            .files
+            .iter()
+            .find(|f| f.path == "f.txt")
+            .expect("f.txt in preflight");
+        assert_eq!(file.outcome, PreflightOutcome::Clean);
+        assert!(file.reverts_newer.is_none());
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// Selecting the newer commit while the target holds the older version is
+    /// simply behind: the write moves the path forwards, so it never warns.
+    #[test]
+    fn selecting_newer_commit_over_older_target_does_not_warn() {
+        let repo = tmp("forward");
+        init(&repo);
+        write(&repo, "f.txt", "v1\n");
+        let _a = commit_all(&repo, "A base");
+        git(&repo, &["branch", "source"]);
+        git(&repo, &["branch", "target"]);
+        git(&repo, &["checkout", "-q", "source"]);
+        write(&repo, "f.txt", "v2\n");
+        let b = commit_all(&repo, "B second version");
+        // The target still holds v1: an ancestor version, not newer work.
+
+        let registry = test_registry();
+        let scratch = tmp("forward-scratch");
+        let empty: Vec<String> = Vec::new();
+        let tip = git(&repo, &["rev-parse", "source"]);
+        let request = PreflightRequest {
+            policy: &registry.subsystems[0].integration_policy,
+            commits: std::slice::from_ref(&b),
+            mode: PromotionMode::Individual,
+            base_sha: None,
+            target_branch: "target",
+            on_conflict: PromotionOnConflict::Fail,
+            allow_gaps: false,
+            excluded_paths: &empty,
+            global_files: &empty,
+            source_tip: Some(tip.as_str()),
+        };
+        let report =
+            compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
+        let file = report
+            .files
+            .iter()
+            .find(|f| f.path == "f.txt")
+            .expect("f.txt in preflight");
+        assert_eq!(file.outcome, PreflightOutcome::Clean, "{report:?}");
+        assert!(
+            file.reverts_newer.is_none(),
+            "a forwards write over an ancestor version never warns: {report:?}"
+        );
+        assert!(
+            report.replaced.is_empty(),
+            "a behind target needs no overwrite record: {report:?}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 }

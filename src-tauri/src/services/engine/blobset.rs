@@ -178,6 +178,100 @@ pub fn blobs_in_selected_history(repo_dir: &Path, tips: &[String]) -> HashSet<St
     found
 }
 
+/// Blobs that are reachable from `tip` but NOT from `write`: the content a
+/// write sourced at `write` would move backwards over. The prescribed test is
+/// `git rev-list --objects <write>..<tip>` — reachability, never timestamps.
+/// One spawn per distinct write (deduplicated; `write == tip` costs zero
+/// spawns and yields the empty set), each covering ALL blobs for that range,
+/// intersected in memory with the candidate target blobs by the caller — the
+/// same batching discipline as [`overwrite_allowed`]. Fail-closed: any spawn
+/// failure yields the empty set for that write (no warning, never a refusal).
+pub fn blobs_after(
+    repo_dir: &Path,
+    writes: &[String],
+    tip: &str,
+) -> HashMap<String, HashSet<String>> {
+    let mut uniq: Vec<&str> = Vec::with_capacity(writes.len());
+    for write in writes {
+        if write.is_empty() || write == tip || uniq.contains(&write.as_str()) {
+            continue;
+        }
+        uniq.push(write.as_str());
+    }
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    for write in &uniq {
+        let mut found = HashSet::new();
+        let range = format!("{write}..{tip}");
+        if let Ok(out_) = git::run(repo_dir, &["rev-list", "--objects", &range]) {
+            if out_.status == 0 {
+                for line in out_.stdout_str().lines() {
+                    if let Some(sha) = line.split_whitespace().next() {
+                        if !sha.is_empty() {
+                            found.insert(sha.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        out.insert((*write).to_string(), found);
+    }
+    out
+}
+
+/// Newest commit at or under `tip` whose version of `path` is `blob`, as
+/// `(sha, subject)` — the commit a "reverts newer work" warning names, so the
+/// operator can verify it. A bare `--find-object` walk lists removers as well
+/// as introducers (newest-first would name the commit that *removed* the
+/// version), so each candidate is checked with `<sha>:<path>` until one
+/// actually holds the blob. One `log` spawn plus one `rev-parse` per candidate
+/// (a handful at most, capped below); callers only call it for paths that
+/// already warned (usually zero). `None` when unresolvable: the caller warns
+/// namelessly rather than guessing.
+pub fn newest_commit_for_blob(
+    repo_dir: &Path,
+    blob: &str,
+    tip: &str,
+    path: &str,
+) -> Option<(String, String)> {
+    if blob.is_empty() || tip.is_empty() || path.is_empty() {
+        return None;
+    }
+    let flag = format!("--find-object={blob}");
+    let Ok(out) = git::run(
+        repo_dir,
+        &["log", "--format=%H%x1f%s", &flag, tip, "--", path],
+    ) else {
+        return None;
+    };
+    if out.status != 0 {
+        return None;
+    }
+    // A flapping blob could list many candidates; beyond a cap, give up and
+    // let the caller warn namelessly rather than spawning per candidate.
+    let text = out.stdout_str();
+    let candidates: Vec<&str> = text.lines().take(33).collect();
+    if candidates.len() > 32 {
+        return None;
+    }
+    for line in candidates {
+        let (sha, subject) = line.split_once('\u{1f}').unwrap_or(("", ""));
+        if sha.len() != 40 && sha.len() != 64 {
+            continue;
+        }
+        // `<sha>:<path>` resolves to the blob itself (no `^{commit}` peel:
+        // [`git::rev_parse`] would resolve the commit instead).
+        let spec = format!("{sha}:{path}");
+        let held = git::run(repo_dir, &["rev-parse", "--verify", "--quiet", &spec])
+            .ok()
+            .filter(|out| out.status == 0)
+            .map(|out| out.stdout_trimmed());
+        if held.as_deref() == Some(blob) {
+            return Some((sha.to_string(), subject.to_string()));
+        }
+    }
+    None
+}
+///
 /// Overwrite-allowance for MANY paths sharing ONE history spawn.
 ///
 /// `true` when the target copy is safe to overwrite — either it is
@@ -561,5 +655,106 @@ mod tests {
         let after = super::git::git_spawns_for_tests(&repo);
         assert_eq!(after - before, 0, "range-allowed paths must not spawn");
         assert!(allowed.values().all(|v| *v));
+    }
+
+    #[test]
+    fn blobs_after_contains_only_post_write_content() {
+        let repo = tmp("after");
+        init(&repo);
+        write(&repo, "f.txt", "v1\n");
+        let a = commit(&repo, "A base");
+        write(&repo, "f.txt", "v2\n");
+        let b = commit(&repo, "B edit");
+        write(&repo, "f.txt", "v3\n");
+        let c = commit(&repo, "C edit");
+        let v1 = blob_id(&repo, &a, "f.txt").expect("v1 blob");
+        let v2 = blob_id(&repo, &b, "f.txt").expect("v2 blob");
+        let v3 = blob_id(&repo, &c, "f.txt").expect("v3 blob");
+
+        // The prescribed test: `rev-list --objects <write>..<tip>` —
+        // reachability, never timestamps.
+        let after_a = blobs_after(&repo, std::slice::from_ref(&a), &c);
+        let set_a = &after_a[&a];
+        assert!(
+            !set_a.contains(&v1),
+            "the write's own version is not after it"
+        );
+        assert!(set_a.contains(&v2) && set_a.contains(&v3));
+        let after_b = blobs_after(&repo, std::slice::from_ref(&b), &c);
+        let set_b = &after_b[&b];
+        assert!(!set_b.contains(&v1) && !set_b.contains(&v2));
+        assert!(set_b.contains(&v3));
+        // `write == tip` costs zero spawns and yields the empty set.
+        let before = super::git::git_spawns_for_tests(&repo);
+        let after_c = blobs_after(&repo, std::slice::from_ref(&c), &c);
+        let after = super::git::git_spawns_for_tests(&repo);
+        assert_eq!(after - before, 0, "write == tip must not spawn");
+        assert!(!after_c.contains_key(&c));
+    }
+
+    #[test]
+    fn blobs_after_batches_one_spawn_per_write_regardless_of_path_count() {
+        let repo = tmp("afterbatch");
+        init(&repo);
+        let mut paths: Vec<String> = Vec::new();
+        for i in 0..12 {
+            let name = format!("f{i}.txt");
+            write(&repo, &name, "v1\n");
+            paths.push(name);
+        }
+        let a = commit(&repo, "A base");
+        for i in 0..12 {
+            write(&repo, &format!("f{i}.txt"), "v2\n");
+        }
+        let b = commit(&repo, "B edit all");
+        for i in 0..12 {
+            write(&repo, &format!("f{i}.txt"), "v3\n");
+        }
+        let c = commit(&repo, "C edit all");
+        // Every path shares the same two writes: 12 paths, 2 distinct
+        // writes, 2 spawns — never one per path.
+        let mut writes: Vec<String> = Vec::new();
+        for _ in &paths {
+            writes.push(a.clone());
+            writes.push(b.clone());
+        }
+        let before = super::git::git_spawns_for_tests(&repo);
+        let sets = blobs_after(&repo, &writes, &c);
+        let after = super::git::git_spawns_for_tests(&repo);
+        assert_eq!(
+            after - before,
+            2,
+            "duplicate writes deduplicate to one spawn each, paths never spawn"
+        );
+        assert_eq!(sets.len(), 2);
+        let v3 = blob_id(&repo, &c, "f0.txt").expect("v3 blob");
+        assert!(sets[&b].contains(&v3));
+    }
+
+    #[test]
+    fn newest_commit_for_blob_names_the_introducer() {
+        let repo = tmp("introducer");
+        init(&repo);
+        write(&repo, "f.txt", "v1\n");
+        let _a = commit(&repo, "A base");
+        write(&repo, "f.txt", "v2\n");
+        let b = commit(&repo, "B version with a name");
+        write(&repo, "f.txt", "v3\n");
+        let c = commit(&repo, "C edit");
+        let v2 = blob_id(&repo, &b, "f.txt").expect("v2 blob");
+        let (sha, subject) =
+            newest_commit_for_blob(&repo, &v2, &c, "f.txt").expect("v2 resolves to its introducer");
+        assert_eq!(sha, b);
+        assert_eq!(subject, "B version with a name");
+        assert!(
+            newest_commit_for_blob(
+                &repo,
+                "0123456789abcdef0123456789abcdef01234567",
+                &c,
+                "f.txt"
+            )
+            .is_none(),
+            "an unknown blob never gains a fabricated commit"
+        );
     }
 }

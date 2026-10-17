@@ -266,7 +266,9 @@ pub fn find_live_subsystem<'a>(
     Ok(entry)
 }
 
-fn require_allowed_target(registry: &Registry, branch: &str) -> AppResult<String> {
+/// Reused by the subsystem diff: the target branch must exist in policy.
+/// `pub(crate)` so the diff resolves the same branch the statuses do.
+pub(crate) fn require_allowed_target(registry: &Registry, branch: &str) -> AppResult<String> {
     if branch.trim().is_empty() {
         return Err(AppError::invalid_request("No target branch was specified.")
             .with_remedy("Pick a target branch from the branch selector."));
@@ -1601,24 +1603,27 @@ pub fn integration_event_audit_live(
 // Source commits / details / diff from a source clone (or gh api fallback)
 // ---------------------------------------------------------------------------
 
-struct SourceCommit {
-    sha: String,
-    subject: String,
-    author_name: String,
-    authored_at: String,
-    committed_at: String,
-    committed_unix: i64,
-    parents: Vec<String>,
-    files_changed: u32,
-    additions: u32,
-    deletions: u32,
-    touches_manifest: bool,
+/// One source-branch commit with its raw per-path deltas, newest-first.
+/// `pub(crate)` so the subsystem diff reuses the same single batched
+/// `git log --raw` walk instead of spawning per path.
+pub(crate) struct SourceCommit {
+    pub(crate) sha: String,
+    pub(crate) subject: String,
+    pub(crate) author_name: String,
+    pub(crate) authored_at: String,
+    pub(crate) committed_at: String,
+    pub(crate) committed_unix: i64,
+    pub(crate) parents: Vec<String>,
+    pub(crate) files_changed: u32,
+    pub(crate) additions: u32,
+    pub(crate) deletions: u32,
+    pub(crate) touches_manifest: bool,
     /// `(path, post-commit blob sha, status char)` per changed path — the blob
     /// ids let us compare content against the target branch without a new diff.
-    deltas: Vec<(String, String, char)>,
+    pub(crate) deltas: Vec<(String, String, char)>,
 }
 
-fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<SourceCommit>> {
+pub(crate) fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<SourceCommit>> {
     const REC: char = '\u{1e}';
     const FIELD: char = '\u{1f}';
     let fmt = format!(

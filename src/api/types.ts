@@ -343,6 +343,8 @@ export type PreflightOutcome = 'clean' | 'merged' | 'conflict' | 'skipped';
 export interface PreflightFileResult {
   path: string;
   outcome: PreflightOutcome;
+  /** Set when writing this path would move it backwards (warning only, never a conflict). */
+  revertsNewer: RevertsNewerWork | null;
 }
 
 /** Dry-run mergeability summary: per-file outcomes plus `conflicts` (true refusals only — a diverged target copy is overwritten, never a conflict) and `replaced` (diverged paths the promotion will overwrite). Counts sum to `files.length`. */
@@ -574,4 +576,49 @@ export interface CheckoutRefresh {
 export interface CheckoutClear {
   removed: number;
   message: string;
+}
+
+/** Bucket for one subsystem path against the target branch tip (wire `bucket`, snake_case). */
+export type SubsystemDiffBucket = 'missing' | 'behind' | 'main_side_changed' | 'identical';
+
+/** The newer subsystem commit a backwards write would revert (wire, camelCase). */
+export interface RevertsNewerWork {
+  sha: string;
+  subject: string;
+}
+
+/** One subsystem commit touching a diff path: newest-first, with its per-branch status and every path it touched (for the exclusions prefill). */
+export interface SubsystemDiffCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  authorName: string;
+  committedAt: string;
+  status: CommitStatus;
+  touchedPaths: string[];
+}
+
+/** One subsystem-tree path against the target tip (wire, camelCase). */
+export interface SubsystemDiffEntry {
+  path: string;
+  bucket: SubsystemDiffBucket;
+  change: FileChangeKind;
+  subsystemBlob: string | null;
+  mainBlob: string | null;
+  commits: SubsystemDiffCommit[];
+  commitsTruncated: boolean;
+  /** Set when writing this path would move it backwards (warning only, never a refusal). */
+  revertsNewer: RevertsNewerWork | null;
+}
+
+/** Subsystem-versus-main diff for one subsystem against one target branch (wire, camelCase). */
+export interface SubsystemDiff {
+  subsystemId: string;
+  sourceBranch: string;
+  sourceTip: string;
+  targetBranch: string;
+  targetTip: string;
+  entries: SubsystemDiffEntry[];
+  fetchedAt: string;
+  dataSource: DataSource;
 }

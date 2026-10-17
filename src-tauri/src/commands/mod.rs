@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod commits;
+pub mod diff;
 pub mod history;
 pub mod promotion;
 pub mod registry;
