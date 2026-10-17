@@ -257,6 +257,11 @@ function PromotionDialogContent({
   const selectedBranch = branches.find((branch) => branch.name === targetBranch) ?? null;
   const conflicting = dependencies.filter((dependency) => dependency.conflict);
   const cumulative = mode === 'cumulative';
+  // The unselected-changes override is only offered when the guard behind it
+  // can fire: individual mode with more than one selected commit. A single
+  // commit (or a cumulative range, contiguous by construction) can never trip
+  // the non-contiguous refusal, so showing the control there would be noise.
+  const canIncludeUnselected = !cumulative && sourceShas.length > 1;
   const multiManifest = commits.filter((commit) => commit.touchesManifest).length > 1;
   const replaced = preflight?.replaced ?? [];
   const preflightExcluded = preflight?.excluded ?? [];
@@ -468,15 +473,23 @@ function PromotionDialogContent({
           </section>
 
           <section className="space-y-2 rounded-md border border-line bg-surface p-3">
-            <label className="flex items-start gap-2 text-xs text-fg">
-              <Checkbox
-                checked={allowGaps}
-                onChange={(event) => onAllowGapsChange(event.target.checked)}
-                label="Allow gaps — a skipped commit's changes are included"
-                className="mt-0.5"
-              />
-              <span>Allow gaps — a skipped commit&apos;s changes are included</span>
-            </label>
+            {canIncludeUnselected ? (
+              <>
+                <label className="flex items-start gap-2 text-xs text-fg">
+                  <Checkbox
+                    checked={allowGaps}
+                    onChange={(event) => onAllowGapsChange(event.target.checked)}
+                    label="Include changes from commits I didn't select"
+                    className="mt-0.5"
+                  />
+                  <span>Include changes from commits I didn&apos;t select</span>
+                </label>
+                <p className="text-[11px] leading-relaxed text-muted">
+                  Files are copied whole. If you select A and C but not B, B&apos;s edits to those
+                  same files ship too.
+                </p>
+              </>
+            ) : null}
             <p className="text-[11px] leading-relaxed text-muted">
               Promotion is a copy: the subsystem&apos;s version of every selected file always wins.
               Unsafe paths, secrets, main-owned files, and dependency or lockfile failures still

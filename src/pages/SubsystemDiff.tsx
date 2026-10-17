@@ -318,7 +318,7 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                 <span className="min-w-0 flex-1 truncate">File</span>
                 <span className="w-[110px] shrink-0">Bucket</span>
                 <span className="w-[70px] shrink-0">Change</span>
-                <span className="w-[190px] shrink-0 truncate">Latest</span>
+                <span className="w-[250px] shrink-0">Latest</span>
               </div>
               <ul className="divide-y divide-line">
                 {visible.map((entry) => {
@@ -360,17 +360,17 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                         {entry.change}
                       </span>
                       <span
-                        className="flex w-[160px] min-w-0 shrink-0 items-center gap-1.5"
+                        className="flex w-[250px] min-w-0 shrink-0 items-center gap-1.5"
                         title={
                           latest
-                            ? `${latest.subject} — ${latest.authorName} · ${formatDateTime(latest.committedAt)}`
+                            ? `${latest.sha} "${latest.subject}" — ${latest.authorName} · ${formatDateTime(latest.committedAt)}`
                             : 'No touches in the recent source history'
                         }
                       >
                         {latest ? (
                           <>
-                            <span className="mono shrink-0 text-[11px] text-accent-ink">
-                              {latest.shortSha}
+                            <span className="min-w-0 flex-1 truncate text-[11px] text-fg">
+                              {latest.subject}
                             </span>
                             <span className="mono shrink-0 text-[11px] text-muted tabular-nums">
                               {formatDate(latest.committedAt)}
