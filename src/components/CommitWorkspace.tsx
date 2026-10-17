@@ -16,6 +16,7 @@ import { api } from '../api/invoke';
 import type { CommitStatusKind, WorkflowRun } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
 import { CommitDetailsPanel } from './CommitDetails';
+import { CommitDiffView } from './CommitDiffView';
 import { CommitTable } from './CommitTable';
 import { DiffViewer } from './DiffViewer';
 import { StatusBadge } from './StatusBadge';
@@ -73,9 +74,14 @@ function CommitWorkspaceView() {
   const [statusFilter, setStatusFilter] = useState<CommitStatusKind | 'all'>('all');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [pageSize, setPageSize] = useState(10);
-  // Details is a click-to-open sidebar, never a permanent rail: closed until
-  // a commit row (subject/SHA) opens it, so the diff keeps the reading surface.
-  const [detailsVisible, setDetailsVisible] = useState(false);
+  // Details sits beside the table as a permanent rail on wide screens (and as a
+  // dismissible overlay below the compact breakpoint). Row clicks only move
+  // focus; they never open or close the panel.
+  const [detailsVisible, setDetailsVisible] = useState(() =>
+    typeof window === 'undefined' || typeof window.matchMedia !== 'function'
+      ? true
+      : window.matchMedia('(min-width: 1280px)').matches,
+  );
   const [sourceTab, setSourceTab] = useState<SourceTab>('commits');
 
   return (
@@ -136,6 +142,12 @@ function CommitWorkspacePanel({
   const [pageNumber, setPageNumber] = useState(1);
   const [bottomTab, setBottomTab] = useState<BottomTab>('diff');
   const [diffPath, setDiffPath] = useState<string | null>(null);
+  // Dedicated full-diff view (GitHub Desktop History style): replaces the whole
+  // workspace with a back control, a changed-files column and stacked per-file
+  // diffs. The bottom strip stays a single-file preview only.
+  const [diffView, setDiffView] = useState<{ sha: string; initialPath: string | null } | null>(
+    null,
+  );
   // Tall work surface: resizable split, default 440px (~19 rows at 20px).
   const [diffHeight, setDiffHeight] = useState(440);
   const resizingRef = useRef(false);
@@ -229,22 +241,11 @@ function CommitWorkspacePanel({
   );
   const activeDiffPath = diffPath ?? diff.data?.filePath ?? null;
 
-  // Row subject/SHA opens the details sidebar; the checkbox is selection-only
-  // (see CommitTable) so the two gestures never conflict.
+  // Row subject/SHA only moves focus; the details rail is permanent on wide
+  // screens, so the two gestures never conflict.
   const handleFocusSha = (sha: string) => {
     app.setFocusedSha(sha);
-    onDetailsVisibleChange(true);
   };
-
-  // Dismissible sidebar: Escape closes it without touching selection.
-  useEffect(() => {
-    if (!detailsVisible) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onDetailsVisibleChange(false);
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [detailsVisible, onDetailsVisibleChange]);
 
   const startDiffResize = (event: React.MouseEvent) => {
     event.preventDefault();
@@ -265,10 +266,15 @@ function CommitWorkspacePanel({
     document.addEventListener('mouseup', onUp);
   };
 
-  const showDiff = (sha: string, filePath: string) => {
+  // View Full Diff and every per-file affordance open the dedicated diff
+  // view; the bottom strip stays a single-file preview with its own picker.
+  const openDiffView = (sha: string, filePath: string | null) => {
     app.setFocusedSha(sha);
-    setDiffPath(filePath || null);
-    setBottomTab('diff');
+    setDiffView({ sha, initialPath: filePath || null });
+  };
+
+  const showDiff = (sha: string, filePath: string) => {
+    openDiffView(sha, filePath);
   };
 
   const promote = (sha: string) => {
@@ -311,14 +317,30 @@ function CommitWorkspacePanel({
       onShowDiff={showDiff}
       activeDiffPath={activeDiffPath}
       onOpenExternal={app.openExternal}
-      onClose={() => onDetailsVisibleChange(false)}
+      onClose={isWide ? undefined : () => onDetailsVisibleChange(false)}
       mainRepository={app.auth.data?.mainRepository ?? null}
     />
   );
 
+  // Dedicated diff view replaces the whole workspace; the back control returns
+  // here with focus and selection untouched.
+  if (diffView && subsystem) {
+    const diffCommit = listing.find((candidate) => candidate.sha === diffView.sha) ?? null;
+    return (
+      <CommitDiffView
+        subsystemId={subsystem.id}
+        sha={diffView.sha}
+        targetBranch={app.targetBranch}
+        initialPath={diffView.initialPath}
+        commit={diffCommit}
+        onBack={() => setDiffView(null)}
+      />
+    );
+  }
+
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 gap-0">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-0">
+    <div className="relative flex min-h-0 min-w-0 flex-1 gap-2.5">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5">
         <Panel
           className="min-h-[180px] min-w-0 flex-1"
           bodyClassName="flex min-h-0 flex-1 flex-col"
@@ -730,33 +752,28 @@ function CommitWorkspacePanel({
         </Panel>
       </div>
 
-      {detailsVisible ? (
-        isWide ? (
-          <aside
-            aria-label="Commit details"
-            className="absolute top-0 right-0 bottom-0 z-30 flex w-[380px] max-w-full flex-col border-l border-line bg-surface"
+      {isWide ? (
+        detailsVisible ? (
+          <Panel
+            as="aside"
+            className="w-[340px] shrink-0"
+            bodyClassName="flex min-h-0 flex-1 flex-col"
           >
-            <Panel
-              as="div"
-              className="min-h-0 flex-1 rounded-none border-0"
-              bodyClassName="flex min-h-0 flex-1 flex-col"
-            >
-              {detailsPanel}
-            </Panel>
+            {detailsPanel}
+          </Panel>
+        ) : null
+      ) : detailsVisible ? (
+        <>
+          <button
+            type="button"
+            aria-label="Hide commit details"
+            className="fixed inset-0 z-30 bg-scrim"
+            onClick={() => onDetailsVisibleChange(false)}
+          />
+          <aside className="fixed top-16 right-0 bottom-0 z-40 flex w-[380px] max-w-full flex-col border-l border-line bg-surface">
+            {detailsPanel}
           </aside>
-        ) : (
-          <>
-            <button
-              type="button"
-              aria-label="Hide commit details"
-              className="fixed inset-0 z-30 bg-scrim"
-              onClick={() => onDetailsVisibleChange(false)}
-            />
-            <aside className="fixed top-16 right-0 bottom-0 z-40 flex w-[380px] max-w-full flex-col border-l border-line bg-surface">
-              {detailsPanel}
-            </aside>
-          </>
-        )
+        </>
       ) : null}
     </div>
   );

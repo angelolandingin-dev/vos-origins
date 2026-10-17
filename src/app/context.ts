@@ -145,7 +145,11 @@ export interface AppContextValue {
   openExternal: (url: string) => void;
 
   promotion: PromotionState;
-  openPromotionDialog: (shas: string[], commits: CommitSummary[]) => void;
+  openPromotionDialog: (
+    shas: string[],
+    commits: CommitSummary[],
+    options?: { excludedPaths?: string[] },
+  ) => void;
   closePromotionDialog: () => void;
   removePromotionSha: (sha: string) => void;
   setPromotionMode: (mode: PromotionMode) => void;

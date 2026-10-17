@@ -217,23 +217,26 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     [pushNotice],
   );
 
-  const openPromotionDialog = useCallback((shas: string[], commits: CommitSummary[]) => {
-    setPromotion({
-      open: true,
-      shas,
-      commits,
-      mode: 'individual',
-      baseSha: '',
-      delivery: 'local_direct',
-      onConflict: 'fail',
-      message: '',
-      allowGaps: false,
-      excludedPaths: [],
-      dispatching: false,
-      error: null,
-      result: null,
-    });
-  }, []);
+  const openPromotionDialog = useCallback(
+    (shas: string[], commits: CommitSummary[], options?: { excludedPaths?: string[] }) => {
+      setPromotion({
+        open: true,
+        shas,
+        commits,
+        mode: 'individual',
+        baseSha: '',
+        delivery: 'local_direct',
+        onConflict: 'fail',
+        message: '',
+        allowGaps: false,
+        excludedPaths: options?.excludedPaths ?? [],
+        dispatching: false,
+        error: null,
+        result: null,
+      });
+    },
+    [],
+  );
 
   const closePromotionDialog = useCallback(
     () => setPromotion((current) => ({ ...current, open: false })),

@@ -105,6 +105,9 @@ export interface DiffViewerProps {
   selectedPath: string | null;
   onSelectPath: (path: string) => void;
   onOpenExternal: (url: string) => void;
+  /** Controlled side-by-side/unified mode; falls back to internal state when omitted. */
+  mode?: 'side' | 'unified';
+  onModeChange?: (mode: 'side' | 'unified') => void;
 }
 
 export function DiffViewer({
@@ -116,8 +119,12 @@ export function DiffViewer({
   selectedPath,
   onSelectPath,
   onOpenExternal,
+  mode: controlledMode,
+  onModeChange,
 }: DiffViewerProps) {
-  const [mode, setMode] = useState<'side' | 'unified'>('side');
+  const [internalMode, setInternalMode] = useState<'side' | 'unified'>('side');
+  const mode = controlledMode ?? internalMode;
+  const setMode = onModeChange ?? setInternalMode;
 
   if (loading && !diff) return <LoadingState label="Fetching the file diff…" />;
   if (error) return <ErrorState error={error} onRetry={onRetry} compact />;
