@@ -2,7 +2,6 @@
 //! Unsupported managers / missing lockfiles report `skipped`; fail closed.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockfileOutcome {
@@ -75,7 +74,7 @@ fn resolve_program(program: &str) -> PathBuf {
 }
 
 pub fn cli_available(program: &str) -> Option<String> {
-    let output = Command::new(resolve_program(program))
+    let output = crate::platform::hidden(resolve_program(program))
         .arg("--version")
         .output()
         .ok()?;
@@ -122,7 +121,7 @@ impl LockfileGenerator for RealLockfileGenerator {
         };
 
         let command_line = format!("{program} {}", args.join(" "));
-        let output = Command::new(resolve_program(program))
+        let output = crate::platform::hidden(resolve_program(program))
             .args(&args)
             .current_dir(worktree_dir)
             .output();

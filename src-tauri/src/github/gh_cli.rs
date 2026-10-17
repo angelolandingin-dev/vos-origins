@@ -1,7 +1,6 @@
 //! `gh` detection, auth tokens, and engine prerequisites. Explicit argv only;
 //! credentials stay in the CLI/OS store, never in state/logs.
 
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -31,7 +30,7 @@ pub struct GhProbe {
 }
 
 fn run_gh(args: &[&str]) -> (bool, String) {
-    match Command::new("gh").args(args).output() {
+    match crate::platform::hidden("gh").args(args).output() {
         Ok(output) => {
             let mut text = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -113,7 +112,7 @@ pub fn auth_token() -> Option<String> {
 }
 
 fn probe_gh_token() -> Option<String> {
-    let out = Command::new("gh")
+    let out = crate::platform::hidden("gh")
         .args(["auth", "token", "--hostname", DEFAULT_HOST])
         .output()
         .ok()?;
@@ -160,7 +159,10 @@ pub fn clear_token_cache_for_tests() {
 }
 
 pub fn git_version() -> Option<String> {
-    let out = Command::new("git").arg("--version").output().ok()?;
+    let out = crate::platform::hidden("git")
+        .arg("--version")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

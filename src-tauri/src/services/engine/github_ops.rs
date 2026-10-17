@@ -2,7 +2,7 @@
 //! Explicit argv only; tokens never land in args, URLs are redacted for logs.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -303,7 +303,7 @@ impl RealGitHubOps {
     }
 
     fn run_gh(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
-        let mut command = Command::new("gh");
+        let mut command = crate::platform::hidden("gh");
         command
             .args(args)
             .stdin(Stdio::piped())

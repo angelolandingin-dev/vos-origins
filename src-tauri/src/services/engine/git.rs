@@ -57,7 +57,7 @@ impl std::error::Error for GitError {}
 /// Manager, askpass, or the terminal): the engine always supplies its own token, so
 /// anything else must fail fast instead of popping a sign-in dialog.
 fn base_command() -> Command {
-    let mut command = Command::new("git");
+    let mut command = crate::platform::hidden("git");
     command
         .arg("-c")
         .arg("credential.helper=")

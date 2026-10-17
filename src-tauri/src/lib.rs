@@ -6,6 +6,7 @@ pub mod commands;
 pub mod error;
 pub mod fixtures;
 pub mod github;
+pub mod platform;
 pub mod services;
 #[cfg(test)]
 pub mod test_support;
