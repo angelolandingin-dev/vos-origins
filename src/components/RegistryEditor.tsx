@@ -20,6 +20,40 @@ function splitLines(value: string): string[] {
     .filter((item) => item.length > 0);
 }
 
+/**
+ * A comma-separated list field that keeps the raw text while you type.
+ *
+ * Rendering the parsed array straight back into the box destroys the separator
+ * as it is typed - split, filter out the empty entry, join - so a second value
+ * can never be entered. The draft holds the text; the config gets the parse.
+ */
+function ListField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState(value.join(', '));
+  return (
+    <label className="block">
+      <span className="muted">{label}</span>
+      <input
+        className="input mt-1"
+        value={draft}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(event) => {
+          setDraft(event.target.value);
+          onChange(splitList(event.target.value));
+        }}
+      />
+    </label>
+  );
+}
+
 const DEFAULT_POLICY: RegistrySubsystem['integrationPolicy'] = {
   applicationFiles: 'selected-commit-delta',
   packageJson: 'merge-dependency-delta',
@@ -130,42 +164,26 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
             }
           />
         </label>
-        <label className="block">
-          <span className="muted">Allowed target branches (comma-separated)</span>
-          <input
-            className="input mt-1"
-            value={config.promotion.allowedTargetBranches.join(', ')}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={(event) =>
-              setConfig((current) => ({
-                ...current,
-                promotion: {
-                  ...current.promotion,
-                  allowedTargetBranches: splitList(event.target.value),
-                },
-              }))
-            }
-          />
-        </label>
-        <label className="block">
-          <span className="muted">Allowed branch patterns (safe glob, e.g. release/*)</span>
-          <input
-            className="input mt-1"
-            value={config.promotion.allowedTargetBranchPatterns.join(', ')}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={(event) =>
-              setConfig((current) => ({
-                ...current,
-                promotion: {
-                  ...current.promotion,
-                  allowedTargetBranchPatterns: splitList(event.target.value),
-                },
-              }))
-            }
-          />
-        </label>
+        <ListField
+          label="Allowed target branches (comma-separated)"
+          value={config.promotion.allowedTargetBranches}
+          onChange={(next) =>
+            setConfig((current) => ({
+              ...current,
+              promotion: { ...current.promotion, allowedTargetBranches: next },
+            }))
+          }
+        />
+        <ListField
+          label="Allowed branch patterns (safe glob, e.g. release/*)"
+          value={config.promotion.allowedTargetBranchPatterns}
+          onChange={(next) =>
+            setConfig((current) => ({
+              ...current,
+              promotion: { ...current.promotion, allowedTargetBranchPatterns: next },
+            }))
+          }
+        />
         <div className="rounded-md border border-line bg-raised px-3 py-2">
           <p className="text-xs font-semibold text-fg">Promotion: local-first</p>
           <p className="mt-1 text-[11px] text-muted">Push + PR is opt-in per promotion.</p>
