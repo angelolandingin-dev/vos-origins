@@ -358,45 +358,58 @@ pub fn resolve_source_checkout(
 // Status: reachable trailers + open-PRs overlay (never fabricate Integrated)
 // ---------------------------------------------------------------------------
 
-fn commit_iso_subject(
-    repo_dir: &Path,
-    sha: &str,
-) -> (Option<String>, Option<String>, Option<String>) {
-    let iso = git::run(repo_dir, &["show", "-s", "--format=%cI", sha])
-        .ok()
-        .filter(|o| o.status == 0)
-        .map(|o| o.stdout_trimmed())
-        .filter(|s| !s.is_empty());
-    let subject = git::run(repo_dir, &["show", "-s", "--format=%s", sha])
-        .ok()
-        .filter(|o| o.status == 0)
-        .map(|o| o.stdout_trimmed());
-    let message = git::run(repo_dir, &["show", "-s", "--format=%B", sha])
-        .ok()
-        .filter(|o| o.status == 0)
-        .map(|o| o.stdout_str());
-    (iso, subject, message)
+/// Evidence + reachability harvested **once per branch** and shared by every
+/// row on the page. All three replays are tip-keyed through [`cached_replay`]
+/// (the `91b4dd7` memo): a hit can never be stale, a moved tip recomputes.
+/// After the memo warms, a page of N rows costs O(1) spawns instead of ~12
+/// per integrated row (`git show` x4 + `rev-parse` x2 + `merge-base` reads).
+struct StatusEnrichment {
+    /// Details + reachable set from the resolved branch ref — the same walk
+    /// [`compute_branch_status`] replays, so every claimed integration commit
+    /// is present and its memo entry is already hot (no walk here).
+    primary: history::ReplayResult,
+    /// Reachable set of the remote-tracking ref, when it resolves.
+    remote: Option<history::ReplayResult>,
+    /// Reachable set of the local ref, when it resolves.
+    local: Option<history::ReplayResult>,
+}
+
+fn status_enrichment_for(repo_dir: &Path, queried_branch: &str) -> StatusEnrichment {
+    let remote_ref = format!("refs/remotes/origin/{queried_branch}");
+    let local_ref = format!("refs/heads/{queried_branch}");
+    let primary = history::resolve_ref(repo_dir, queried_branch)
+        .map(|reference| history::cached_replay(repo_dir, &reference))
+        .unwrap_or_default();
+    StatusEnrichment {
+        remote: history::cached_replay_if_resolvable(repo_dir, &remote_ref),
+        local: history::cached_replay_if_resolvable(repo_dir, &local_ref),
+        primary,
+    }
 }
 
 fn evidence_for(
-    repo_dir: &Path,
+    detail: Option<&history::CommitDetail>,
     integration_commit: &str,
     queried_branch: &str,
     promotion_target: Option<&str>,
 ) -> IntegrationEvidence {
-    let (iso, subject, message) = commit_iso_subject(repo_dir, integration_commit);
     let target = promotion_target.unwrap_or(queried_branch).to_string();
     let inherited = if target == queried_branch {
         None
     } else {
         Some(target.clone())
     };
+    let iso = detail
+        .map(|d| d.committed_iso.clone())
+        .filter(|s| !s.is_empty());
+    let subject = detail.map(|d| d.subject.clone());
+    let message = detail
+        .map(|d| d.message.trim().to_string())
+        .filter(|m| !m.is_empty());
     IntegrationEvidence {
         main_commit_sha: integration_commit.to_string(),
         merged_at: iso.unwrap_or_else(now_rfc3339),
         message: message
-            .map(|m| m.trim().to_string())
-            .filter(|m| !m.is_empty())
             .or(subject)
             .unwrap_or_else(|| format!("Integration {integration_commit}")),
         pull_request_number: None,
@@ -405,11 +418,9 @@ fn evidence_for(
     }
 }
 
-/// Last-fetch time for the checkout (`FETCH_HEAD` mtime, reused checkout TTL
-/// fetch — no per-commit network round-trip: two `rev-parse`s plus one `log`
-/// walk over already-fetched objects). Used for the
-/// `Unknown (stale, as of <time>)` label when the remote-tracking ref cannot
-/// be read (§8).
+/// Last-fetch time for the checkout (`FETCH_HEAD` mtime — filesystem metadata
+/// only, no git spawn). Used for the `Unknown (stale, as of <time>)` label
+/// when the remote-tracking ref cannot be read (§8).
 fn fetch_time_str(repo_dir: &Path) -> String {
     let fetch_head = repo_dir.join(".git").join("FETCH_HEAD");
     // Bare repos and worktrees differ: try `.git/FETCH_HEAD`, then `FETCH_HEAD`.
@@ -430,8 +441,24 @@ fn fetch_time_str(repo_dir: &Path) -> String {
     "unknown fetch time".to_string()
 }
 
-fn branch_result_to_status(
+/// Convert a whole page of branch results with **one** enrichment (one
+/// memoized walk per ref, shared by all rows) instead of ~12 git spawns per
+/// integrated row.
+fn branch_results_to_statuses(
     repo_dir: &Path,
+    queried_branch: &str,
+    results: &[history::BranchStatusResult],
+) -> Vec<CommitStatus> {
+    let enrichment = status_enrichment_for(repo_dir, queried_branch);
+    results
+        .iter()
+        .map(|result| branch_result_to_status_with(repo_dir, &enrichment, queried_branch, result))
+        .collect()
+}
+
+fn branch_result_to_status_with(
+    repo_dir: &Path,
+    enrichment: &StatusEnrichment,
     queried_branch: &str,
     result: &history::BranchStatusResult,
 ) -> CommitStatus {
@@ -442,10 +469,18 @@ fn branch_result_to_status(
             // trailers is NOT evidence of no promotion — it is Unknown/needs
             // verification, never Eligible. Message parsing is a hint for the
             // claim; the trailer block is the verification (and blob
-            // membership decides divergence elsewhere — E2).
+            // membership decides divergence elsewhere — E2). The message comes
+            // from the branch walk's harvested details, not a per-row
+            // `git show`: a commit absent from the walk reads as empty, which
+            // can only yield Unknown here, never a fabricated Integrated.
             if let Some(commit) = result.integration_commit.as_deref() {
-                let msg = git::commit_message(repo_dir, commit);
-                let parsed = crate::services::engine::provenance::parse_trailers(&msg);
+                let msg = enrichment
+                    .primary
+                    .details
+                    .get(commit)
+                    .map(|d| d.message.as_str())
+                    .unwrap_or("");
+                let parsed = crate::services::engine::provenance::parse_trailers(msg);
                 let has_subsystem = parsed.first("Subsystem-ID").is_some();
                 let has_source = parsed
                     .get("Source-Commit")
@@ -464,7 +499,12 @@ fn branch_result_to_status(
                 }
             }
             let evidence = result.integration_commit.as_deref().map(|commit| {
-                evidence_for(repo_dir, commit, queried_branch, result.promotion_target.as_deref())
+                evidence_for(
+                    enrichment.primary.details.get(commit),
+                    commit,
+                    queried_branch,
+                    result.promotion_target.as_deref(),
+                )
             });
             let mut detail = match &evidence {
                 Some(ev) => format!(
@@ -484,25 +524,23 @@ fn branch_result_to_status(
             // commit is reachable locally we keep Integrated (local-only),
             // not Unknown.
             if let Some(commit) = result.integration_commit.as_deref() {
-                let remote_ref = format!("refs/remotes/origin/{queried_branch}");
-                let local_ref = format!("refs/heads/{queried_branch}");
-                let remote_tip = git::rev_parse(repo_dir, &remote_ref);
-                let local_tip = git::rev_parse(repo_dir, &local_ref);
-                let in_remote = remote_tip.as_deref().is_some_and(|tip| {
-                    git::is_ancestor(repo_dir, commit, tip)
-                });
+                let in_remote = enrichment
+                    .remote
+                    .as_ref()
+                    .is_some_and(|replay| replay.reachable.contains(commit));
                 if in_remote {
                     // Plain Integrated — remote has seen it.
                 } else {
-                    let in_local = local_tip.as_deref().is_some_and(|tip| {
-                        git::is_ancestor(repo_dir, commit, tip)
-                    });
+                    let in_local = enrichment
+                        .local
+                        .as_ref()
+                        .is_some_and(|replay| replay.reachable.contains(commit));
                     if in_local {
                         label_override = Some("Integrated (local only, unpushed)".to_string());
                         detail = format!(
                             "{detail} Reachable from the local '{queried_branch}' only; the remote-tracking ref does not contain it (unpushed). Push when ready."
                         );
-                    } else if remote_tip.is_none() {
+                    } else if enrichment.remote.is_none() {
                         // Remote ref unreadable and no local proof: stale.
                         // Never demote a known-remote Integrated here — this
                         // branch only runs when neither ref contains the
@@ -533,7 +571,12 @@ fn branch_result_to_status(
         }
         BranchStatusKind::Reverted => {
             let evidence = result.integration_commit.as_deref().map(|commit| {
-                evidence_for(repo_dir, commit, queried_branch, result.promotion_target.as_deref())
+                evidence_for(
+                    enrichment.primary.details.get(commit),
+                    commit,
+                    queried_branch,
+                    result.promotion_target.as_deref(),
+                )
             });
             let reverted = result
                 .reverted_by
@@ -607,11 +650,15 @@ pub fn integration_statuses_with_prs(
     // it — commit details — pass it in. An empty slice here means "no open
     // PRs", never "lookup failed".)
     let checked_at = now_rfc3339();
+    // One enrichment for the whole call: every subsystem loop below shares
+    // the same memoized walks instead of re-resolving per row.
+    let enrichment = status_enrichment_for(target_dir, &target_branch);
     let mut out = Vec::new();
     for id in ids {
         let results = history::compute_branch_status(target_dir, &target_branch, &id, shas);
         for result in results {
-            let mut status = branch_result_to_status(target_dir, &target_branch, &result);
+            let mut status =
+                branch_result_to_status_with(target_dir, &enrichment, &target_branch, &result);
             // Overlay: an open PR referencing this SHA reports PrOpen —
             // but only when the reachable history does not already prove
             // Integrated/Reverted. A push or PR never mints Integrated.
@@ -884,15 +931,6 @@ pub fn integration_prs_live(
 // Integration history from reachable history + open PRs
 // ---------------------------------------------------------------------------
 
-fn git_author(repo_dir: &Path, sha: &str) -> String {
-    git::run(repo_dir, &["show", "-s", "--format=%an", sha])
-        .ok()
-        .filter(|o| o.status == 0)
-        .map(|o| o.stdout_trimmed())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
 fn resolve_history_branch(
     target_dir: &Path,
     registry: &Registry,
@@ -986,7 +1024,14 @@ pub fn integration_history_live(
                 target_branch: event.target.clone().unwrap_or_else(|| branch.clone()),
                 main_commit_sha: Some(event.commit.clone()),
                 pull_request_number: None,
-                actor: git_author(target_dir, &event.commit),
+                // Author harvested by the same branch walk (no per-entry
+                // `git show`): the walk is the source of the events, so the
+                // author is always present; blank falls back like before.
+                actor: if event.author.trim().is_empty() {
+                    "unknown".to_string()
+                } else {
+                    event.author.clone()
+                },
                 occurred_at: if event.committed_iso.is_empty() {
                     now_rfc3339()
                 } else {
@@ -1387,9 +1432,12 @@ pub fn commit_page_live(
     let (target_dates, path_dates_truncated) = target_path_dates(target_dir, &target_branch);
     let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
     let results = history::compute_branch_status(target_dir, &target_branch, &entry.id, &shas);
-    let mut status_by_sha: HashMap<String, history::BranchStatusResult> = HashMap::new();
-    for result in results {
-        status_by_sha.insert(result.sha.clone(), result);
+    // One enrichment for every row on the page: the memoized walks are
+    // shared instead of re-read per SHA.
+    let converted = branch_results_to_statuses(target_dir, &target_branch, &results);
+    let mut status_by_sha: HashMap<String, CommitStatus> = HashMap::new();
+    for (result, status) in results.iter().zip(converted) {
+        status_by_sha.insert(result.sha.clone(), status);
     }
     let open_prs = github
         .list_open_pull_requests(&registry.main_repository, &target_branch)
@@ -1418,9 +1466,9 @@ pub fn commit_page_live(
         {
             continue;
         }
-        let branch_result = status_by_sha.get(&commit.sha);
-        let mut status = match branch_result {
-            Some(result) => branch_result_to_status(target_dir, &target_branch, result),
+        let branch_status = status_by_sha.remove(&commit.sha);
+        let mut status = match branch_status {
+            Some(status) => status,
             None => CommitStatus::unknown(&target_branch, "Status unavailable for this SHA."),
         };
         if matches!(
@@ -2814,7 +2862,9 @@ mod tests {
             promotion_target: Some("staging".to_string()),
             reverted_by: None,
         };
-        let status = branch_result_to_status(&dir, "staging", &result);
+        let status = branch_results_to_statuses(&dir, "staging", std::slice::from_ref(&result))
+            .pop()
+            .expect("one status per result");
         assert_eq!(status.kind, CommitStatusKind::Unknown);
         assert!(
             status
@@ -2928,5 +2978,101 @@ mod tests {
             CommitStatusKind::Eligible,
             "an unintegrated SHA stays eligible after the tip moves"
         );
+    }
+
+    /// N rows on one page cost one branch walk, not N. The old per-row
+    /// evidence path paid ~12 git spawns per integrated row (4x `git show` +
+    /// 2x `rev-parse` + 2x `is-ancestor`, each of which re-spawns); the
+    /// batched enrichment shares one tip-keyed walk for all rows. Asserts the
+    /// walk count and the spawn count, not the wall time.
+    #[test]
+    fn page_of_rows_costs_one_branch_walk_not_one_per_row() {
+        // 10 source SHAs, every one integrated via its own trailer commit:
+        // the worst case for per-row evidence gathering.
+        let src = tmp("page-src");
+        init(&src, "master");
+        let mut shas = Vec::new();
+        for i in 0..10 {
+            write(&src, &format!("f{i}.txt"), &format!("content {i}\n"));
+            shas.push(commit_all(&src, &format!("feature {i}")));
+        }
+        let main = tmp("page-main");
+        init(&main, "master");
+        write(&main, "base.txt", "base\n");
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+        git(&main, &["checkout", "-q", "staging"]);
+        for (i, sha) in shas.iter().enumerate() {
+            write(&main, &format!("f{i}.txt"), &format!("content {i}\n"));
+            let trailer = format!(
+                "integrate(hr-management): feature {i}\n\nSubsystem-ID: hr-management\nSource-Repo: ORG/hr-management\nSource-Commit: {sha}\nPromotion-Mode: individual\nPromotion-Target: staging\n"
+            );
+            let _ = commit_all(&main, &trailer);
+        }
+        let registry = single_registry();
+        let empty = StubGitHubOps::new();
+
+        let statuses = integration_statuses_live(
+            &main,
+            &registry,
+            &empty,
+            "staging",
+            Some("hr-management"),
+            &shas,
+        )
+        .expect("statuses");
+        assert_eq!(statuses.len(), 10);
+        for s in &statuses {
+            assert_eq!(
+                s.status.kind,
+                CommitStatusKind::Integrated,
+                "batched enrichment must not lose an integration: {}",
+                s.source_sha
+            );
+            assert!(
+                s.status.evidence.is_some(),
+                "evidence survives batching: {}",
+                s.source_sha
+            );
+        }
+        assert_eq!(
+            crate::services::engine::history::replay_scans_for_tests(&main, "staging"),
+            1,
+            "10 rows must cost one branch walk, not one per row"
+        );
+        let spawns = crate::services::engine::git::git_spawns_for_tests(&main);
+        assert!(
+            spawns <= 16,
+            "10 integrated rows cost {spawns} git spawns, expected O(1) from one shared walk"
+        );
+        // History authors come from the same walk: no per-entry `git show`,
+        // and the actor is still correct.
+        let history = integration_history_live(
+            &main,
+            &registry,
+            &empty,
+            Some("staging"),
+            Some("hr-management"),
+            50,
+        )
+        .expect("history");
+        let merged: Vec<_> = history
+            .entries
+            .iter()
+            .filter(|e| e.kind == IntegrationHistoryKind::Merged)
+            .collect();
+        assert_eq!(merged.len(), 10);
+        for entry in &merged {
+            assert_eq!(
+                entry.actor, "T",
+                "author harvested by the walk, not a per-entry spawn"
+            );
+        }
+        assert_eq!(
+            crate::services::engine::history::replay_scans_for_tests(&main, "staging"),
+            1,
+            "history shares the same tip-keyed scan"
+        );
+        let _ = src;
     }
 }

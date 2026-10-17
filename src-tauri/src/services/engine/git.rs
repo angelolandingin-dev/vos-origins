@@ -74,6 +74,8 @@ fn base_command() -> Command {
 
 /// `Err` = spawn failure; non-zero exit is `Ok` with `status != 0`.
 pub fn run(repo_dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
+    #[cfg(test)]
+    count_spawn_for_tests(repo_dir);
     let mut command = base_command();
     command.arg("-C").arg(repo_dir).args(args);
     let output = command.output().map_err(|err| GitError {
@@ -111,6 +113,39 @@ pub fn run_global(args: &[&str]) -> Result<GitOutput, GitError> {
         stdout: output.stdout,
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+/// Test-only: number of `git` spawns issued against `repo_dir` in this
+/// process. Keyed by directory so parallel tests in their own sandboxes do
+/// not disturb each other's counts. Used by the page-cost regression test
+/// to prove N rows cost O(1) spawns rather than O(N).
+#[cfg(test)]
+pub fn git_spawns_for_tests(repo_dir: &Path) -> u64 {
+    spawn_counts_for_tests()
+        .lock()
+        .map(|counts| {
+            counts
+                .get(&repo_dir.to_string_lossy().to_string())
+                .copied()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn spawn_counts_for_tests() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static COUNTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    COUNTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+fn count_spawn_for_tests(repo_dir: &Path) {
+    if let Ok(mut counts) = spawn_counts_for_tests().lock() {
+        *counts
+            .entry(repo_dir.to_string_lossy().to_string())
+            .or_insert(0) += 1;
+    }
 }
 
 pub fn rev_parse(repo_dir: &Path, rev: &str) -> Option<String> {
@@ -766,7 +801,7 @@ fn redact_after_marker(out: &mut String, marker: &str) {
 pub fn log_records(repo_dir: &Path, rev: &str, limit: usize) -> Vec<LogRecord> {
     const REC: char = '\u{1e}';
     const FIELD: char = '\u{1f}';
-    let fmt = format!("--format=%H{FIELD}%ct{FIELD}%cI{FIELD}%s{FIELD}%B{REC}");
+    let fmt = format!("--format=%H{FIELD}%ct{FIELD}%cI{FIELD}%an{FIELD}%s{FIELD}%B{REC}");
     let args = vec!["log", "--reverse", "--topo-order", &fmt, rev];
     let _ = limit;
     let out = match run(repo_dir, &args) {
@@ -784,12 +819,14 @@ pub fn log_records(repo_dir: &Path, rev: &str, limit: usize) -> Vec<LogRecord> {
         let sha = parts.next().unwrap_or("").to_string();
         let committed_at = parts.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
         let committed_iso = parts.next().unwrap_or("").to_string();
+        let author = parts.next().unwrap_or("").to_string();
         let subject = parts.next().unwrap_or("").to_string();
         let message = parts.next().unwrap_or("").to_string();
         records.push(LogRecord {
             sha,
             committed_at,
             committed_iso,
+            author,
             subject,
             message,
         });
@@ -802,6 +839,7 @@ pub struct LogRecord {
     pub sha: String,
     pub committed_at: i64,
     pub committed_iso: String,
+    pub author: String,
     pub subject: String,
     pub message: String,
 }

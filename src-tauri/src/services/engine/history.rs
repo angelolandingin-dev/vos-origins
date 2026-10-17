@@ -8,14 +8,14 @@
 //! `Integrated` without both `Subsystem-ID` and `Source-Commit` trailers, so
 //! a trailerless false-`Integrated` is unproducible. What the code DOES do:
 //! a claimed `Integrated` whose commit lacks those trailers is reported as
-//! `Unknown / needs verification` (see `branch_result_to_status` in
+//! `Unknown / needs verification` (see `branch_result_to_status_with` in
 //! `live_read`), never `Eligible`.
 //! Reverts may be invisible hand-reverts → divergence is decided by
 //! blob/content comparison in the engine (`TARGET_DIVERGED`); message parsing
 //! here is a hint, never a verdict. Dates determine display order
 //! (deterministic timestamp-then-SHA sort in `build_plan`), never correctness.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -85,6 +85,7 @@ pub struct Event {
     pub commit: String,
     pub committed_at: i64,
     pub committed_iso: String,
+    pub author: String,
     pub subject: String,
     pub subsystem: Option<String>,
     pub source_repo: Option<String>,
@@ -141,8 +142,34 @@ pub fn extract_source_commits(text: &str) -> Vec<String> {
 }
 
 pub fn collect_events(repo_dir: &Path, rev: &str) -> Vec<Event> {
-    let mut events = Vec::new();
+    collect_history(repo_dir, rev).events
+}
+
+/// Evidence-grade commit fields harvested from the same single `git log`
+/// walk that yields the trailer events below. Lets status enrichment answer
+/// every row on a page from memory instead of re-spawning `git show` per
+/// integration commit.
+#[derive(Debug, Clone, Default)]
+pub struct CommitDetail {
+    pub committed_iso: String,
+    pub subject: String,
+    pub message: String,
+}
+
+/// One branch walk, three extractions: the trailer events, the full reachable
+/// SHA set (answers `is-ancestor` membership with no per-row `merge-base`
+/// spawns), and the evidence fields for the event commits.
+#[derive(Debug, Clone, Default)]
+pub struct CollectedHistory {
+    pub events: Vec<Event>,
+    pub reachable: std::collections::HashSet<String>,
+    pub details: std::collections::HashMap<String, CommitDetail>,
+}
+
+pub fn collect_history(repo_dir: &Path, rev: &str) -> CollectedHistory {
+    let mut out = CollectedHistory::default();
     for record in git::log_records(repo_dir, rev, 0) {
+        out.reachable.insert(record.sha.clone());
         let parsed = parse_trailers(&record.message);
         let subsystem = parsed.first("Subsystem-ID").map(|s| s.to_string());
         // `Source-Commit` values arrive validated (40/64 hex, lowercased) and
@@ -153,6 +180,7 @@ pub fn collect_events(repo_dir: &Path, rev: &str) -> Vec<Event> {
             commit: record.sha.clone(),
             committed_at: record.committed_at,
             committed_iso: record.committed_iso.clone(),
+            author: record.author.clone(),
             subject: record.subject.clone(),
             subsystem: subsystem.clone(),
             source_repo: parsed.first("Source-Repo").map(|s| s.to_string()),
@@ -168,11 +196,11 @@ pub fn collect_events(repo_dir: &Path, rev: &str) -> Vec<Event> {
         if let Some(reverts) = parsed.first("Reverts-Integration") {
             let mut event = base(EventType::Revert);
             event.reverts_integration = Some(reverts.to_string());
-            events.push(event);
+            push_event(&mut out, event, &record);
         } else if let Some(restores) = parsed.first("Restores-Integration") {
             let mut event = base(EventType::Restore);
             event.restores_integration = Some(restores.to_string());
-            events.push(event);
+            push_event(&mut out, event, &record);
         } else if let Some((sha, subject)) =
             parse_ordinary_github_revert(&record.subject, &record.message)
         {
@@ -181,13 +209,25 @@ pub fn collect_events(repo_dir: &Path, rev: &str) -> Vec<Event> {
                 event.reverts_integration = sha;
                 event.reverts_subject = subject;
                 event.ordinary = true;
-                events.push(event);
+                push_event(&mut out, event, &record);
             }
         } else if subsystem.is_some() && !source_commits.is_empty() {
-            events.push(base(EventType::Integrate));
+            push_event(&mut out, base(EventType::Integrate), &record);
         }
     }
-    events
+    out
+}
+
+fn push_event(out: &mut CollectedHistory, event: Event, record: &git::LogRecord) {
+    out.details.insert(
+        event.commit.clone(),
+        CommitDetail {
+            committed_iso: record.committed_iso.clone(),
+            subject: record.subject.clone(),
+            message: record.message.clone(),
+        },
+    );
+    out.events.push(event);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +259,14 @@ struct IntegrationInfo {
 pub struct ReplayResult {
     pub statuses: HashMap<String, StatusRecord>,
     pub history: Vec<Event>,
+    /// Every commit SHA reachable from the walked reference. Answers
+    /// `is-ancestor` membership for all page rows with hash lookups instead
+    /// of one `merge-base` spawn per row.
+    pub reachable: HashSet<String>,
+    /// Evidence-grade fields (`committed_iso` / subject / full message) for
+    /// the event commits only — harvested by the same walk, so per-row
+    /// `git show` evidence lookups become map reads.
+    pub details: HashMap<String, CommitDetail>,
 }
 
 fn status_key(subsystem: &str, sha: &str) -> String {
@@ -379,7 +427,11 @@ pub fn replay_events(events: &[Event]) -> ReplayResult {
         }
     }
 
-    ReplayResult { statuses, history }
+    ReplayResult {
+        statuses,
+        history,
+        ..Default::default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -410,7 +462,7 @@ pub struct BranchStatusResult {
     pub reverted_by: Option<String>,
 }
 
-fn resolve_ref(repo_dir: &Path, branch: &str) -> Option<String> {
+pub fn resolve_ref(repo_dir: &Path, branch: &str) -> Option<String> {
     [
         format!("refs/heads/{branch}"),
         format!("refs/remotes/origin/{branch}"),
@@ -418,6 +470,15 @@ fn resolve_ref(repo_dir: &Path, branch: &str) -> Option<String> {
     ]
     .into_iter()
     .find(|candidate| git::rev_parse(repo_dir, candidate).is_some())
+}
+
+/// Memoized replay for a reference that may not resolve (e.g. a missing
+/// remote-tracking ref in a sandbox with no `origin` remote). `None` costs
+/// no walk: unresolvable references are never walked here, so probing both
+/// the remote and the local ref per page stays O(1) spawns.
+pub fn cached_replay_if_resolvable(repo_dir: &Path, reference: &str) -> Option<ReplayResult> {
+    git::rev_parse(repo_dir, reference)?;
+    Some(cached_replay(repo_dir, reference))
 }
 
 /// Memoized [`collect_events`] + [`replay_events`] for `reference` (a ref or
@@ -428,8 +489,11 @@ fn resolve_ref(repo_dir: &Path, branch: &str) -> Option<String> {
 /// still materializing cannot poison the entry a later read needs.
 pub fn cached_replay(repo_dir: &Path, reference: &str) -> ReplayResult {
     let Some(tip) = git::rev_parse(repo_dir, reference) else {
-        let events = collect_events(repo_dir, reference);
-        return replay_events(&events);
+        let collected = collect_history(repo_dir, reference);
+        let mut replayed = replay_events(&collected.events);
+        replayed.reachable = collected.reachable;
+        replayed.details = collected.details;
+        return replayed;
     };
     let key = replay_key(repo_dir, reference, &tip);
     if let Ok(cache) = replay_cache().lock() {
@@ -443,8 +507,10 @@ pub fn cached_replay(repo_dir: &Path, reference: &str) -> ReplayResult {
     if let Ok(mut counts) = scan_counts().lock() {
         *counts.entry(key.clone()).or_insert(0) += 1;
     }
-    let events = collect_events(repo_dir, reference);
-    let replayed = replay_events(&events);
+    let collected = collect_history(repo_dir, reference);
+    let mut replayed = replay_events(&collected.events);
+    replayed.reachable = collected.reachable;
+    replayed.details = collected.details;
     if let Ok(mut cache) = replay_cache().lock() {
         if cache.len() >= REPLAY_CACHE_CAP && !cache.contains_key(&key) {
             if let Some(oldest) = cache
@@ -605,6 +671,7 @@ mod tests {
             commit: commit.to_string(),
             committed_at: at,
             committed_iso: String::new(),
+            author: "T".to_string(),
             subject: subject.to_string(),
             subsystem: Some("hr-management".to_string()),
             source_repo: None,
@@ -630,6 +697,7 @@ mod tests {
             commit: commit.to_string(),
             committed_at: at,
             committed_iso: String::new(),
+            author: "T".to_string(),
             subject: "revert".to_string(),
             subsystem: Some("hr-management".to_string()),
             source_repo: None,
