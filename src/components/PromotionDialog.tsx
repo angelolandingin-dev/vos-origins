@@ -23,6 +23,7 @@ import type {
 } from '../api/types';
 import { RevertsNewerLine } from './RevertsNewer';
 import { CommitStatusBadge } from './StatusBadge';
+import { CommitFileList } from './CommitFileList';
 import {
   Button,
   Checkbox,
@@ -251,7 +252,6 @@ function PromotionDialogContent({
 }: PromotionDialogProps) {
   const [acknowledged, setAcknowledged] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [newExcludedPath, setNewExcludedPath] = useState('');
 
   const branches = targetBranches?.branches ?? [];
   const selectedBranch = branches.find((branch) => branch.name === targetBranch) ?? null;
@@ -495,71 +495,13 @@ function PromotionDialogContent({
               Unsafe paths, secrets, main-owned files, and dependency or lockfile failures still
               block the promotion.
             </p>
-            <div className="space-y-1.5">
-              <div className="flex h-[29px] items-center justify-between gap-2">
-                <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                  Excluded paths
-                </h3>
-                <span className="mono text-right text-muted tabular-nums">
-                  {excludedPaths.length}
-                </span>
-              </div>
-              {excludedPaths.length === 0 ? (
-                <p className="text-[11px] text-muted">No paths excluded.</p>
-              ) : (
-                <>
-                  <p className="text-[11px] leading-relaxed text-muted">
-                    Excluded paths are skipped. Uncheck one to include it — it will be written.
-                  </p>
-                  <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
-                    {excludedPaths.map((path) => (
-                      <li key={path} className="flex h-[29px] items-center gap-2 px-2.5">
-                        <Checkbox
-                          checked
-                          onChange={() => onRemoveExcludedPath(path)}
-                          label={`Include ${path} in this promotion`}
-                        />
-                        <span
-                          className="mono min-w-0 flex-1 truncate text-[11px] text-muted"
-                          title={path}
-                        >
-                          {path}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-              <div className="flex gap-1.5">
-                <input
-                  className="input mono h-[25px] text-[11px]"
-                  value={newExcludedPath}
-                  onChange={(event) => setNewExcludedPath(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      onAddExcludedPath(newExcludedPath);
-                      setNewExcludedPath('');
-                    }
-                  }}
-                  placeholder="path/to/file or directory/prefix"
-                  aria-label="Add an excluded path"
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={!newExcludedPath.trim()}
-                  onClick={() => {
-                    onAddExcludedPath(newExcludedPath);
-                    setNewExcludedPath('');
-                  }}
-                >
-                  Exclude
-                </Button>
-              </div>
-            </div>
+            <CommitFileList
+              preflight={preflight}
+              preflightLoading={preflightLoading}
+              excludedPaths={excludedPaths}
+              onAddExcludedPath={onAddExcludedPath}
+              onRemoveExcludedPath={onRemoveExcludedPath}
+            />
           </section>
 
           <div className="grid gap-4 sm:grid-cols-2">
