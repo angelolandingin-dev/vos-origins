@@ -490,9 +490,9 @@ function PromotionDialogContent({
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Delivery" hint={deliveryHint}>
               <Select
-                aria-label="Promotion delivery"
+                ariaLabel="Promotion delivery"
                 value={delivery}
-                onChange={(event) => onDeliveryChange(event.target.value as PromotionDelivery)}
+                onValueChange={(next) => onDeliveryChange(next as PromotionDelivery)}
                 options={[
                   { value: 'local_direct', label: `Commit to local ${targetBranch} (recommended)` },
                   { value: 'worktree', label: 'Add to working tree (no commit)' },
@@ -504,9 +504,9 @@ function PromotionDialogContent({
 
             <Field label="Mode">
               <Select
-                aria-label="Promotion mode"
+                ariaLabel="Promotion mode"
                 value={mode}
-                onChange={(event) => onModeChange(event.target.value as PromotionMode)}
+                onValueChange={(next) => onModeChange(next as PromotionMode)}
                 options={[
                   { value: 'individual', label: 'Individual (recommended)' },
                   { value: 'cumulative', label: 'Cumulative (requires baseline)' },
@@ -528,9 +528,9 @@ function PromotionDialogContent({
 
             <Field label="Target main-system branch" required hint="Only policy-allowed branches.">
               <Select
-                aria-label="Target main-system branch"
+                ariaLabel="Target main-system branch"
                 value={targetBranch}
-                onChange={(event) => onTargetBranchChange(event.target.value)}
+                onValueChange={(next) => onTargetBranchChange(next)}
                 options={branches.map((branch) => ({
                   value: branch.name,
                   label: `${branch.name}${branch.isDefault ? ' (default)' : ''}${branch.allowed ? '' : ' — not permitted'}`,

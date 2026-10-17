@@ -1,13 +1,6 @@
-import type {
-  ButtonHTMLAttributes,
-  InputHTMLAttributes,
-  ReactNode,
-  Ref,
-  SelectHTMLAttributes,
-} from 'react';
+import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, Ref } from 'react';
 import { useEffect, useId, useRef } from 'react';
 import {
-  ChevronDown,
   CircleAlert,
   Info,
   LoaderCircle,
@@ -20,6 +13,12 @@ import {
 
 import type { ApiError } from '../../api/invoke';
 import { cx } from './cx';
+import { Combobox } from './combobox';
+import { ScrollArea } from './scroll-area';
+import { Select } from './select';
+import { Tooltip } from './tooltip';
+
+export { Combobox, ScrollArea, Select, Tooltip };
 
 /** The GitHub mark is not part of Lucide 1.x, so it is provided inline. */
 export function GitHubMark({ className = 'h-4 w-4' }: { className?: string }) {
@@ -88,56 +87,28 @@ export function IconButton({
   tone?: 'default' | 'danger';
 }) {
   return (
-    <button
-      type="button"
-      {...rest}
-      title={label}
-      aria-label={label}
-      className={cx(
-        'inline-flex h-[25px] w-[25px] items-center justify-center rounded-md text-muted transition-colors',
-        tone === 'danger'
-          ? 'hover:bg-status-blocked-soft hover:text-status-blocked-ink'
-          : 'hover:bg-hover hover:text-fg',
-        'disabled:cursor-not-allowed disabled:opacity-60',
-        className,
-      )}
-    >
-      <Icon className="h-4 w-4" aria-hidden="true" />
-    </button>
+    <Tooltip content={label} side="top">
+      <button
+        type="button"
+        {...rest}
+        aria-label={label}
+        className={cx(
+          'inline-flex h-[25px] w-[25px] shrink-0 items-center justify-center rounded-md text-muted transition-colors',
+          tone === 'danger'
+            ? 'hover:bg-status-blocked-soft hover:text-status-blocked-ink'
+            : 'hover:bg-hover hover:text-fg',
+          'disabled:cursor-not-allowed disabled:opacity-60',
+          className,
+        )}
+      >
+        <Icon className="h-4 w-4" aria-hidden="true" />
+      </button>
+    </Tooltip>
   );
 }
 
 export function Spinner({ className = 'h-4 w-4' }: { className?: string }) {
   return <LoaderCircle className={cx('animate-spin text-accent', className)} aria-hidden="true" />;
-}
-
-export function Select({
-  options,
-  className,
-  ...rest
-}: SelectHTMLAttributes<HTMLSelectElement> & {
-  options: Array<{ value: string; label: string; disabled?: boolean; title?: string }>;
-}) {
-  return (
-    <span className={cx('relative inline-flex w-full', className)}>
-      <select {...rest} className="select">
-        {options.map((option) => (
-          <option
-            key={option.value}
-            value={option.value}
-            disabled={option.disabled}
-            title={option.title}
-          >
-            {option.label}
-          </option>
-        ))}
-      </select>
-      <ChevronDown
-        className="pointer-events-none absolute top-1/2 right-2 h-3.5 w-3.5 -translate-y-1/2 text-muted"
-        aria-hidden="true"
-      />
-    </span>
-  );
 }
 
 export function Checkbox({

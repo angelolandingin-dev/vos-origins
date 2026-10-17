@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Boxes,
   ExternalLink,
@@ -30,7 +30,6 @@ import {
   KeyValue,
   LoadingState,
   Panel,
-  Select,
   Tabs,
 } from './ui/primitives';
 
@@ -74,14 +73,9 @@ function CommitWorkspaceView() {
   const [statusFilter, setStatusFilter] = useState<CommitStatusKind | 'all'>('all');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [pageSize, setPageSize] = useState(10);
-  // Closed by default below the compact breakpoint, where the panel renders as an
-  // overlay that would cover the tab bar and half the workspace on arrival. Uses
-  // the same query (and the same guard) as the panel's own `isWide` derivation.
-  const [detailsVisible, setDetailsVisible] = useState(() =>
-    typeof window === 'undefined' || typeof window.matchMedia !== 'function'
-      ? true
-      : window.matchMedia('(min-width: 1280px)').matches,
-  );
+  // Details is a click-to-open sidebar, never a permanent rail: closed until
+  // a commit row (subject/SHA) opens it, so the diff keeps the reading surface.
+  const [detailsVisible, setDetailsVisible] = useState(false);
   const [sourceTab, setSourceTab] = useState<SourceTab>('commits');
 
   return (
@@ -142,6 +136,9 @@ function CommitWorkspacePanel({
   const [pageNumber, setPageNumber] = useState(1);
   const [bottomTab, setBottomTab] = useState<BottomTab>('diff');
   const [diffPath, setDiffPath] = useState<string | null>(null);
+  // Tall work surface: resizable split, default 440px (~19 rows at 20px).
+  const [diffHeight, setDiffHeight] = useState(440);
+  const resizingRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
@@ -232,6 +229,42 @@ function CommitWorkspacePanel({
   );
   const activeDiffPath = diffPath ?? diff.data?.filePath ?? null;
 
+  // Row subject/SHA opens the details sidebar; the checkbox is selection-only
+  // (see CommitTable) so the two gestures never conflict.
+  const handleFocusSha = (sha: string) => {
+    app.setFocusedSha(sha);
+    onDetailsVisibleChange(true);
+  };
+
+  // Dismissible sidebar: Escape closes it without touching selection.
+  useEffect(() => {
+    if (!detailsVisible) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onDetailsVisibleChange(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [detailsVisible, onDetailsVisibleChange]);
+
+  const startDiffResize = (event: React.MouseEvent) => {
+    event.preventDefault();
+    resizingRef.current = true;
+    const startY = event.clientY;
+    const startHeight = diffHeight;
+    const onMove = (move: MouseEvent) => {
+      if (!resizingRef.current) return;
+      const next = Math.min(720, Math.max(280, startHeight + (startY - move.clientY)));
+      setDiffHeight(next);
+    };
+    const onUp = () => {
+      resizingRef.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
   const showDiff = (sha: string, filePath: string) => {
     app.setFocusedSha(sha);
     setDiffPath(filePath || null);
@@ -278,16 +311,16 @@ function CommitWorkspacePanel({
       onShowDiff={showDiff}
       activeDiffPath={activeDiffPath}
       onOpenExternal={app.openExternal}
-      onClose={isWide ? undefined : () => onDetailsVisibleChange(false)}
+      onClose={() => onDetailsVisibleChange(false)}
       mainRepository={app.auth.data?.mainRepository ?? null}
     />
   );
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 gap-2.5">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5">
+    <div className="relative flex min-h-0 min-w-0 flex-1 gap-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-0">
         <Panel
-          className="min-h-0 flex-1"
+          className="min-h-[180px] min-w-0 flex-1"
           bodyClassName="flex min-h-0 flex-1 flex-col"
           title={
             <span className="flex items-center gap-2">
@@ -302,14 +335,12 @@ function CommitWorkspacePanel({
             <>
               <span className="hidden items-center gap-2 lg:flex">
                 <GitBranch className="h-4 w-4 text-disabled" aria-hidden="true" />
-                <Select
-                  aria-label="Subsystem source branch"
-                  className="w-[150px]"
-                  value={subsystem.sourceBranch}
-                  onChange={() => undefined}
-                  options={[{ value: subsystem.sourceBranch, label: subsystem.sourceBranch }]}
+                <span
+                  className="mono inline-flex h-[25px] max-w-[150px] items-center truncate rounded-md border border-line bg-surface px-2 text-xs text-muted"
                   title="The source branch is fixed by the registry entry."
-                />
+                >
+                  {subsystem.sourceBranch}
+                </span>
               </span>
               <Button
                 size="sm"
@@ -365,7 +396,7 @@ function CommitWorkspacePanel({
               onToggleSha={app.toggleSha}
               onSelectShas={app.setSelectedShas}
               focusedSha={focusedSha}
-              onFocusSha={app.setFocusedSha}
+              onFocusSha={handleFocusSha}
               onPromoteSelected={promoteSelection}
               onClearSelection={app.clearSelection}
               detailsVisible={detailsVisible}
@@ -545,166 +576,187 @@ function CommitWorkspacePanel({
           ) : null}
         </Panel>
 
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize diff pane"
+          title="Drag to resize the diff work surface"
+          onMouseDown={startDiffResize}
+          className="group flex h-[7px] shrink-0 cursor-ns-resize items-center justify-center border-y border-line bg-raised"
+        >
+          <span
+            aria-hidden="true"
+            className="h-[3px] w-16 rounded-full bg-line-strong group-hover:bg-accent"
+          />
+        </div>
+
         <Panel
-          className="h-[290px] shrink-0"
+          className="min-w-0 shrink-0"
           bodyClassName="flex min-h-0 flex-1 flex-col"
           headerClassName="px-2 py-0"
           title={undefined}
         >
-          <Tabs
-            ariaLabel="Diff, workflow logs and related pull requests"
-            value={bottomTab}
-            onChange={(id) => setBottomTab(id as BottomTab)}
-            items={[
-              { id: 'diff', label: 'Diff' },
-              { id: 'logs', label: 'Workflow Logs', count: commitRuns.length || undefined },
-              {
-                id: 'prs',
-                label: 'Related Pull Requests',
-                count: details.data?.relatedPullRequests.length,
-              },
-            ]}
-          />
-
-          {bottomTab === 'diff' ? (
-            <DiffViewer
-              diff={diff.data}
-              loading={diff.loading}
-              error={diff.error}
-              onRetry={diff.reload}
-              files={details.data?.files ?? []}
-              selectedPath={activeDiffPath}
-              onSelectPath={setDiffPath}
-              onOpenExternal={app.openExternal}
+          <div style={{ height: diffHeight }} className="flex min-h-0 flex-col">
+            <Tabs
+              ariaLabel="Diff, workflow logs and related pull requests"
+              value={bottomTab}
+              onChange={(id) => setBottomTab(id as BottomTab)}
+              items={[
+                { id: 'diff', label: 'Diff' },
+                { id: 'logs', label: 'Workflow Logs', count: commitRuns.length || undefined },
+                {
+                  id: 'prs',
+                  label: 'Related Pull Requests',
+                  count: details.data?.relatedPullRequests.length,
+                },
+              ]}
             />
-          ) : null}
 
-          {bottomTab === 'logs' ? (
-            <div className="scroll-area min-h-0 flex-1 p-2.5">
-              {commitRuns.length === 0 ? (
-                <EmptyState
-                  icon={History}
-                  title="No workflow run for this commit"
-                  message="Dispatch a promotion to create one."
-                  action={
-                    <Button size="sm" icon={RefreshCw} onClick={runs.reload}>
-                      Refresh runs
-                    </Button>
-                  }
-                />
-              ) : (
-                <ul className="space-y-2">
-                  {commitRuns.map((run) => (
-                    <li key={run.id} className="rounded-md border border-line bg-surface p-2.5">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {runChip(run)}
-                        <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                          {run.displayTitle}
-                        </span>
-                        <span className="mono text-disabled">{run.headBranch}</span>
+            {bottomTab === 'diff' ? (
+              <DiffViewer
+                diff={diff.data}
+                loading={diff.loading}
+                error={diff.error}
+                onRetry={diff.reload}
+                files={details.data?.files ?? []}
+                selectedPath={activeDiffPath}
+                onSelectPath={setDiffPath}
+                onOpenExternal={app.openExternal}
+              />
+            ) : null}
+
+            {bottomTab === 'logs' ? (
+              <div className="scroll-area min-h-0 flex-1 p-2.5">
+                {commitRuns.length === 0 ? (
+                  <EmptyState
+                    icon={History}
+                    title="No workflow run for this commit"
+                    message="Dispatch a promotion to create one."
+                    action={
+                      <Button size="sm" icon={RefreshCw} onClick={runs.reload}>
+                        Refresh runs
+                      </Button>
+                    }
+                  />
+                ) : (
+                  <ul className="space-y-2">
+                    {commitRuns.map((run) => (
+                      <li key={run.id} className="rounded-md border border-line bg-surface p-2.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {runChip(run)}
+                          <span className="min-w-0 flex-1 truncate text-xs text-fg">
+                            {run.displayTitle}
+                          </span>
+                          <span className="mono text-disabled">{run.headBranch}</span>
+                          <IconButton
+                            icon={ExternalLink}
+                            label="Open run on GitHub"
+                            onClick={() => app.openExternal(run.htmlUrl)}
+                          />
+                        </div>
+                        <p className="mt-1.5 truncate text-[11px] text-muted">
+                          Requested by {run.actor} · target {run.targetBranch} · mode {run.mode} ·{' '}
+                          {formatDateTime(run.createdAt)}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ) : null}
+
+            {bottomTab === 'prs' ? (
+              <div className="scroll-area min-h-0 flex-1 p-2.5">
+                {details.data?.relatedPullRequests.length ? (
+                  <ul className="space-y-2">
+                    {details.data.relatedPullRequests.map((pr) => (
+                      <li
+                        key={`${pr.repository}-${pr.number}`}
+                        className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5"
+                      >
+                        <StatusBadge
+                          kind={
+                            pr.state === 'merged'
+                              ? 'integrated'
+                              : pr.state === 'open'
+                                ? 'pr_open'
+                                : 'unknown'
+                          }
+                          label={`PR #${pr.number} ${pr.state}`}
+                        />
+                        <span className="min-w-0 flex-1 truncate text-xs text-fg">{pr.title}</span>
+                        <span className="mono text-disabled">{pr.repository}</span>
+                        <span className="meta">base {pr.baseBranch}</span>
                         <IconButton
                           icon={ExternalLink}
-                          label="Open run on GitHub"
-                          onClick={() => app.openExternal(run.htmlUrl)}
+                          label="Open pull request"
+                          onClick={() => app.openExternal(pr.htmlUrl)}
                         />
-                      </div>
-                      <p className="mt-1.5 truncate text-[11px] text-muted">
-                        Requested by {run.actor} · target {run.targetBranch} · mode {run.mode} ·{' '}
-                        {formatDateTime(run.createdAt)}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ) : null}
-
-          {bottomTab === 'prs' ? (
-            <div className="scroll-area min-h-0 flex-1 p-2.5">
-              {details.data?.relatedPullRequests.length ? (
-                <ul className="space-y-2">
-                  {details.data.relatedPullRequests.map((pr) => (
-                    <li
-                      key={`${pr.repository}-${pr.number}`}
-                      className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5"
-                    >
-                      <StatusBadge
-                        kind={
-                          pr.state === 'merged'
-                            ? 'integrated'
-                            : pr.state === 'open'
-                              ? 'pr_open'
-                              : 'unknown'
-                        }
-                        label={`PR #${pr.number} ${pr.state}`}
-                      />
-                      <span className="min-w-0 flex-1 truncate text-xs text-fg">{pr.title}</span>
-                      <span className="mono text-disabled">{pr.repository}</span>
-                      <span className="meta">base {pr.baseBranch}</span>
-                      <IconButton
-                        icon={ExternalLink}
-                        label="Open pull request"
-                        onClick={() => app.openExternal(pr.htmlUrl)}
-                      />
-                    </li>
-                  ))}
-                  {details.data.status.evidence?.pullRequestNumber &&
-                  app.auth.data?.mainRepository ? (
-                    <li className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5">
-                      <StatusBadge
-                        kind="integrated"
-                        label={`Integration PR #${details.data.status.evidence.pullRequestNumber}`}
-                      />
-                      <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                        Integration record for this SHA
-                      </span>
-                      <span className="mono text-disabled">{app.auth.data.mainRepository}</span>
-                      <IconButton
-                        icon={ExternalLink}
-                        label="Open integration PR"
-                        onClick={() =>
-                          app.openExternal(
-                            `https://github.com/${app.auth.data?.mainRepository}/pull/${details.data?.status.evidence?.pullRequestNumber}`,
-                          )
-                        }
-                      />
-                    </li>
-                  ) : null}
-                </ul>
-              ) : (
-                <EmptyState
-                  icon={GitPullRequestArrow}
-                  title="No related pull requests"
-                  message="Source and integration PRs for this commit appear here."
-                />
-              )}
-            </div>
-          ) : null}
+                      </li>
+                    ))}
+                    {details.data.status.evidence?.pullRequestNumber &&
+                    app.auth.data?.mainRepository ? (
+                      <li className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5">
+                        <StatusBadge
+                          kind="integrated"
+                          label={`Integration PR #${details.data.status.evidence.pullRequestNumber}`}
+                        />
+                        <span className="min-w-0 flex-1 truncate text-xs text-fg">
+                          Integration record for this SHA
+                        </span>
+                        <span className="mono text-disabled">{app.auth.data.mainRepository}</span>
+                        <IconButton
+                          icon={ExternalLink}
+                          label="Open integration PR"
+                          onClick={() =>
+                            app.openExternal(
+                              `https://github.com/${app.auth.data?.mainRepository}/pull/${details.data?.status.evidence?.pullRequestNumber}`,
+                            )
+                          }
+                        />
+                      </li>
+                    ) : null}
+                  </ul>
+                ) : (
+                  <EmptyState
+                    icon={GitPullRequestArrow}
+                    title="No related pull requests"
+                    message="Source and integration PRs for this commit appear here."
+                  />
+                )}
+              </div>
+            ) : null}
+          </div>
         </Panel>
       </div>
 
-      {isWide ? (
-        detailsVisible ? (
-          <Panel
-            as="aside"
-            className="w-[340px] shrink-0"
-            bodyClassName="flex min-h-0 flex-1 flex-col"
+      {detailsVisible ? (
+        isWide ? (
+          <aside
+            aria-label="Commit details"
+            className="absolute top-0 right-0 bottom-0 z-30 flex w-[380px] max-w-full flex-col border-l border-line bg-surface"
           >
-            {detailsPanel}
-          </Panel>
-        ) : null
-      ) : detailsVisible ? (
-        <>
-          <button
-            type="button"
-            aria-label="Hide commit details"
-            className="fixed inset-0 z-30 bg-scrim"
-            onClick={() => onDetailsVisibleChange(false)}
-          />
-          <aside className="fixed top-16 right-0 bottom-0 z-40 flex w-[380px] max-w-full flex-col border-l border-line bg-surface">
-            {detailsPanel}
+            <Panel
+              as="div"
+              className="min-h-0 flex-1 rounded-none border-0"
+              bodyClassName="flex min-h-0 flex-1 flex-col"
+            >
+              {detailsPanel}
+            </Panel>
           </aside>
-        </>
+        ) : (
+          <>
+            <button
+              type="button"
+              aria-label="Hide commit details"
+              className="fixed inset-0 z-30 bg-scrim"
+              onClick={() => onDetailsVisibleChange(false)}
+            />
+            <aside className="fixed top-16 right-0 bottom-0 z-40 flex w-[380px] max-w-full flex-col border-l border-line bg-surface">
+              {detailsPanel}
+            </aside>
+          </>
+        )
       ) : null}
     </div>
   );

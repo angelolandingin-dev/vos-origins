@@ -172,20 +172,20 @@ function PromoteCommitsPanel({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Select
-            aria-label="Source subsystem"
+            ariaLabel="Source subsystem"
             className="w-[230px]"
             value={subsystem.id}
-            onChange={(event) => app.selectSubsystem(event.target.value)}
+            onValueChange={(next) => app.selectSubsystem(next)}
             options={(app.subsystems.data ?? []).map((entry) => ({
               value: entry.id,
               label: entry.name,
             }))}
           />
           <Select
-            aria-label="Authorized target main-system branch"
+            ariaLabel="Authorized target main-system branch"
             className="w-[200px]"
             value={app.targetBranch}
-            onChange={(event) => app.setTargetBranch(event.target.value)}
+            onValueChange={(next) => app.setTargetBranch(next)}
             options={branches.map((branch) => ({
               value: branch.name,
               label: `target: ${branch.name}`,
@@ -253,9 +253,9 @@ function PromoteCommitsPanel({
                   Mode
                 </span>
                 <Select
-                  aria-label="Promotion mode"
+                  ariaLabel="Promotion mode"
                   value={mode}
-                  onChange={(event) => onModeChange(event.target.value as PromotionMode)}
+                  onValueChange={(next) => onModeChange(next as PromotionMode)}
                   options={[
                     { value: 'individual', label: 'Individual (recommended)' },
                     { value: 'cumulative', label: 'Cumulative (requires an explicit baseline)' },

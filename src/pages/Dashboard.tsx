@@ -93,10 +93,10 @@ export function Dashboard() {
         <h1 className="text-[14px] font-semibold text-fg">Dashboard</h1>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <Select
-            aria-label="Main-system target branch for dashboard counts"
+            ariaLabel="Main-system target branch for dashboard counts"
             className="w-[190px]"
             value={app.targetBranch}
-            onChange={(event) => app.setTargetBranch(event.target.value)}
+            onValueChange={(next) => app.setTargetBranch(next)}
             options={branches.map((branch) => ({
               value: branch.name,
               label: `target: ${branch.name}`,

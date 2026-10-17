@@ -26,6 +26,7 @@ import {
   IconButton,
   LoadingState,
   Select,
+  Tooltip,
 } from './ui/primitives';
 
 const STATUS_FILTER_OPTIONS: Array<{ value: CommitStatusKind | 'all'; label: string }> = [
@@ -161,10 +162,10 @@ export function CommitTable({
         </div>
 
         <Select
-          aria-label="Filter commits by integration status"
+          ariaLabel="Filter commits by integration status"
           className="w-[190px]"
           value={statusFilter}
-          onChange={(event) => onStatusFilterChange(event.target.value as CommitStatusKind | 'all')}
+          onValueChange={(next) => onStatusFilterChange(next as CommitStatusKind | 'all')}
           options={STATUS_FILTER_OPTIONS.map((option) => ({
             value: option.value,
             label: option.label,
@@ -307,7 +308,6 @@ export function CommitTable({
                         checked={selected}
                         onChange={() => {
                           onToggleSha(commit.sha);
-                          onFocusSha(commit.sha);
                         }}
                         label={`Select commit ${commit.shortSha} – ${commit.subject}`}
                       />
@@ -326,24 +326,30 @@ export function CommitTable({
                       />
                     </td>
                     <td className="py-2 pr-2.5 align-top">
-                      <button
-                        type="button"
-                        onClick={() => onFocusSha(commit.sha)}
-                        title={`${commit.sha}\n${statusAppearance(commit.status.kind).meaning}`}
-                        className="mono block w-full rounded-[3px] text-right text-accent-ink hover:underline"
+                      <Tooltip
+                        content={`${commit.sha} — ${statusAppearance(commit.status.kind).meaning}`}
+                        side="top"
+                        align="end"
                       >
-                        {commit.shortSha}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => onFocusSha(commit.sha)}
+                          className="mono block w-full rounded-[3px] text-right text-accent-ink hover:underline"
+                        >
+                          {commit.shortSha}
+                        </button>
+                      </Tooltip>
                     </td>
                     <td className="max-w-[52ch] py-2 pr-2.5 align-top">
-                      <button
-                        type="button"
-                        onClick={() => onFocusSha(commit.sha)}
-                        className="block w-full truncate text-left text-xs text-fg hover:text-fg"
-                        title={commit.subject}
-                      >
-                        {commit.subject}
-                      </button>
+                      <Tooltip content={commit.subject} side="top" align="start">
+                        <button
+                          type="button"
+                          onClick={() => onFocusSha(commit.sha)}
+                          className="block w-full truncate text-left text-xs text-fg hover:text-fg"
+                        >
+                          {commit.subject}
+                        </button>
+                      </Tooltip>
                       <p className="mt-0.5 truncate text-[11px] text-muted">
                         {commit.authorLogin ?? commit.authorName} · {commit.relativeTime}
                         {commit.isMerge ? ' · merge commit' : ''}
@@ -383,8 +389,8 @@ export function CommitTable({
             <Select
               className="w-[76px]"
               value={String(pageSize)}
-              onChange={(event) => onPageSizeChange(Number(event.target.value))}
-              aria-label="Rows per page"
+              onValueChange={(next) => onPageSizeChange(Number(next))}
+              ariaLabel="Rows per page"
               options={[10, 25, 50, 100].map((size) => ({
                 value: String(size),
                 label: String(size),

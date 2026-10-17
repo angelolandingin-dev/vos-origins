@@ -6,12 +6,13 @@ import type { ChangedFile, CommitDiff, DiffHunk, DiffLine } from '../api/types';
 import { cx } from './ui/cx';
 import {
   Button,
+  Combobox,
   EmptyState,
   ErrorState,
   IconButton,
   InlineAlert,
   LoadingState,
-  Select,
+  Tooltip,
 } from './ui/primitives';
 
 /**
@@ -134,29 +135,34 @@ export function DiffViewer({
   const total = rows.length;
   const fileOptions = files.map((file) => ({
     value: file.path,
-    label: `${file.path}  (+${file.additions}/-${file.deletions})`,
+    label: file.path,
+    meta: `+${file.additions}/-${file.deletions}`,
+    title: `${file.path} (+${file.additions}/-${file.deletions})`,
   }));
 
   return (
-    <div className="flex min-h-0 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
         <FileCode2 className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
         {files.length > 1 ? (
-          <Select
-            aria-label="Changed file to preview"
-            className="w-[320px]"
+          <Combobox
+            ariaLabel="Changed file to preview"
             value={selectedPath ?? diff.filePath}
-            onChange={(event) => onSelectPath(event.target.value)}
             options={
               fileOptions.length > 0
                 ? fileOptions
                 : [{ value: diff.filePath, label: diff.filePath }]
             }
+            onSelect={(next) => onSelectPath(next)}
+            searchPlaceholder="Filter files by path…"
+            emptyMessage="No files match this filter."
+            className="w-[320px] max-w-full"
+            listLabel="Changed files"
           />
         ) : (
-          <span className="mono min-w-0 flex-1 truncate text-fg" title={diff.filePath}>
-            {diff.filePath}
-          </span>
+          <Tooltip content={diff.filePath} side="bottom" align="start">
+            <span className="mono min-w-0 flex-1 truncate text-fg">{diff.filePath}</span>
+          </Tooltip>
         )}
 
         <span className="meta">{diff.language}</span>

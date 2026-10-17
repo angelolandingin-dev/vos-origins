@@ -24,10 +24,10 @@ export function CommitBrowser() {
               Status for target
             </span>
             <Select
-              aria-label="Main-system target branch used for status computation"
+              ariaLabel="Main-system target branch used for status computation"
               className="w-[190px]"
               value={app.targetBranch}
-              onChange={(event) => app.setTargetBranch(event.target.value)}
+              onValueChange={(next) => app.setTargetBranch(next)}
               options={branches.map((branch) => ({ value: branch.name, label: branch.name }))}
             />
           </span>

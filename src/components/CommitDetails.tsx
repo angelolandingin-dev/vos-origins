@@ -306,7 +306,7 @@ export function CommitDetailsPanel({
                       onClick={() => onShowDiff(details.sha, file.path)}
                       title={`${file.path}\n${policy.note}`}
                       className={cx(
-                        'flex h-[29px] w-full items-center gap-2 rounded-md px-2.5 text-left transition-colors',
+                        'flex min-h-[29px] w-full items-start gap-2 rounded-md px-2.5 py-1 text-left transition-colors',
                         active ? 'bg-selection' : 'hover:bg-hover',
                       )}
                     >
@@ -319,7 +319,7 @@ export function CommitDetailsPanel({
                       >
                         {glyph.glyph}
                       </span>
-                      <span className="mono min-w-0 flex-1 truncate text-fg tabular-nums">
+                      <span className="mono min-w-0 flex-1 text-xs break-all text-fg tabular-nums">
                         {file.path}
                       </span>
                       <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
@@ -335,7 +335,7 @@ export function CommitDetailsPanel({
                       ) : null}
                     </button>
                     {file.previousPath ? (
-                      <p className="mono truncate px-2.5 pl-7 text-[11px] text-disabled">
+                      <p className="mono px-2.5 pl-7 text-[11px] break-all text-disabled">
                         renamed from {file.previousPath}
                       </p>
                     ) : null}

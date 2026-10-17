@@ -88,10 +88,10 @@ export function WorkflowRuns() {
         <h1 className="text-[14px] font-semibold text-fg">Workflow Runs</h1>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <Select
-            aria-label="Filter runs by subsystem"
+            ariaLabel="Filter runs by subsystem"
             className="w-[220px]"
             value={subsystemFilter}
-            onChange={(event) => setSubsystemFilter(event.target.value)}
+            onValueChange={(next) => setSubsystemFilter(next)}
             options={[
               { value: 'all', label: 'All subsystems' },
               ...(app.subsystems.data ?? []).map((subsystem) => ({
@@ -101,10 +101,10 @@ export function WorkflowRuns() {
             ]}
           />
           <Select
-            aria-label="Filter runs by target branch"
+            ariaLabel="Filter runs by target branch"
             className="w-[190px]"
             value={targetFilter}
-            onChange={(event) => setTargetFilter(event.target.value)}
+            onValueChange={(next) => setTargetFilter(next)}
             options={[
               { value: 'all', label: 'All target branches' },
               ...branches.map((branch) => ({ value: branch, label: branch })),

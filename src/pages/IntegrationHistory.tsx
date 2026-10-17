@@ -66,20 +66,20 @@ export function IntegrationHistory() {
         <h1 className="text-[14px] font-semibold text-fg">Integration History</h1>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <Select
-            aria-label="Target main-system branch"
+            ariaLabel="Target main-system branch"
             className="w-[200px]"
             value={app.targetBranch}
-            onChange={(event) => app.setTargetBranch(event.target.value)}
+            onValueChange={(next) => app.setTargetBranch(next)}
             options={branches.map((branch) => ({
               value: branch.name,
               label: `branch: ${branch.name}`,
             }))}
           />
           <Select
-            aria-label="Filter history by subsystem"
+            ariaLabel="Filter history by subsystem"
             className="w-[220px]"
             value={subsystemFilter}
-            onChange={(event) => setSubsystemFilter(event.target.value)}
+            onValueChange={(next) => setSubsystemFilter(next)}
             options={[
               { value: 'all', label: 'All subsystems' },
               ...(app.subsystems.data ?? []).map((subsystem) => ({

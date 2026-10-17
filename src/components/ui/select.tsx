@@ -1,0 +1,113 @@
+import * as SelectPrimitive from '@radix-ui/react-select';
+import { Check, ChevronDown, ChevronUp } from 'lucide-react';
+
+import { cx } from './cx';
+
+export interface UiSelectOption {
+  value: string;
+  label: string;
+  disabled?: boolean;
+  title?: string;
+}
+
+/**
+ * Ledger-styled Radix Select (listbox popup, keyboard-navigable).
+ *
+ * WebView2/Tauri safety: Radix Select does not take `modal`, so it never sets
+ * `pointer-events: none` on the body. Content uses `position="popper"` with
+ * `avoidCollisions` so popups near the window edge flip instead of clipping,
+ * and closes restore focus to the trigger via `onCloseAutoFocus`.
+ */
+export function Select({
+  value,
+  onValueChange,
+  options,
+  ariaLabel,
+  aria_label,
+  placeholder = 'Select…',
+  className,
+  triggerClassName,
+  disabled = false,
+  id,
+  title,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  options: UiSelectOption[];
+  ariaLabel?: string;
+  aria_label?: string;
+  placeholder?: string;
+  className?: string;
+  triggerClassName?: string;
+  disabled?: boolean;
+  id?: string;
+  title?: string;
+}) {
+  const label = ariaLabel ?? aria_label;
+  return (
+    <SelectPrimitive.Root value={value} onValueChange={onValueChange} disabled={disabled}>
+      <SelectPrimitive.Trigger
+        id={id}
+        aria-label={label}
+        title={title ?? label}
+        className={cx(
+          'inline-flex h-[25px] max-w-full items-center justify-between gap-1.5 rounded-md border border-line-strong bg-surface px-2 text-xs text-fg transition-colors',
+          'hover:bg-hover focus-visible:border-accent focus-visible:outline-none data-[placeholder]:text-muted',
+          'disabled:cursor-not-allowed disabled:opacity-60',
+          triggerClassName,
+          className,
+        )}
+      >
+        <span className="min-w-0 flex-1 truncate text-left">
+          <SelectPrimitive.Value placeholder={placeholder} />
+        </span>
+        <SelectPrimitive.Icon asChild>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />
+        </SelectPrimitive.Icon>
+      </SelectPrimitive.Trigger>
+      <SelectPrimitive.Portal>
+        <SelectPrimitive.Content
+          position="popper"
+          side="bottom"
+          align="start"
+          sideOffset={4}
+          collisionPadding={8}
+          avoidCollisions
+          sticky="partial"
+          onCloseAutoFocus={(event) => event.preventDefault()}
+          className="z-[70] max-h-[280px] min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border border-line bg-overlay animate-fade-in"
+        >
+          <SelectPrimitive.ScrollUpButton className="flex h-[25px] items-center justify-center bg-overlay text-muted">
+            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+          </SelectPrimitive.ScrollUpButton>
+          <SelectPrimitive.Viewport className="max-h-[230px] overflow-y-auto p-1">
+            {options.map((option) => (
+              <SelectPrimitive.Item
+                key={option.value}
+                value={option.value}
+                disabled={option.disabled}
+                title={option.title ?? option.label}
+                className={cx(
+                  'flex h-[29px] cursor-pointer items-center gap-2 rounded-[3px] px-2.5 text-xs text-fg outline-none select-none',
+                  'hover:bg-hover focus:bg-selection data-[state=checked]:bg-selection',
+                  'data-[disabled]:cursor-not-allowed data-[disabled]:opacity-60',
+                )}
+              >
+                <SelectPrimitive.ItemIndicator asChild>
+                  <Check className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+                </SelectPrimitive.ItemIndicator>
+                <span className="w-3.5 shrink-0 data-[state=checked]:hidden" aria-hidden="true" />
+                <SelectPrimitive.ItemText asChild>
+                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                </SelectPrimitive.ItemText>
+              </SelectPrimitive.Item>
+            ))}
+          </SelectPrimitive.Viewport>
+          <SelectPrimitive.ScrollDownButton className="flex h-[25px] items-center justify-center bg-overlay text-muted">
+            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+          </SelectPrimitive.ScrollDownButton>
+        </SelectPrimitive.Content>
+      </SelectPrimitive.Portal>
+    </SelectPrimitive.Root>
+  );
+}
