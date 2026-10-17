@@ -16,10 +16,10 @@ import type {
   PromotionDelivery,
   PromotionDispatchResult,
   PromotionMode,
-  PromotionOnConflict,
   PromotionPreflight,
   SubsystemSummary,
   TargetBranchList,
+  ValidationFinding,
 } from '../api/types';
 import { CommitStatusBadge } from './StatusBadge';
 import {
@@ -61,8 +61,6 @@ export interface PromotionDialogProps {
   onMessageChange: (message: string) => void;
   allowGaps: boolean;
   onAllowGapsChange: (allowGaps: boolean) => void;
-  onConflict: PromotionOnConflict;
-  onConflictChange: (onConflict: PromotionOnConflict) => void;
   excludedPaths: string[];
   onAddExcludedPath: (path: string) => void;
   onRemoveExcludedPath: (path: string) => void;
@@ -75,7 +73,6 @@ export interface PromotionDialogProps {
   result: PromotionDispatchResult | null;
   onDispatch: () => void;
   onOpenExternal: (url: string) => void;
-  onViewRuns: () => void;
 }
 
 export function PromotionDialog(props: PromotionDialogProps) {
@@ -83,31 +80,126 @@ export function PromotionDialog(props: PromotionDialogProps) {
   if (!props.open) return null;
   return (
     <PromotionDialogContent
-      key={JSON.stringify([props.sourceShas, props.targetBranch, props.delivery, props.onConflict])}
+      key={JSON.stringify([props.sourceShas, props.targetBranch, props.delivery])}
       {...props}
     />
   );
 }
 
 function preflightSummary(preflight: PromotionPreflight): string {
-  const parts = [
-    `${preflight.clean} clean`,
-    `${preflight.merged} merged`,
-    `${preflight.conflict} conflict`,
-  ];
+  const parts = [`${preflight.clean} clean`, `${preflight.conflict} need attention`];
   if (preflight.skipped > 0) parts.push(`${preflight.skipped} skipped`);
   return `${preflight.files.length} files: ${parts.join(' · ')}`;
 }
 
-function PathList({ title, paths }: { title: string; paths: string[] }) {
+/**
+ * One condensed "what changed" summary: a single scannable counts line plus an
+ * expandable reveal per non-empty category. Replaces the old stack of one box
+ * per category plus duplicate finding boxes repeating the same paths.
+ */
+function ResultChanges({
+  replaced,
+  flagged,
+  deleted,
+  unchanged,
+  excluded,
+}: {
+  replaced: string[];
+  flagged: string[];
+  deleted: string[];
+  unchanged: string[];
+  excluded: string[];
+}) {
+  const total = replaced.length + deleted.length + unchanged.length + excluded.length;
+  if (total === 0) return null;
+  const counts = [
+    `${replaced.length} overwritten`,
+    `${deleted.length} deleted`,
+    `${unchanged.length} unchanged`,
+    `${excluded.length} excluded`,
+  ].join(' · ');
+  return (
+    <section className="space-y-2">
+      <div className="flex h-[29px] items-center justify-between gap-2">
+        <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+          What changed
+        </h3>
+        <span className="mono text-right text-muted tabular-nums">{counts}</span>
+      </div>
+      {replaced.length > 0 ? (
+        <p className="text-[11px] leading-relaxed text-muted">
+          {replaced.length} path{replaced.length === 1 ? '' : 's'} overwritten with the
+          subsystem&apos;s copy
+          {flagged.length > 0
+            ? ` (${flagged.length} had diverged in the main system — review before merging)`
+            : ''}
+          . The overwrite is recorded in the commit trailers.
+        </p>
+      ) : null}
+      <div className="space-y-1.5">
+        <ExpandablePathList title="Overwritten" paths={replaced} />
+        <ExpandablePathList title="Deleted" paths={deleted} />
+        <ExpandablePathList title="Unchanged" paths={unchanged} />
+        <ExpandablePathList title="Excluded" paths={excluded} />
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Condensed notes: warnings/errors keep their own alert boxes (they are rare
+ * and deserve attention); plain infos merge into a single Notes box instead of
+ * one box per fact.
+ */
+function ResultNotes({ findings }: { findings: ValidationFinding[] }) {
+  const alerts = findings.filter((finding) => finding.level !== 'info');
+  const infos = findings.filter((finding) => finding.level === 'info');
+  if (findings.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <ul className="space-y-2">
+        {alerts.map((finding) => (
+          <li key={finding.code}>
+            <InlineAlert
+              tone={finding.level === 'error' ? 'danger' : 'warning'}
+              title={finding.message}
+            >
+              {finding.remedy ? <p>{finding.remedy}</p> : null}
+            </InlineAlert>
+          </li>
+        ))}
+      </ul>
+      {infos.length > 0 ? (
+        <InlineAlert tone="info" title={`${infos.length} note${infos.length === 1 ? '' : 's'}`}>
+          <ul className="list-disc space-y-1 pl-4">
+            {infos.map((finding) => (
+              <li key={finding.code}>
+                <p>{finding.message}</p>
+                {finding.remedy ? <p className="text-muted">{finding.remedy}</p> : null}
+              </li>
+            ))}
+          </ul>
+        </InlineAlert>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Count + expandable reveal for a path list: the summary stays scannable and
+ * the detail is one click away. Never renders a raw multi-line dump inline.
+ */
+function ExpandablePathList({ title, paths }: { title: string; paths: string[] }) {
   if (paths.length === 0) return null;
   return (
-    <section className="space-y-1">
-      <div className="flex h-[29px] items-center justify-between gap-2">
-        <h4 className="text-[11px] font-semibold tracking-wide text-muted uppercase">{title}</h4>
-        <span className="mono text-right text-muted tabular-nums">{paths.length}</span>
-      </div>
-      <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+    <details className="overflow-hidden rounded-md border border-line bg-surface">
+      <summary className="flex h-[29px] cursor-pointer items-center justify-between gap-2 px-2.5 text-[11px]">
+        <span className="font-semibold tracking-wide text-muted uppercase">{title}</span>
+        <span className="mono text-muted tabular-nums">
+          {paths.length} path{paths.length === 1 ? '' : 's'}
+        </span>
+      </summary>
+      <ul className="divide-y divide-line border-t border-line max-h-32 overflow-y-auto">
         {paths.map((path) => (
           <li
             key={path}
@@ -118,7 +210,7 @@ function PathList({ title, paths }: { title: string; paths: string[] }) {
           </li>
         ))}
       </ul>
-    </section>
+    </details>
   );
 }
 
@@ -143,8 +235,6 @@ function PromotionDialogContent({
   onMessageChange,
   allowGaps,
   onAllowGapsChange,
-  onConflict,
-  onConflictChange,
   excludedPaths,
   onAddExcludedPath,
   onRemoveExcludedPath,
@@ -157,7 +247,6 @@ function PromotionDialogContent({
   result,
   onDispatch,
   onOpenExternal,
-  onViewRuns,
 }: PromotionDialogProps) {
   const [acknowledged, setAcknowledged] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -169,9 +258,6 @@ function PromotionDialogContent({
   const cumulative = mode === 'cumulative';
   const multiManifest = commits.filter((commit) => commit.touchesManifest).length > 1;
   const replaced = preflight?.replaced ?? [];
-  const deleted = preflight?.deleted ?? [];
-  const unchanged = preflight?.unchanged ?? [];
-  const flagged = preflight?.flagged ?? [];
   const preflightExcluded = preflight?.excluded ?? [];
   const skippedFiles = (preflight?.files ?? [])
     .filter((file) => file.outcome === 'skipped')
@@ -179,8 +265,6 @@ function PromotionDialogContent({
   const refusedPaths = Array.from(new Set([...(preflight?.conflicts ?? []), ...skippedFiles]));
   const isExcluded = (path: string) =>
     excludedPaths.includes(path) || preflightExcluded.includes(path);
-  const keepSubsystem = onConflict === 'take_subsystem';
-  const overwritePaths = refusedPaths.filter((path) => !isExcluded(path));
   const isDirect = delivery === 'local_direct';
   const isWorktree = delivery === 'worktree';
   const isLocal = delivery === 'local';
@@ -220,16 +304,9 @@ function PromotionDialogContent({
       description={subsystem ? subsystem.name : 'Select a subsystem first.'}
       footer={
         result?.accepted ? (
-          <>
-            <Button variant="secondary" onClick={onClose}>
-              Close
-            </Button>
-            {result.delivery === 'push_pr' ? (
-              <Button variant="primary" icon={GitPullRequestArrow} onClick={onViewRuns}>
-                View workflow runs
-              </Button>
-            ) : null}
-          </>
+          <Button variant="secondary" onClick={onClose}>
+            Close
+          </Button>
         ) : (
           <>
             <Button variant="secondary" onClick={onClose} disabled={dispatching}>
@@ -312,13 +389,6 @@ function PromotionDialogContent({
               <pre className="mono overflow-x-auto rounded-md border border-line bg-raised p-2 text-[11px] leading-relaxed whitespace-pre-wrap">
                 {result.nextCommands.join('\n')}
               </pre>
-              <p className="text-[11px] leading-relaxed text-muted">
-                {result.delivery === 'local_direct'
-                  ? 'Not pushed — the commit is on your local branch.'
-                  : result.delivery === 'worktree'
-                    ? 'Staged only — the commit is yours to make.'
-                    : 'Not pushed — you push the branch yourself.'}
-              </p>
             </section>
           ) : null}
 
@@ -333,48 +403,15 @@ function PromotionDialogContent({
             </Button>
           ) : null}
 
-          {(result.flagged ?? []).length > 0 ? (
-            <InlineAlert
-              tone="warning"
-              title={`${(result.flagged ?? []).length} path${(result.flagged ?? []).length === 1 ? '' : 's'} also changed in the main system by something else`}
-            >
-              <ul className="mono space-y-0.5 text-[11px] break-all">
-                {(result.flagged ?? []).map((path) => (
-                  <li key={path}>{path}</li>
-                ))}
-              </ul>
-            </InlineAlert>
-          ) : null}
-          <PathList title="Replaced" paths={result.replaced ?? []} />
-          <PathList title="Deleted" paths={result.deleted ?? []} />
-          <PathList title="Unchanged" paths={result.unchanged ?? []} />
-          <PathList title="Excluded" paths={result.excluded ?? []} />
-          {(result.replaced ?? []).length > 0 ? (
-            <p className="text-[11px] leading-relaxed text-muted">
-              Overwrote {(result.replaced ?? []).length} diverged path
-              {(result.replaced ?? []).length === 1 ? '' : 's'} with the subsystem&apos;s version —
-              the override is recorded in the commit trailers.
-            </p>
-          ) : null}
+          <ResultChanges
+            replaced={result.replaced ?? []}
+            flagged={result.flagged ?? []}
+            deleted={result.deleted ?? []}
+            unchanged={result.unchanged ?? []}
+            excluded={result.excluded ?? []}
+          />
 
-          <ul className="space-y-2">
-            {result.findings.map((finding) => (
-              <li key={finding.code}>
-                <InlineAlert
-                  tone={
-                    finding.level === 'error'
-                      ? 'danger'
-                      : finding.level === 'warning'
-                        ? 'warning'
-                        : 'info'
-                  }
-                  title={finding.message}
-                >
-                  {finding.remedy ? <p>{finding.remedy}</p> : null}
-                </InlineAlert>
-              </li>
-            ))}
-          </ul>
+          <ResultNotes findings={result.findings} />
         </div>
       ) : (
         <div className="space-y-5">
@@ -438,26 +475,11 @@ function PromotionDialogContent({
               />
               <span>Allow gaps — a skipped commit&apos;s changes are included</span>
             </label>
-            <label className="flex items-start gap-2 text-xs text-fg">
-              <Checkbox
-                checked={keepSubsystem}
-                onChange={(event) =>
-                  onConflictChange(event.target.checked ? 'take_subsystem' : 'fail')
-                }
-                label="Keep the subsystem's copy"
-                className="mt-0.5"
-              />
-              <span>
-                Keep the subsystem&apos;s copy — overwrites paths the main system changed since the
-                last promotion.
-              </span>
-            </label>
-            {keepSubsystem ? (
-              <p className="text-[11px] leading-relaxed text-muted">
-                Unsafe paths, secrets, main-owned files, and dependency or lockfile failures still
-                block the promotion.
-              </p>
-            ) : null}
+            <p className="text-[11px] leading-relaxed text-muted">
+              Promotion is a copy: the subsystem&apos;s version of every selected file always wins.
+              Unsafe paths, secrets, main-owned files, and dependency or lockfile failures still
+              block the promotion.
+            </p>
             <div className="space-y-1.5">
               <div className="flex h-[29px] items-center justify-between gap-2">
                 <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
@@ -548,60 +570,54 @@ function PromotionDialogContent({
               />
             </Field>
 
-            <Field label="Commit message" required>
-              <textarea
-                className="input h-auto min-h-[50px] py-1.5"
-                aria-label="Commit message"
-                rows={2}
+            <div className="sm:col-span-2">
+              <Field label="Commit message" required>
+                <textarea
+                  className="input min-h-[76px] py-2"
+                  aria-label="Commit message"
+                  rows={3}
+                  required
+                  value={message}
+                  onChange={(event) => onMessageChange(event.target.value)}
+                  placeholder="Promote hr-management a81f2c3..f12b301"
+                />
+              </Field>
+            </div>
+
+            <div className={cumulative ? undefined : 'sm:col-span-2'}>
+              <Field
+                label="Target main-system branch"
                 required
-                value={message}
-                onChange={(event) => onMessageChange(event.target.value)}
-                placeholder="Promote hr-management a81f2c3..f12b301"
-              />
-            </Field>
+                hint="Only policy-allowed branches."
+              >
+                <Select
+                  ariaLabel="Target main-system branch"
+                  value={targetBranch}
+                  onValueChange={(next) => onTargetBranchChange(next)}
+                  options={branches.map((branch) => ({
+                    value: branch.name,
+                    label: `${branch.name}${branch.isDefault ? ' (default)' : ''}${branch.allowed ? '' : ' — not permitted'}`,
+                    disabled: !branch.allowed,
+                    title: branch.allowed
+                      ? `tip ${branch.headSha.slice(0, 7)}`
+                      : (branch.disallowedReason ?? 'Not permitted by registry policy'),
+                  }))}
+                />
+              </Field>
+            </div>
 
-            <Field label="Target main-system branch" required hint="Only policy-allowed branches.">
-              <Select
-                ariaLabel="Target main-system branch"
-                value={targetBranch}
-                onValueChange={(next) => onTargetBranchChange(next)}
-                options={branches.map((branch) => ({
-                  value: branch.name,
-                  label: `${branch.name}${branch.isDefault ? ' (default)' : ''}${branch.allowed ? '' : ' — not permitted'}`,
-                  disabled: !branch.allowed,
-                  title: branch.allowed
-                    ? `tip ${branch.headSha.slice(0, 7)} · ${branch.openPrCount} open integration PR(s)`
-                    : (branch.disallowedReason ?? 'Not permitted by registry policy'),
-                }))}
-              />
-            </Field>
+            {cumulative ? (
+              <Field label="Cumulative baseline SHA" required>
+                <input
+                  className="input mono"
+                  value={baseSha}
+                  onChange={(event) => onBaseShaChange(event.target.value)}
+                  placeholder="40-character full SHA"
+                  aria-label="Cumulative baseline SHA"
+                />
+              </Field>
+            ) : null}
           </div>
-
-          {cumulative ? (
-            <Field label="Cumulative baseline SHA" required>
-              <input
-                className="input mono"
-                value={baseSha}
-                onChange={(event) => onBaseShaChange(event.target.value)}
-                placeholder="40-character full SHA"
-                aria-label="Cumulative baseline SHA"
-              />
-            </Field>
-          ) : null}
-
-          {selectedBranch ? (
-            <dl className="divide-y divide-line border-y border-line px-1">
-              <KeyValue label="Branch tip">
-                <span className="mono text-right">{selectedBranch.headSha.slice(0, 7)}</span>
-              </KeyValue>
-              <KeyValue label="Protection">
-                {selectedBranch.protected ? 'Protected — PR required' : 'Unprotected'}
-              </KeyValue>
-              <KeyValue label="Open integration PRs">
-                <span className="mono text-right">{selectedBranch.openPrCount}</span>
-              </KeyValue>
-            </dl>
-          ) : null}
 
           <section className="space-y-2">
             <h3 className="flex h-[29px] items-center gap-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">
@@ -669,10 +685,10 @@ function PromotionDialogContent({
                 tone={preflight.conflict > 0 ? 'warning' : 'info'}
                 title={preflightSummary(preflight)}
               >
-                {keepSubsystem && overwritePaths.length > 0 ? (
+                {replaced.length > 0 ? (
                   <p>
-                    {overwritePaths.length} path{overwritePaths.length === 1 ? '' : 's'} the main
-                    system changed will be overwritten with the subsystem&apos;s version.
+                    {replaced.length} path{replaced.length === 1 ? '' : 's'} the main system changed
+                    will be overwritten with the subsystem&apos;s version.
                   </p>
                 ) : preflight.conflict > 0 ? (
                   <p>Resolve, exclude, or drop the conflicting commit, then re-promote.</p>
@@ -680,8 +696,9 @@ function PromotionDialogContent({
                   <p>Ready to promote.</p>
                 )}
               </InlineAlert>
+              <ExpandablePathList title="Will be overwritten" paths={replaced} />
               {refusedPaths.length > 0 ? (
-                <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+                <ul className="divide-y divide-line overflow-hidden overflow-y-auto rounded-md border border-line bg-surface max-h-40">
                   {refusedPaths.map((path) => (
                     <li key={path} className="flex h-[29px] items-center gap-2 px-2.5">
                       <TriangleAlert
@@ -709,22 +726,7 @@ function PromotionDialogContent({
                   ))}
                 </ul>
               ) : null}
-              {flagged.length > 0 ? (
-                <InlineAlert
-                  tone="warning"
-                  title={`${flagged.length} path${flagged.length === 1 ? '' : 's'} also changed in the main system by something else`}
-                >
-                  <ul className="mono space-y-0.5 text-[11px] break-all">
-                    {flagged.map((path) => (
-                      <li key={path}>{path}</li>
-                    ))}
-                  </ul>
-                </InlineAlert>
-              ) : null}
-              <PathList title="Replaced" paths={replaced} />
-              <PathList title="Deleted" paths={deleted} />
-              <PathList title="Unchanged" paths={unchanged} />
-              <PathList title="Excluded" paths={preflightExcluded} />
+              <ExpandablePathList title="Excluded" paths={preflightExcluded} />
             </section>
           ) : null}
 
@@ -792,17 +794,11 @@ function PromotionDialogContent({
                 </span>
               )}
             </label>
-            {keepSubsystem ? (
+            {replaced.length > 0 ? (
               <p className="text-[11px] leading-relaxed text-muted">
-                {overwritePaths.length > 0 ? (
-                  <span>
-                    This overwrites {overwritePaths.length} path
-                    {overwritePaths.length === 1 ? '' : 's'} the main system changed with the
-                    subsystem&apos;s version.
-                  </span>
-                ) : (
-                  <span>No diverged paths right now — nothing will be overwritten.</span>
-                )}
+                This overwrites {replaced.length} path
+                {replaced.length === 1 ? '' : 's'} the main system changed with the subsystem&apos;s
+                version.
               </p>
             ) : null}
             {acknowledged ? (

@@ -52,7 +52,6 @@ impl GitHubAdapter {
             eligible_shas: &eligible,
             events: &world.events,
             prs: &world.prs,
-            runs: &world.workflow_runs,
             failure_effects: &world.failure_effects,
             ancestry: &ancestry,
         })
@@ -371,67 +370,6 @@ impl GitHubAdapter {
         Ok(out)
     }
 
-    pub fn workflow_runs(
-        &self,
-        world: &FixtureWorld,
-        subsystem_id: Option<&str>,
-        target_branch: Option<&str>,
-        limit: u32,
-    ) -> WorkflowRunList {
-        let mut runs: Vec<WorkflowRun> = world
-            .workflow_runs
-            .iter()
-            .filter(|run| {
-                subsystem_id
-                    .map(|id| run.subsystem_id == id)
-                    .unwrap_or(true)
-            })
-            .filter(|run| {
-                target_branch
-                    .map(|branch| run.target_branch == branch)
-                    .unwrap_or(true)
-            })
-            .cloned()
-            .collect();
-        runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        let total = runs.len() as u32;
-        runs.truncate(limit.clamp(1, 100) as usize);
-
-        WorkflowRunList {
-            runs,
-            total,
-            fetched_at: now_rfc3339(),
-            data_source: self.data_source,
-        }
-    }
-
-    pub fn workflow_run_details(
-        &self,
-        world: &FixtureWorld,
-        run_id: u64,
-    ) -> AppResult<WorkflowRunDetails> {
-        if let Some(details) = world.run_details.get(&run_id) {
-            return Ok(details.clone());
-        }
-        if let Some(run) = world.workflow_runs.iter().find(|run| run.id == run_id) {
-            return Ok(WorkflowRunDetails {
-                run: run.clone(),
-                jobs: Vec::new(),
-                logs: Vec::new(),
-                logs_truncated: false,
-                logs_url: Some(run.html_url.clone()),
-                artifact_note: Some(
-                    "Run detail is not part of the fixture set; logs are fetched on demand in live mode.".to_string(),
-                ),
-            });
-        }
-        Err(
-            AppError::not_found(format!("Workflow run {run_id} was not found.")).with_remedy(
-                "Refresh the Workflow Runs list; runs are limited to those started by this tool.",
-            ),
-        )
-    }
-
     pub fn integration_prs(
         &self,
         world: &FixtureWorld,
@@ -511,6 +449,7 @@ impl GitHubAdapter {
         }) else {
             return Ok(IntegrationEventAudit {
                 main_commit_sha: wanted.to_string(),
+                main_commit: None,
                 kind: IntegrationHistoryKind::Merged,
                 subsystem_id: subsystem.id.clone(),
                 target_branch,
@@ -579,6 +518,19 @@ impl GitHubAdapter {
                 .main_commit_sha
                 .clone()
                 .unwrap_or_else(|| wanted.to_string()),
+            // Fixtures carry no git objects: the entry's own record is the
+            // source of truth, mirroring live where `detail` is the subject.
+            main_commit: entry
+                .main_commit_sha
+                .clone()
+                .map(|sha| IntegrationEventCommit {
+                    short_sha: sha.chars().take(7).collect(),
+                    subject: entry.detail.clone(),
+                    author: Some(entry.actor.clone()),
+                    authored_at: Some(entry.occurred_at.clone()),
+                    sha,
+                    unavailable: false,
+                }),
             kind: entry.kind,
             subsystem_id: entry.subsystem_id.clone(),
             target_branch: entry.target_branch.clone(),

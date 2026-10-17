@@ -33,8 +33,6 @@ pub enum ConnectivityState {
 pub enum CommitStatusKind {
     Eligible,
     Selected,
-    PromotionQueued,
-    PromotionRunning,
     PrOpen,
     InReview,
     Integrated,
@@ -52,8 +50,6 @@ impl CommitStatusKind {
         match self {
             CommitStatusKind::Eligible => "Eligible",
             CommitStatusKind::Selected => "Selected",
-            CommitStatusKind::PromotionQueued => "Promotion queued",
-            CommitStatusKind::PromotionRunning => "Promotion running",
             CommitStatusKind::PrOpen => "PR open",
             CommitStatusKind::InReview => "In review",
             CommitStatusKind::Integrated => "Integrated",
@@ -71,8 +67,6 @@ impl CommitStatusKind {
         match self {
             CommitStatusKind::Failed => 90,
             CommitStatusKind::Blocked => 80,
-            CommitStatusKind::PromotionRunning => 70,
-            CommitStatusKind::PromotionQueued => 60,
             CommitStatusKind::InReview => 55,
             CommitStatusKind::PrOpen => 50,
             CommitStatusKind::Reverted => 40,
@@ -606,7 +600,10 @@ impl PromotionDelivery {
 }
 
 /// Conflict policy for a promotion (wire `onConflict`, camelCase field).
-/// Omitted on the wire defaults to [`PromotionOnConflict::Fail`].
+/// Omitted on the wire defaults to [`PromotionOnConflict::Fail`]. Retained
+/// for wire compatibility only: promotion is a copy and the subsystem's copy
+/// always wins, so a diverged target copy is overwritten (and reported as
+/// replaced) under either value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PromotionOnConflict {
@@ -638,7 +635,9 @@ pub struct PromotionRequest {
     /// `"local" | "local_direct" | "push_pr" | "worktree"`; omitted ⇒ `local_direct`.
     #[serde(default)]
     pub delivery: PromotionDelivery,
-    /// `"fail" | "take_subsystem"`; omitted ⇒ `fail`.
+    /// `"fail" | "take_subsystem"`; omitted ⇒ `fail`. Retained for wire
+    /// compatibility: the engine always installs the subsystem's copy over a
+    /// diverged target copy, regardless of this value.
     #[serde(default)]
     pub on_conflict: PromotionOnConflict,
     /// The promotion commit's own message. Required: the engine refuses an empty
@@ -695,10 +694,28 @@ pub struct PromotionDispatchResult {
     pub delivery: PromotionDelivery,
     #[serde(default)]
     pub next_commands: Vec<String>,
+    /// Paths overwritten with the subsystem's copy (a diverged target copy
+    /// never refuses — promotion is a copy and the subsystem always wins).
+    #[serde(default)]
+    pub replaced: Vec<String>,
+    /// Paths removed by the promotion.
+    #[serde(default)]
+    pub deleted: Vec<String>,
+    /// Paths already identical in the target.
+    #[serde(default)]
+    pub unchanged: Vec<String>,
+    /// Replaced paths whose target copy had independently diverged from the
+    /// commit's base (warning, not an error).
+    #[serde(default)]
+    pub flagged: Vec<String>,
+    /// Paths left out via `excludedPaths`.
+    #[serde(default)]
+    pub excluded: Vec<String>,
 }
 
 /// Dry-run mergeability summary for a promotion selection: per-file outcomes
-/// plus the actionable `conflicts` path list. Counts always sum to
+/// plus the actionable `conflicts` path list (true refusals only — a diverged
+/// target copy is overwritten, never a conflict). Counts always sum to
 /// `files.len()`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -709,109 +726,12 @@ pub struct PromotionPreflight {
     pub conflict: usize,
     pub skipped: usize,
     pub conflicts: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkflowRunStatus {
-    Queued,
-    InProgress,
-    Completed,
-    Waiting,
-    Requested,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkflowRunConclusion {
-    Success,
-    Failure,
-    Cancelled,
-    Skipped,
-    TimedOut,
-    ActionRequired,
-    Neutral,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowRun {
-    pub id: u64,
-    pub run_number: u64,
-    pub name: String,
-    pub display_title: String,
-    pub event: String,
-    pub status: WorkflowRunStatus,
-    pub conclusion: Option<WorkflowRunConclusion>,
-    /// Execution ref, never the PR base.
-    pub head_branch: String,
-    pub target_branch: String,
-    pub subsystem_id: String,
-    pub source_shas: Vec<String>,
-    pub mode: PromotionMode,
-    pub actor: String,
-    pub created_at: String,
-    pub updated_at: String,
-    pub html_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowStep {
-    pub number: u32,
-    pub name: String,
-    pub status: WorkflowRunStatus,
-    pub conclusion: Option<WorkflowRunConclusion>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowJob {
-    pub id: u64,
-    pub name: String,
-    pub status: WorkflowRunStatus,
-    pub conclusion: Option<WorkflowRunConclusion>,
-    pub started_at: Option<String>,
-    pub completed_at: Option<String>,
-    pub steps: Vec<WorkflowStep>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LogLevel {
-    Info,
-    Warn,
-    Error,
-    Debug,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowLogLine {
-    pub ts: String,
-    pub level: LogLevel,
-    pub text: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowRunList {
-    pub runs: Vec<WorkflowRun>,
-    pub total: u32,
-    pub fetched_at: String,
-    pub data_source: DataSource,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowRunDetails {
-    pub run: WorkflowRun,
-    pub jobs: Vec<WorkflowJob>,
-    pub logs: Vec<WorkflowLogLine>,
-    pub logs_truncated: bool,
-    pub logs_url: Option<String>,
-    pub artifact_note: Option<String>,
+    /// Diverged paths the promotion will overwrite with the subsystem's copy.
+    #[serde(default)]
+    pub replaced: Vec<String>,
+    /// Paths left out via `excludedPaths`.
+    #[serde(default)]
+    pub excluded: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -954,6 +874,11 @@ pub struct IntegrationEventProvenance {
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationEventAudit {
     pub main_commit_sha: String,
+    /// Full detail of the main commit itself (subject, author, authored date),
+    /// reusing the [`IntegrationEventCommit`] shape the included commits use.
+    /// `None` when there is no main commit or it cannot be resolved — never
+    /// fabricated, and never the SHA standing in as the subject.
+    pub main_commit: Option<IntegrationEventCommit>,
     pub kind: IntegrationHistoryKind,
     pub subsystem_id: String,
     pub target_branch: String,
@@ -993,6 +918,14 @@ mod tests {
     fn audit_serialized_keys_match_typescript_contract() {
         let audit = IntegrationEventAudit {
             main_commit_sha: "a".repeat(40),
+            main_commit: Some(IntegrationEventCommit {
+                sha: "a".repeat(40),
+                short_sha: "a".repeat(7),
+                subject: "subject".to_string(),
+                author: Some("T".to_string()),
+                authored_at: Some("2026-01-01T00:00:00Z".to_string()),
+                unavailable: false,
+            }),
             kind: IntegrationHistoryKind::Merged,
             subsystem_id: "hr-management".to_string(),
             target_branch: "staging".to_string(),
@@ -1039,6 +972,7 @@ mod tests {
                 "includedCommits",
                 "inheritedFromBranch",
                 "kind",
+                "mainCommit",
                 "mainCommitSha",
                 "mainCommitUnavailable",
                 "occurredAt",
@@ -1068,6 +1002,21 @@ mod tests {
             .map(str::to_string)
             .collect::<Vec<_>>(),
             "dropping `rename_all = \"camelCase\"` on IntegrationEventCommit would emit short_sha and silently blank the UI",
+        );
+        assert_eq!(
+            sorted_keys(&value["mainCommit"]),
+            vec![
+                "author",
+                "authoredAt",
+                "sha",
+                "shortSha",
+                "subject",
+                "unavailable",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+            "mainCommit must reuse the IntegrationEventCommit wire shape the audit page already renders",
         );
         assert_eq!(
             sorted_keys(&value["changes"][0]),

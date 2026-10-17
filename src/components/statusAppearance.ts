@@ -4,12 +4,10 @@ import {
   CircleCheck,
   CircleHelp,
   CircleX,
-  Clock,
   Eye,
   GitMerge,
   GitPullRequestArrow,
   History,
-  LoaderCircle,
   SquareCheck,
   TriangleAlert,
   Undo2,
@@ -46,20 +44,6 @@ const APPEARANCE: Record<CommitStatusKind, Appearance> = {
     className: 'bg-accent',
     icon: SquareCheck,
     meaning: 'Ticked locally. A selection state, not an integration status.',
-  },
-  promotion_queued: {
-    label: 'Promotion queued',
-    className: 'bg-status-unknown',
-    icon: Clock,
-    meaning:
-      'A promotion workflow has been dispatched and has not started yet. No integration PR exists yet.',
-  },
-  promotion_running: {
-    label: 'Promotion running',
-    className: 'bg-status-unknown',
-    icon: LoaderCircle,
-    meaning: 'A promotion workflow is running against the integration branch.',
-    spin: true,
   },
   pr_open: {
     label: 'PR open',

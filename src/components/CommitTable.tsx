@@ -32,8 +32,6 @@ import {
 const STATUS_FILTER_OPTIONS: Array<{ value: CommitStatusKind | 'all'; label: string }> = [
   { value: 'all', label: 'All statuses' },
   { value: 'eligible', label: 'Eligible' },
-  { value: 'promotion_queued', label: 'Promotion queued' },
-  { value: 'promotion_running', label: 'Promotion running' },
   { value: 'pr_open', label: 'PR open' },
   { value: 'in_review', label: 'In review' },
   { value: 'integrated', label: 'Integrated' },
@@ -88,9 +86,6 @@ function dotClassFor(commit: CommitSummary): string {
   switch (kind) {
     case 'integrated':
       return 'bg-status-integrated ring-status-integrated/30';
-    case 'promotion_running':
-    case 'promotion_queued':
-      return 'bg-status-unknown ring-status-unknown/30';
     case 'pr_open':
       return 'bg-status-applied ring-status-applied/30';
     case 'in_review':

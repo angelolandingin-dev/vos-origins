@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::git;
 
-pub const TRAILER_KEYS: [&str; 9] = [
+pub const TRAILER_KEYS: [&str; 10] = [
     "Subsystem-ID",
     "Source-Repo",
     "Source-Commit",
@@ -16,6 +16,7 @@ pub const TRAILER_KEYS: [&str; 9] = [
     "Restores-Integration",
     "Promotion-Gaps",
     "Promotion-Override",
+    "Promotion-Replaced",
 ];
 
 fn sanitize_subject(subject: &str, max: usize) -> String {

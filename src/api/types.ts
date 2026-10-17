@@ -9,8 +9,6 @@ export type ConnectivityState = 'connected' | 'degraded' | 'unknown';
 export type CommitStatusKind =
   | 'eligible'
   | 'selected'
-  | 'promotion_queued'
-  | 'promotion_running'
   | 'pr_open'
   | 'in_review'
   | 'integrated'
@@ -33,7 +31,7 @@ export type PromotionMode = 'individual' | 'cumulative';
 /** Local-first delivery: `local_direct` (default) commits straight onto the local target branch (no push, no PR — pushing stays manual); `worktree` stages the files into your working tree on the checked-out target branch (no commit, no push, no PR); `local` builds a branch + commit in the user's clone; `push_pr` is the explicit opt-in. */
 export type PromotionDelivery = 'local' | 'local_direct' | 'push_pr' | 'worktree';
 
-/** Conflict policy: `fail` refuses every unmergeable path; `take_subsystem` resolves it with the subsystem's version and reports every replaced path. */
+/** Conflict policy (wire `onConflict`). Retained for wire compatibility only: promotion is a copy and the subsystem's copy always wins, so a diverged target copy is overwritten (and reported as replaced) under either value. */
 export type PromotionOnConflict = 'fail' | 'take_subsystem';
 
 export interface ValidationFinding {
@@ -347,7 +345,7 @@ export interface PreflightFileResult {
   outcome: PreflightOutcome;
 }
 
-/** Dry-run mergeability summary: per-file outcomes plus `conflicts`, the paths the main system changed — refused under `fail`, overwritten under `take_subsystem`. Counts sum to `files.length`. */
+/** Dry-run mergeability summary: per-file outcomes plus `conflicts` (true refusals only — a diverged target copy is overwritten, never a conflict) and `replaced` (diverged paths the promotion will overwrite). Counts sum to `files.length`. */
 export interface PromotionPreflight {
   files: PreflightFileResult[];
   clean: number;
@@ -355,7 +353,7 @@ export interface PromotionPreflight {
   conflict: number;
   skipped: number;
   conflicts: string[];
-  /** Paths overwritten with the subsystem version (`take_subsystem`). */
+  /** Paths overwritten with the subsystem version (a diverged target copy never refuses). */
   replaced?: string[] | null;
   /** Paths removed by the promotion. */
   deleted?: string[] | null;
@@ -392,70 +390,6 @@ export interface PromotionDispatchResult {
   flagged?: string[] | null;
   /** Paths left out via `excludedPaths`. */
   excluded?: string[] | null;
-}
-
-export type WorkflowRunStatus =
-  'queued' | 'in_progress' | 'completed' | 'waiting' | 'requested' | 'unknown';
-
-export type WorkflowRunConclusion =
-  'success' | 'failure' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required' | 'neutral';
-
-export interface WorkflowRun {
-  id: number;
-  runNumber: number;
-  name: string;
-  displayTitle: string;
-  event: string;
-  status: WorkflowRunStatus;
-  conclusion: WorkflowRunConclusion | null;
-  headBranch: string;
-  targetBranch: string;
-  subsystemId: string;
-  sourceShas: string[];
-  mode: PromotionMode;
-  actor: string;
-  createdAt: string;
-  updatedAt: string;
-  htmlUrl: string;
-}
-
-export interface WorkflowStep {
-  number: number;
-  name: string;
-  status: WorkflowRunStatus;
-  conclusion: WorkflowRunConclusion | null;
-}
-
-export interface WorkflowJob {
-  id: number;
-  name: string;
-  status: WorkflowRunStatus;
-  conclusion: WorkflowRunConclusion | null;
-  startedAt: string | null;
-  completedAt: string | null;
-  steps: WorkflowStep[];
-}
-
-export interface WorkflowLogLine {
-  ts: string;
-  level: 'info' | 'warn' | 'error' | 'debug';
-  text: string;
-}
-
-export interface WorkflowRunList {
-  runs: WorkflowRun[];
-  total: number;
-  fetchedAt: string;
-  dataSource: DataSource;
-}
-
-export interface WorkflowRunDetails {
-  run: WorkflowRun;
-  jobs: WorkflowJob[];
-  logs: WorkflowLogLine[];
-  logsTruncated: boolean;
-  logsUrl: string | null;
-  artifactNote: string | null;
 }
 
 export interface IntegrationPr {
@@ -522,6 +456,8 @@ export interface IntegrationEventChange {
 
 export interface IntegrationEventAudit {
   mainCommitSha: string;
+  /** Full detail of the main commit itself; null when unresolvable — never fabricated. */
+  mainCommit: IntegrationEventCommit | null;
   kind: IntegrationHistoryKind;
   subsystemId: string;
   targetBranch: string;

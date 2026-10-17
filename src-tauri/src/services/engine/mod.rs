@@ -66,11 +66,11 @@ pub struct EngineRequest {
     /// `push_pr` is today's push-then-PR behaviour.
     /// Defaults to `local_direct` when omitted on the wire.
     pub delivery: PromotionDelivery,
-    /// `fail` (default) refuses every unmergeable path; `take_subsystem`
-    /// resolves merge conflicts, both-sides-touched binaries, delete-vs-diverge,
-    /// and recency-refused adds with the subsystem's version and reports every
-    /// such path. Never bypasses path-safety, classification, dependency,
-    /// lockfile, or NOOP guards.
+    /// Wire `onConflict` (`fail` | `take_subsystem`). Retained for wire
+    /// compatibility only: promotion is a copy and the subsystem's copy
+    /// always wins, so a diverged target copy is overwritten (and reported
+    /// as replaced) under either value. Never bypasses path-safety,
+    /// classification, dependency, lockfile, or NOOP guards.
     pub on_conflict: PromotionOnConflict,
     /// The promotion commit's own message (required; an empty one is refused so
     /// a multi-commit promotion is never labelled with only the last subject).
@@ -139,8 +139,8 @@ pub struct ChangeSummary {
     pub main_owned_skipped: Vec<String>,
     pub secret_excluded: Vec<String>,
     pub regenerated: Vec<String>,
-    /// Paths resolved via `on_conflict = take_subsystem` (the subsystem's
-    /// version won instead of failing). Also surfaced as a dedicated
+    /// Paths whose target copy had diverged (blob-membership failure) and was
+    /// overwritten with the subsystem's copy. Surfaced as a dedicated
     /// `conflict_taken_from_subsystem` warning.
     pub conflict_taken: Vec<String>,
     /// Copy-semantics reporting (§5): paths whose target copy was overwritten
@@ -344,45 +344,6 @@ fn is_global_match(path: &str, global_files: &[String]) -> bool {
         }
     }
     false
-}
-
-/// Last changer of `path` reachable from `target_tip`, as
-/// `(commit sha, subject, subsystem_id trailer or None)`.
-/// Used by the overwrite refusal so the message names who changed the target
-/// copy. Message parsing is a hint for the trailer only; divergence itself is
-/// decided by blob membership (addendum E2).
-fn target_last_changer(
-    repo_dir: &Path,
-    target_tip: &str,
-    path: &str,
-) -> (Option<String>, String, Option<String>) {
-    let out = git::run(
-        repo_dir,
-        &["log", "-1", "--format=%H%n%s%n%B", target_tip, "--", path],
-    );
-    let Ok(out) = out else {
-        return (None, "unknown".to_string(), None);
-    };
-    if out.status != 0 {
-        return (None, "unknown".to_string(), None);
-    }
-    let text = out.stdout_str();
-    let mut lines = text.lines();
-    let sha = lines
-        .next()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let subject = lines
-        .next()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
-    let body: String = lines.collect::<Vec<_>>().join("\n");
-    // Trailer block only (same rule as provenance): prose mentions never count.
-    let parsed = crate::services::engine::provenance::parse_trailers(&format!("subject\n\n{body}"));
-    // `parse_trailers` only recognizes canonical keys; `Subsystem-ID` is one.
-    let subsystem = parsed.first("Subsystem-ID").map(|s| s.to_string());
-    (sha, subject, subsystem)
 }
 
 /// `git worktree list --porcelain` check: is `branch` checked out in a linked
@@ -1178,17 +1139,21 @@ fn run_inner(
         }
     }
 
-    // --- Overwrite refusal by blob membership (§3) -------------------------
+    // --- Diverged target copies are overwritten (§3) ----------------------
+    // Promotion is a copy: the selected commits' files arrive from the
+    // subsystem, and the main system is never edited directly — so the
+    // subsystem's copy always wins and a diverged target copy never refuses.
     // For each touched path: if the target-tip blob IS in that path's blob
-    // set (or both sides are absent), the target is behind-or-equal — allow.
-    // Otherwise the shared allowance probes source containment: a target blob
-    // the subsystem itself produced (a previous promotion outside this
-    // selection) is still behind-or-equal — allow. Anything else has diverged
-    // — refuse. This REPLACES any timestamps / `ours != base` logic: dates
-    // determine display order only, never correctness — blob membership
-    // decides (addendum E3).
+    // set (or both sides are absent), the target is behind-or-equal and the
+    // copy below writes it normally. Otherwise the shared allowance probes
+    // source containment, and EITHER WAY the subsystem's copy is written:
+    // the path is recorded as replaced + conflict-taken and in the commit
+    // trailers, so the operator sees what was rewritten. This REPLACES any
+    // timestamps / `ours != base` logic: dates determine display order only,
+    // never correctness — blob membership decides (addendum E3). Every other
+    // guard (unsafe, secret, main-owned, global, dependency, lockfile, gaps)
+    // stays hard: those are not "main vs subsystem" choices.
     {
-        let mut diverged: Vec<(String, String, Option<String>)> = Vec::new();
         for path in &apply_paths {
             // globalFiles hits already refused above with their own code.
             let global_files = subsystem.global_files.clone().unwrap_or_default();
@@ -1199,75 +1164,9 @@ fn run_inner(
             if overwrite_ok.get(path).copied().unwrap_or(false) {
                 continue;
             }
-            // `take_subsystem` overwrites the diverged path with the
-            // subsystem's copy instead of refusing: the copy below writes it,
-            // and it is reported as replaced + conflict-taken and recorded in
-            // the commit trailers. Every other guard (unsafe, secret,
-            // main-owned, global, dependency, lockfile, gaps) stays hard.
-            if request.on_conflict == PromotionOnConflict::TakeSubsystem {
-                if !conflict_takeover.contains(path) {
-                    conflict_takeover.push(path.clone());
-                }
-                continue;
+            if !conflict_takeover.contains(path) {
+                conflict_takeover.push(path.clone());
             }
-            {
-                let (sha_opt, subject, subsys) =
-                    target_last_changer(&options.target_repo_dir, &target_tip, path);
-                diverged.push((path.clone(), subject, subsys.clone().or(sha_opt.clone())));
-                // Store rich attribution for the message below (re-derive to
-                // keep the loop simple — paths are few, revisions cached).
-                let _ = (sha_opt, subsys);
-            }
-        }
-        if !diverged.is_empty() {
-            // Build one refusal per run naming every path (the brief requires
-            // naming the path, the target's last changer with Subsystem-ID or
-            // unknown/direct, and two remedies).
-            let mut parts: Vec<String> = Vec::new();
-            for (path, subject, subsys_or_sha) in &diverged {
-                let (sha_opt, subj, subsys) =
-                    target_last_changer(&options.target_repo_dir, &target_tip, path);
-                let _ = (subject, subsys_or_sha);
-                // Attribution qualifier (addendum B): `as recorded at <sha>`.
-                // When the live registry maps that path to a different
-                // subsystem than the recorded one, append the honesty note.
-                // Path→subsystem mapping today is implicit (all subsystems
-                // share preserve-relative-paths): a recorded Subsystem-ID that
-                // differs from the requesting subsystem means the registry now
-                // maps this path elsewhere (another subsystem changed it).
-                let recorded = subsys
-                    .clone()
-                    .unwrap_or_else(|| "unknown/direct".to_string());
-                let mut attr = match sha_opt.as_deref() {
-                    Some(sha) => format!(
-                        "'{path}' last changed by '{subj}' (Subsystem-ID: {recorded}) as recorded at {}",
-                        short(sha)
-                    ),
-                    None => format!(
-                        "'{path}' last changed by '{subj}' (Subsystem-ID: {recorded}) as recorded at unknown"
-                    ),
-                };
-                if let Some(rec) = subsys.as_deref() {
-                    if rec != request.subsystem_id.as_str() {
-                        attr.push_str("; current registry maps this path elsewhere");
-                    }
-                }
-                parts.push(attr);
-            }
-            let paths = diverged
-                .iter()
-                .map(|(p, _, _)| p.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            report.blockers.push(Blocker::new(
-                "TARGET_DIVERGED",
-                format!(
-                    "Target has diverged on {}: {}. The target copy is not in the source blob set for the selected commits, and it is not reachable from them either, so overwriting would discard content those commits never produced - content that may come from another branch or an independent edit. Remedies: adapt the file upstream in the subsystem and re-promote; exclude the path via excludedPaths and re-promote; or re-run with onConflict take_subsystem to overwrite it with the subsystem's version (records Promotion-Conflicts + Promotion-Override trailers).",
-                    paths,
-                    parts.join("; ")
-                ),
-            ));
-            return Err(Bail);
         }
     }
 
@@ -1401,9 +1300,9 @@ fn run_inner(
         }
     }
 
-    // `take_subsystem` takeovers: the membership refusal was skipped above so
-    // the copy overwrote these with the subsystem's version. Report them as
-    // subsystem-won (the warning below fires on this same list).
+    // `conflict_takeover`: every diverged path the subsystem's copy
+    // overwrote (the only behaviour — there is no "who wins" choice).
+    // Reported as subsystem-won (the warning below fires on this same list).
     conflict_takeover.sort();
     report
         .changes
@@ -1415,9 +1314,8 @@ fn run_inner(
         report.warnings.push(Blocker::new(
             "conflict_taken_from_subsystem",
             format!(
-                "On-conflict policy `take_subsystem` replaced {} path(s) with the subsystem's version: {}. Review the replaced files before merging.",
+                "Subsystem copy replaced {} diverged path(s) with the subsystem's version (listed under Replaced). Review the replaced files before merging.",
                 report.changes.conflict_taken.len(),
-                report.changes.conflict_taken.join(", ")
             ),
         ));
     }
@@ -1475,9 +1373,8 @@ fn run_inner(
             report.warnings.push(Blocker::new(
                 "flagged_overlap",
                 format!(
-                    "Cross-subsystem overlap: {} path(s) replaced whose target copy had independently diverged from the commit's base: {}. Review before merging.",
+                    "Cross-subsystem overlap: {} replaced path(s) whose target copy had independently diverged from the commit's base (listed under Replaced). Review before merging.",
                     report.changes.flagged.len(),
-                    report.changes.flagged.join(", ")
                 ),
             ));
         }
@@ -1708,19 +1605,16 @@ fn run_inner(
         gap_shas: &gap_override_shas,
         gap_override: request.allow_gaps,
     });
-    // `take_subsystem` override record, mirroring the gap pattern so the audit
-    // survives a squash: which paths were force-overwritten plus the shared
-    // override flag, appended inside the trailing trailer block. (The
-    // `Promotion-Conflicts` key is new to this message writer; older trailer
-    // parsers ignore unknown keys, but the line stays in the raw message.)
+    // Overwrite record: which diverged paths the subsystem's copy replaced,
+    // appended inside the trailing trailer block so the audit survives a
+    // squash. A single honest key (`Promotion-Replaced`): overwriting is the
+    // only behaviour, not an override, so no `Promotion-Override` flag is
+    // written for it (that flag is reserved for `allowGaps`).
     if !conflict_takeover.is_empty() {
         message.push_str(&format!(
-            "Promotion-Conflicts: {}\n",
+            "Promotion-Replaced: {}\n",
             conflict_takeover.join(", ")
         ));
-        if !message.contains("Promotion-Override: true") {
-            message.push_str("Promotion-Override: true\n");
-        }
     }
     report.provenance_message = Some(message.clone());
     let message_file = options
@@ -1808,8 +1702,8 @@ fn run_inner(
     }
 
     // `local_direct` delivery: the commit built above (identical delta
-    // application, provenance trailers, conflict handling, and `on_conflict`
-    // policy) lands straight onto the local target branch. Never pushes,
+    // application, provenance trailers, and the subsystem-wins copy) lands
+    // straight onto the local target branch. Never pushes,
     // never opens a PR. Fail-closed: the target tip is re-checked against
     // the pinned tip, a dirty checkout of the target refuses, and the
     // temporary branch is always removed.
@@ -2087,10 +1981,10 @@ pub fn integration_branch_name(
 }
 
 /// REMOVED: recency guard for adds-over-existing (timestamps).
-/// Replaced by overwrite refusal by blob membership (§3): for each touched
-/// path, the target-tip blob must be in the source blob set (oldest base →
-/// each selected tip), else the target has diverged and the promotion
-/// refuses with `TARGET_DIVERGED`. Dates determine display order only, never
+/// Replaced by blob membership (§3): for each touched path, the shared
+/// allowance decides whether the target copy is behind-or-equal, and either
+/// way the subsystem's copy is written (a diverged copy is overwritten and
+/// reported as replaced). Dates determine display order only, never
 /// correctness (addendum E3). The function is deleted, not deprecated, so no
 /// caller can accidentally consult timestamps.
 fn resolve_local_ref(repo_dir: &Path, branch: &str) -> Option<String> {
@@ -2748,13 +2642,6 @@ fn build_pr_body(
     if !report.changes.main_owned_skipped.is_empty() {
         lines.push("### Not imported (main-owned)".to_string());
         for path in &report.changes.main_owned_skipped {
-            lines.push(format!("- `{path}`"));
-        }
-        lines.push(String::new());
-    }
-    if !report.changes.conflict_taken.is_empty() {
-        lines.push("### Resolved via on-conflict policy (subsystem version wins)".to_string());
-        for path in &report.changes.conflict_taken {
             lines.push(format!("- `{path}`"));
         }
         lines.push(String::new());

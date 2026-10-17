@@ -1241,13 +1241,15 @@ fn case10_incompatible_dependency_range_fails_closed() {
 }
 
 #[test]
-fn case11_divergent_target_copy_is_refused_by_membership() {
+fn case11_divergent_target_copy_is_overwritten_by_subsystem() {
     let src_dir = make_temp_dir("src");
     let main_dir = make_temp_dir("main");
     let src = create_source_chain(&src_dir);
     let main = create_main_repo(&main_dir, &[], &[]);
     // Divergent target copy (different bytes from every source version in the
-    // selection): blob membership (§3) refuses — dates never decide.
+    // selection): blob membership (§3) records it as overwritten — dates never
+    // decide. Promotion is a copy and the subsystem's copy always wins, so a
+    // diverged target never refuses.
     retouch_with_date(
         &main.dir,
         "staging",
@@ -1268,26 +1270,46 @@ fn case11_divergent_target_copy_is_refused_by_membership() {
             ..Default::default()
         },
     );
-    assert!(!report.ok);
-    assert!(
-        codes(&report).contains(&"TARGET_DIVERGED".to_string()),
-        "{:?}",
-        codes(&report)
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "src/modules/hr/c.txt"),
+        "C feature\n",
+        "the subsystem's copy wins"
     );
-    let msg = report
-        .blockers
-        .iter()
-        .map(|b| b.message.clone())
-        .collect::<Vec<_>>()
-        .join("\n");
-    // Attribution: subject + Subsystem-ID (else unknown/direct), as recorded
-    // at <sha> (addendum B), plus the two remedies.
+    assert!(
+        report
+            .changes
+            .replaced
+            .iter()
+            .any(|p| p == "src/modules/hr/c.txt"),
+        "overwritten path is reported as replaced: {:?}",
+        report.changes
+    );
+    assert!(
+        report
+            .changes
+            .conflict_taken
+            .iter()
+            .any(|p| p == "src/modules/hr/c.txt"),
+        "overwritten path is reported as taken from subsystem: {:?}",
+        report.changes
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.code == "conflict_taken_from_subsystem"),
+        "overwrite warning is emitted: {:?}",
+        report.warnings
+    );
+    // A diverged target copy is the normal case, not an override: the audit
+    // is a single honest key, with no `Promotion-Override` flag (that flag is
+    // reserved for `allowGaps`).
+    let msg = report.provenance_message.clone().unwrap_or_default();
+    assert!(msg.contains("Promotion-Replaced:"), "{msg}");
     assert!(msg.contains("src/modules/hr/c.txt"), "{msg}");
-    assert!(msg.contains("staging: divergent copy"), "{msg}");
-    assert!(msg.contains("unknown/direct"), "{msg}");
-    assert!(msg.contains("as recorded at"), "{msg}");
-    assert!(msg.contains("adapt the file upstream"), "{msg}");
-    assert!(msg.contains("excludedPaths"), "{msg}");
+    assert!(!msg.contains("Promotion-Override"), "{msg}");
 }
 
 #[test]
@@ -1330,7 +1352,7 @@ fn case_noop_promotion_is_refused() {
 }
 
 #[test]
-fn case12_diverged_target_refuses_and_scratch_files_are_never_committed() {
+fn case12_diverged_target_is_overwritten_and_scratch_files_are_never_committed() {
     let src_dir = make_temp_dir("src");
     let main_dir = make_temp_dir("main");
     init_repo(&src_dir, "master");
@@ -1352,9 +1374,9 @@ fn case12_diverged_target_refuses_and_scratch_files_are_never_committed() {
     let registry = test_registry();
 
     // Blob membership (§3): target `a/Y/c/d` matches neither base nor tip,
-    // so the promotion refuses instead of replacing or merging. Copy never
-    // merges (no scratch `.ours`/`.base`/`.theirs` files can exist because no
-    // commit is created).
+    // so the subsystem's copy overwrites it. Copy never merges (no scratch
+    // `.ours`/`.base`/`.theirs` files can exist — and the integration branch
+    // carries the source bytes, never scratch).
     let report = promote(
         &src_dir,
         &main.dir,
@@ -1365,13 +1387,22 @@ fn case12_diverged_target_refuses_and_scratch_files_are_never_committed() {
             ..Default::default()
         },
     );
-    assert!(!report.ok);
-    assert!(
-        codes(&report).contains(&"TARGET_DIVERGED".to_string()),
-        "{:?}",
-        codes(&report)
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "src/merge.txt"),
+        "a\nb\nc\nX\n",
+        "the subsystem's copy wins"
     );
-    assert!(report.commit_sha.is_none(), "no commit on refusal");
+    assert!(
+        report.changes.replaced.iter().any(|p| p == "src/merge.txt"),
+        "overwritten path is reported as replaced: {:?}",
+        report.changes
+    );
+    // No merge scratch ever lands in the commit.
+    assert!(!try_branch_has(&main.dir, &branch, "src/merge.txt.ours"));
+    assert!(!try_branch_has(&main.dir, &branch, "src/merge.txt.base"));
+    assert!(!try_branch_has(&main.dir, &branch, "src/merge.txt.theirs"));
 }
 
 #[test]
@@ -2866,7 +2897,7 @@ fn local_next_commands_carry_cd_push_and_pr_create() {
 // ===========================================================================
 
 #[test]
-fn add_over_existing_with_older_target_refuses_by_membership() {
+fn add_over_existing_with_older_target_is_overwritten_by_membership() {
     let src_dir = make_temp_dir("src-addupdate");
     let main_dir = make_temp_dir("main-addupdate");
 
@@ -2895,7 +2926,7 @@ fn add_over_existing_with_older_target_refuses_by_membership() {
     );
 
     // The main system already carries a divergent copy (older date, but dates
-    // never decide — blob membership does, E3).
+    // never decide — blob membership does, E3). The subsystem's copy wins.
     init_repo(&main_dir, "master");
     commit_files_dated(
         &main_dir,
@@ -2928,16 +2959,26 @@ fn add_over_existing_with_older_target_refuses_by_membership() {
             ..Default::default()
         },
     );
-    assert!(!report.ok);
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main_dir, &branch, "src/modules/hr/shared.txt"),
+        "subsystem newer version\n",
+        "the subsystem's copy wins"
+    );
     assert!(
-        codes(&report).contains(&"TARGET_DIVERGED".to_string()),
-        "{:?}",
-        codes(&report)
+        report
+            .changes
+            .replaced
+            .iter()
+            .any(|p| p == "src/modules/hr/shared.txt"),
+        "overwritten path is reported as replaced: {:?}",
+        report.changes
     );
 }
 
 #[test]
-fn add_over_existing_with_newer_target_refuses_by_membership() {
+fn add_over_existing_with_newer_target_is_overwritten_by_membership() {
     let src_dir = make_temp_dir("src-addblocked");
     let main_dir = make_temp_dir("main-addblocked");
 
@@ -2964,7 +3005,8 @@ fn add_over_existing_with_newer_target_refuses_by_membership() {
         "2020-02-01T00:00:00+00:00",
     );
 
-    // The main system's copy is NEWER than the source commit.
+    // The main system's copy is NEWER than the source commit — dates never
+    // decide (E3). The subsystem's copy wins.
     init_repo(&main_dir, "master");
     commit_files_dated(
         &main_dir,
@@ -2997,11 +3039,21 @@ fn add_over_existing_with_newer_target_refuses_by_membership() {
             ..Default::default()
         },
     );
-    assert!(!report.ok);
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main_dir, &branch, "src/modules/hr/shared.txt"),
+        "subsystem older version\n",
+        "the subsystem's copy wins even when the target is newer"
+    );
     assert!(
-        codes(&report).contains(&"TARGET_DIVERGED".to_string()),
-        "{:?}",
-        codes(&report)
+        report
+            .changes
+            .replaced
+            .iter()
+            .any(|p| p == "src/modules/hr/shared.txt"),
+        "overwritten path is reported as replaced: {:?}",
+        report.changes
     );
 }
 
@@ -3067,7 +3119,7 @@ fn plain_add_without_target_file_still_applies_as_add() {
 }
 
 #[test]
-fn plain_modify_diverged_target_refuses() {
+fn plain_modify_diverged_target_is_overwritten() {
     let src_dir = make_temp_dir("src-plainmod");
     let main_dir = make_temp_dir("main-plainmod");
 
@@ -3085,8 +3137,9 @@ fn plain_modify_diverged_target_refuses() {
         "2024-01-01T00:00:00+00:00",
     );
 
-    // Target changed a different line: blob membership (§3) refuses (the
-    // target blob matches neither base nor tip). Copy never merges.
+    // Target changed a different line: blob membership (§3) records the
+    // overwrite (the target blob matches neither base nor tip). The
+    // subsystem's copy wins. Copy never merges.
     let main = create_main_repo(&main_dir, &[], &[("src/merge-plain.txt", b"a\nY\nc\nd\n")]);
     let github = StubGitHubOps::new();
     let registry = test_registry();
@@ -3100,11 +3153,21 @@ fn plain_modify_diverged_target_refuses() {
             ..Default::default()
         },
     );
-    assert!(!report.ok);
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "src/merge-plain.txt"),
+        "a\nb\nc\nX\n",
+        "the subsystem's copy wins"
+    );
     assert!(
-        codes(&report).contains(&"TARGET_DIVERGED".to_string()),
-        "{:?}",
-        codes(&report)
+        report
+            .changes
+            .replaced
+            .iter()
+            .any(|p| p == "src/merge-plain.txt"),
+        "overwritten path is reported as replaced: {:?}",
+        report.changes
     );
 }
 
@@ -4032,7 +4095,7 @@ fn gap_override_records_trailers() {
 /// G2: behind (target blob in set) allows; diverged refuses naming
 /// Subsystem-ID when present, else unknown/direct. Wire: excludedPaths.
 #[test]
-fn overwrite_behind_allows_and_names_subsystem_id_or_direct() {
+fn overwrite_behind_or_diverged_allows_and_audits_replaced() {
     // Behind: target matches oldest base → allow.
     let src_dir = make_temp_dir("behind-src");
     init_repo(&src_dir, "master");
@@ -4080,6 +4143,9 @@ fn overwrite_behind_allows_and_names_subsystem_id_or_direct() {
         &[("f.txt", b"diverged\n")],
         &[],
     );
+    // Diverged target whose last changer carries a Subsystem-ID trailer:
+    // the subsystem's copy still wins — attribution decided nothing, blob
+    // membership only decides the audit bucket (replaced + flagged).
     let refused = promote(
         &src2,
         &main2.dir,
@@ -4090,15 +4156,17 @@ fn overwrite_behind_allows_and_names_subsystem_id_or_direct() {
             ..Default::default()
         },
     );
-    assert!(!refused.ok);
-    let msg = refused
-        .blockers
-        .iter()
-        .map(|b| b.message.clone())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(msg.contains("other-team"), "must name Subsystem-ID: {msg}");
-    assert!(msg.contains("as recorded at"), "{msg}");
+    assert!(refused.ok, "{:?}", refused.blockers);
+    assert!(
+        refused.changes.replaced.iter().any(|p| p == "f.txt"),
+        "overwritten path is reported as replaced: {:?}",
+        refused.changes
+    );
+    assert!(
+        refused.changes.flagged.iter().any(|p| p == "f.txt"),
+        "independently-diverged target is flagged: {:?}",
+        refused.changes
+    );
 }
 
 /// Excluded paths are skipped and reported (remedy two is real).
@@ -4522,9 +4590,11 @@ fn selective_repromotion_over_previously_promoted_content_is_clean() {
 }
 
 /// A target blob that exists nowhere in the source repo is main-system-only
-/// content: preflight stays Conflict and the apply still refuses.
+/// content — and the subsystem's copy still wins: preflight reports `clean` +
+/// `replaced`, and the apply overwrites it. Promotion is a copy; there is no
+/// "who wins" refusal for a diverged target.
 #[test]
-fn target_blob_absent_from_source_repo_stays_refused() {
+fn target_blob_absent_from_source_repo_is_overwritten() {
     use vos_origins_lib::services::engine::preflight::{compute_preflight, PreflightRequest};
 
     let src_dir = make_temp_dir("src-mainonly");
@@ -4559,11 +4629,9 @@ fn target_blob_absent_from_source_repo_stays_refused() {
     };
     let preflight =
         compute_preflight(&src_dir, &main.dir, &request, &scratch).expect("preflight computes");
-    assert_eq!(
-        preflight.conflicts,
-        vec!["notes.txt".to_string()],
-        "{preflight:?}"
-    );
+    assert!(preflight.conflicts.is_empty(), "{preflight:?}");
+    assert_eq!(preflight.conflict, 0);
+    assert_eq!(preflight.replaced, vec!["notes.txt".to_string()]);
 
     let report = promote(
         &src_dir,
@@ -4575,19 +4643,26 @@ fn target_blob_absent_from_source_repo_stays_refused() {
             ..Default::default()
         },
     );
-    assert!(!report.ok);
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "notes.txt"),
+        "v2\n",
+        "the subsystem's copy wins"
+    );
     assert!(
-        codes(&report).contains(&"TARGET_DIVERGED".to_string()),
-        "{:?}",
-        codes(&report)
+        report.changes.replaced.iter().any(|p| p == "notes.txt"),
+        "overwritten path is reported as replaced: {:?}",
+        report.changes
     );
 }
 
-/// `take_subsystem` overwrites the diverged path with the subsystem's copy,
-/// reports it as replaced + conflict-taken, and records the override in the
-/// commit trailers (`Promotion-Conflicts` + `Promotion-Override`).
+/// The subsystem's copy overwrites the diverged path and reports it as
+/// replaced + conflict-taken. The overwrite is recorded in the commit trailers
+/// under the single honest key (`Promotion-Replaced`), with no
+/// `Promotion-Override` flag (that flag is reserved for `allowGaps`).
 #[test]
-fn take_subsystem_overwrites_diverged_path_reports_replaced_and_trailers_override() {
+fn subsystem_overwrites_diverged_path_reports_replaced_and_trailer() {
     let src_dir = make_temp_dir("src-takesub");
     let main_dir = make_temp_dir("main-takesub");
     init_repo(&src_dir, "master");
@@ -4645,9 +4720,16 @@ fn take_subsystem_overwrites_diverged_path_reports_replaced_and_trailers_overrid
         report.warnings
     );
     let msg = report.provenance_message.clone().unwrap_or_default();
-    assert!(msg.contains("Promotion-Conflicts:"), "{msg}");
+    assert!(msg.contains("Promotion-Replaced:"), "{msg}");
     assert!(msg.contains("notes.txt"), "{msg}");
-    assert!(msg.contains("Promotion-Override: true"), "{msg}");
+    assert!(
+        !msg.contains("Promotion-Override"),
+        "no override flag without gaps: {msg}"
+    );
+    assert!(
+        !msg.contains("Promotion-Conflicts"),
+        "collapsed to the single honest key: {msg}"
+    );
 }
 
 /// `take_subsystem` does NOT bypass the hard guards: global-file protection,

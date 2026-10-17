@@ -1,11 +1,6 @@
 /** Every screen required by the spec (section 3.3). */
 export type Route =
-  | 'dashboard'
-  | 'commit-browser'
-  | 'promote-commits'
-  | 'workflow-runs'
-  | 'integration-history'
-  | 'settings';
+  'dashboard' | 'commit-browser' | 'promote-commits' | 'integration-history' | 'settings';
 
 export interface NavItem {
   id: Route;
@@ -18,7 +13,7 @@ export const NAV_ITEMS: NavItem[] = [
   {
     id: 'dashboard',
     label: 'Dashboard',
-    description: 'Status by branch and recent runs',
+    description: 'Status by branch and recent activity',
   },
   {
     id: 'commit-browser',
@@ -29,11 +24,6 @@ export const NAV_ITEMS: NavItem[] = [
     id: 'promote-commits',
     label: 'Promote Commits',
     description: 'Confirm SHAs and target branch, then dispatch',
-  },
-  {
-    id: 'workflow-runs',
-    label: 'Workflow Runs',
-    description: 'Runs, logs and outcomes',
   },
   {
     id: 'integration-history',
@@ -50,7 +40,7 @@ export const NAV_ITEMS: NavItem[] = [
 export const ROUTE_META: Record<Route, { title: string; subtitle: string }> = {
   dashboard: {
     title: 'Dashboard',
-    subtitle: 'Status by branch and recent runs',
+    subtitle: 'Status by branch and recent activity',
   },
   'commit-browser': {
     title: 'Commit Browser',
@@ -59,10 +49,6 @@ export const ROUTE_META: Record<Route, { title: string; subtitle: string }> = {
   'promote-commits': {
     title: 'Promote Commits',
     subtitle: 'Confirm SHAs and target branch, then dispatch',
-  },
-  'workflow-runs': {
-    title: 'Workflow Runs',
-    subtitle: 'Runs, logs and outcomes',
   },
   'integration-history': {
     title: 'Integration History',

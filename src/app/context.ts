@@ -17,7 +17,6 @@ import type {
   PromotionDelivery,
   PromotionDispatchResult,
   PromotionMode,
-  PromotionOnConflict,
   PromotionPreflight,
   SubsystemSummary,
   TargetBranchList,
@@ -89,7 +88,6 @@ export interface PromotionState {
   mode: PromotionMode;
   baseSha: string;
   delivery: PromotionDelivery;
-  onConflict: PromotionOnConflict;
   /** The promotion commit's own message; required before a dispatch. */
   message: string;
   /** Override the non-contiguous-selection refusal: a skipped commit's changes are included. */
@@ -155,7 +153,6 @@ export interface AppContextValue {
   setPromotionMode: (mode: PromotionMode) => void;
   setPromotionBaseSha: (sha: string) => void;
   setPromotionDelivery: (delivery: PromotionDelivery) => void;
-  setPromotionOnConflict: (onConflict: PromotionOnConflict) => void;
   setPromotionMessage: (message: string) => void;
   setPromotionAllowGaps: (allowGaps: boolean) => void;
   setPromotionExcludedPaths: (paths: string[]) => void;

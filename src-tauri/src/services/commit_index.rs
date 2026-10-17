@@ -1,5 +1,5 @@
 //! Branch-scoped status (spec §3.4/§5/§8). `Integrated` only from reachable
-//! provenance; runs/PRs never count; unverifiable stays `Unknown`.
+//! provenance; PRs never count; unverifiable stays `Unknown`.
 
 use std::collections::HashMap;
 
@@ -12,7 +12,6 @@ pub struct StatusSignals<'a> {
     pub eligible_shas: &'a [String],
     pub events: &'a [IntegrationEvent],
     pub prs: &'a [IntegrationPr],
-    pub runs: &'a [WorkflowRun],
     pub failure_effects: &'a [FailureEffect],
     pub ancestry: &'a [(&'static str, Vec<&'static str>)],
 }
@@ -52,38 +51,6 @@ pub fn build_status_map(signals: &StatusSignals<'_>) -> HashMap<String, CommitSt
         };
 
     let detail_target = signals.target_branch;
-    for run in signals.runs {
-        if run.subsystem_id != signals.subsystem_id || run.target_branch != *detail_target {
-            continue;
-        }
-        let (kind, label_detail) = match run.status {
-            WorkflowRunStatus::Queued
-            | WorkflowRunStatus::Requested
-            | WorkflowRunStatus::Waiting => (
-                CommitStatusKind::PromotionQueued,
-                format!(
-                    "Workflow run #{} is queued. An integration PR does not exist yet.",
-                    run.run_number
-                ),
-            ),
-            WorkflowRunStatus::InProgress => (
-                CommitStatusKind::PromotionRunning,
-                format!(
-                    "Workflow run #{} is running on the integration branch.",
-                    run.run_number
-                ),
-            ),
-            WorkflowRunStatus::Completed | WorkflowRunStatus::Unknown => continue,
-        };
-        for sha in &run.source_shas {
-            candidate(
-                sha,
-                CommitStatus::of(kind, detail_target, Some(label_detail.clone()), None),
-                &mut map,
-            );
-        }
-    }
-
     for effect in signals.failure_effects {
         if effect.subsystem_id != signals.subsystem_id || effect.target_branch != *detail_target {
             continue;
@@ -94,10 +61,7 @@ pub fn build_status_map(signals: &StatusSignals<'_>) -> HashMap<String, CommitSt
                 CommitStatus::of(
                     effect.kind,
                     detail_target,
-                    Some(format!(
-                        "{} (workflow run {})",
-                        effect.reason, effect.run_id
-                    )),
+                    Some(effect.reason.clone()),
                     None,
                 ),
                 &mut map,
@@ -325,7 +289,6 @@ mod tests {
             eligible_shas: shas,
             events: &world.events,
             prs: &world.prs,
-            runs: &world.workflow_runs,
             failure_effects: &world.failure_effects,
             ancestry,
         }
@@ -373,9 +336,11 @@ mod tests {
         let stub = "b4e8a11f0c9d8e7f6a5b4c3d2e1f001122334455";
         assert_eq!(map_staging[stub].kind, CommitStatusKind::Reverted);
 
-        // A running workflow shows as promotion running, not integrated.
+        // With workflow runs deleted, a SHA with no PR, event or failure
+        // record is eligible — the engine opens integration PRs directly,
+        // so no `PromotionRunning` / `PromotionQueued` status can be produced.
         let filter = "3ac9d7e1b2c3d4e5f60718293a4b5c6d7e8f9012";
-        assert_eq!(map_staging[filter].kind, CommitStatusKind::PromotionRunning);
+        assert_eq!(map_staging[filter].kind, CommitStatusKind::Eligible);
     }
 
     #[test]

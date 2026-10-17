@@ -43,7 +43,6 @@ pub struct FailureEffect {
     pub source_shas: Vec<String>,
     pub target_branch: String,
     pub kind: CommitStatusKind,
-    pub run_id: u64,
     pub reason: String,
 }
 
@@ -58,12 +57,8 @@ pub struct FixtureWorld {
     pub diffs: HashMap<String, CommitDiff>,
     pub events: Vec<IntegrationEvent>,
     pub failure_effects: Vec<FailureEffect>,
-    pub workflow_runs: Vec<WorkflowRun>,
-    pub run_details: HashMap<u64, WorkflowRunDetails>,
     pub prs: Vec<IntegrationPr>,
     pub history: Vec<IntegrationHistoryEntry>,
-    pub next_run_id: u64,
-    pub next_run_number: u64,
     pub next_pr_number: u64,
 }
 
@@ -105,11 +100,6 @@ impl FixtureWorld {
             large,
         );
 
-        let run_details: HashMap<u64, WorkflowRunDetails> = data::workflow_run_details(now)
-            .into_iter()
-            .map(|details| (details.run.id, details))
-            .collect();
-
         Self {
             built_at: now,
             subsystems,
@@ -120,12 +110,8 @@ impl FixtureWorld {
             diffs,
             events: data::events(now),
             failure_effects: data::failure_effects(),
-            workflow_runs: data::workflow_runs(now),
-            run_details,
             prs: data::prs(now),
             history: data::history(now),
-            next_run_id: 8815,
-            next_run_number: 43,
             next_pr_number: 414,
         }
     }

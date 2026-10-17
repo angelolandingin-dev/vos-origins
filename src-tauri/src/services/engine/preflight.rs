@@ -22,11 +22,12 @@ use crate::services::registry::IntegrationPolicy;
 
 /// Per-file copy outcome, mirroring the real apply's branches:
 /// - `clean`: copies without refusal (new file, target behind-or-equal via
-///   blob membership, target already matches source, or source-unchanged);
+///   blob membership, target already matches source, source-unchanged, or a
+///   diverged target copy the subsystem's version overwrites — promotion is a
+///   copy and the subsystem's copy always wins);
 /// - `merged`: retained for wire compat, never emitted (copy never merges);
-/// - `conflict`: the engine would refuse the path outright
-///   (`NON_CONTIGUOUS_PATH_OVERLAP`, `TARGET_DIVERGED`,
-///   `GLOBAL_FILE_PROTECTED`, unsafe paths);
+/// - `conflict`: the engine would still refuse the path outright
+///   (`NON_CONTIGUOUS_PATH_OVERLAP`, `GLOBAL_FILE_PROTECTED`, unsafe paths);
 /// - `skipped`: dependency manifest/lockfile paths, which the engine merges or
 ///   regenerates rather than writes (plus main-owned/secret paths, which the
 ///   engine never imports, plus `excludedPaths`).
@@ -72,15 +73,17 @@ pub struct PreflightReport {
     pub conflict: usize,
     pub skipped: usize,
     pub conflicts: Vec<String>,
-    /// Contract pin (dialog depends on it): `conflicts` names every path whose
-    /// content the main system changed (divergence / blob-membership failure),
-    /// INDEPENDENT of policy — `fail` refuses them, `take_subsystem`
-    /// overwrites them, either way they are listed. `replaced` names what the
-    /// ACTIVE policy will actually overwrite: the rescued subset, non-empty
-    /// only under `take_subsystem` (where those paths appear in BOTH lists).
-    /// Paths refused regardless of policy (unsafe, secret/main-owned,
-    /// global-file protected, dependency, lockfile) never enter `replaced`.
+    /// Contract pin (dialog depends on it): `conflicts` names only paths the
+    /// engine would still refuse (gap overlap, global-file protection, unsafe
+    /// paths) — a diverged target copy is NOT a conflict: the subsystem's
+    /// copy overwrites it, so it reports `clean` and is listed in `replaced`
+    /// instead. `replaced` names every diverged path the promotion will
+    /// overwrite, under either policy. Paths refused regardless of policy
+    /// (unsafe, secret/main-owned, global-file protected, dependency,
+    /// lockfile) never enter `replaced`.
     pub replaced: Vec<String>,
+    /// Paths skipped via `excludedPaths` (subset of `skipped`).
+    pub excluded: Vec<String>,
 }
 
 /// Read-only inputs for [`compute_preflight`] (mirrors `EngineRequest`).
@@ -94,12 +97,11 @@ pub struct PreflightRequest<'a> {
     pub mode: PromotionMode,
     pub base_sha: Option<&'a str>,
     pub target_branch: &'a str,
-    /// `fail` refuses every membership-divergent path; `take_subsystem`
-    /// overwrites it with the subsystem's copy instead. Either way the path
-    /// stays in `conflicts` (content the main system changed); under
-    /// `take_subsystem` it ALSO appears in `replaced`. Never bypasses unsafe
-    /// paths, secret/main-owned files, global-file protection, dependency or
-    /// lockfile guards.
+    /// Wire `onConflict`. Retained for wire compatibility only: promotion is
+    /// a copy and the subsystem's copy always wins, so a diverged target
+    /// copy is overwritten (and reported in `replaced`) under either value.
+    /// Never bypasses unsafe paths, secret/main-owned files, global-file
+    /// protection, dependency or lockfile guards.
     pub on_conflict: PromotionOnConflict,
     /// Wire `allowGaps` (default false).
     pub allow_gaps: bool,
@@ -139,11 +141,12 @@ impl PreflightError {
 /// Copy semantics (addendum §7): the apply copies unconditionally, never
 /// merges — so preflight never merges either. `three_way_merge` has zero call
 /// sites on this path by construction. Outcomes use the same vocabulary the
-/// apply reports: `Clean` = will write/delete/leave-unchanged without refusal
-/// (maps to apply `Written`/`Deleted`/`Unchanged`); `Conflict` = the apply
-/// would refuse (`NON_CONTIGUOUS_PATH_OVERLAP`, `TARGET_DIVERGED`,
-/// `GLOBAL_FILE_PROTECTED`); `Skipped` = dependency/main-owned/secret or
-/// `excludedPaths`. `Merged` is retained for wire compat but never emitted.
+/// apply reports: `Clean` = will write/delete/leave-unchanged/overwrite
+/// without refusal (maps to apply `Written`/`Deleted`/`Unchanged`/replaced);
+/// `Conflict` = the apply would refuse (`NON_CONTIGUOUS_PATH_OVERLAP`,
+/// `GLOBAL_FILE_PROTECTED`, unsafe paths); `Skipped` = dependency/
+/// main-owned/secret or `excludedPaths`. `Merged` is retained for wire compat
+/// but never emitted.
 pub fn compute_preflight(
     source_dir: &Path,
     target_dir: &Path,
@@ -166,7 +169,6 @@ pub fn compute_preflight(
         request.allow_gaps,
         request.excluded_paths,
         request.global_files,
-        request.on_conflict,
     );
     Ok(report)
 }
@@ -239,7 +241,6 @@ fn evaluate_plan(
     allow_gaps: bool,
     excluded_paths: &[String],
     global_files: &[String],
-    on_conflict: PromotionOnConflict,
 ) -> PreflightReport {
     // Copy semantics, same rules as the engine (addendum §7 + E3):
     // blob membership decides, dates never do. ONE ls-tree per revision for
@@ -278,7 +279,6 @@ fn evaluate_plan(
         &candidate_paths,
         &history_tips,
     );
-    let take_subsystem = on_conflict == PromotionOnConflict::TakeSubsystem;
     let oldest_tree: HashMap<String, String> = match ordered.first().and_then(|(_, b)| b.as_deref())
     {
         Some(base) => blobset::tree_blob_map(source_dir, base),
@@ -333,6 +333,7 @@ fn evaluate_plan(
     }
     let mut by_path: HashMap<String, PreflightOutcome> = HashMap::new();
     let mut replaced: Vec<String> = Vec::new();
+    let mut excluded_hit: Vec<String> = Vec::new();
     for delta in plan {
         for entry in &delta.entries {
             for rel_path in expanded_paths(entry) {
@@ -354,9 +355,11 @@ fn evaluate_plan(
                     &excluded,
                     global_files,
                     allowed,
-                    take_subsystem,
                     &mut replaced,
                 );
+                if excluded.contains(&rel_path) && !excluded_hit.contains(&rel_path) {
+                    excluded_hit.push(rel_path.clone());
+                }
                 by_path
                     .entry(rel_path)
                     .and_modify(|kept| {
@@ -390,6 +393,8 @@ fn evaluate_plan(
     replaced.sort();
     replaced.dedup();
     report.replaced = replaced;
+    excluded_hit.sort();
+    report.excluded = excluded_hit;
     report
 }
 
@@ -428,7 +433,6 @@ fn evaluate_path_copy(
     excluded: &HashSet<String>,
     global_files: &[String],
     overwrite_ok: bool,
-    take_subsystem: bool,
     replaced: &mut Vec<String>,
 ) -> PreflightOutcome {
     if rel_path.is_empty() {
@@ -527,16 +531,16 @@ fn evaluate_path_copy(
         return PreflightOutcome::Conflict;
     }
 
-    // Overwrite refusal on the shared allowance (same rule as the engine).
+    // Overwrite on the shared allowance (same rule as the engine).
     // `theirs == None` deletes are included: set = {base, None}.
-    // Contract pin: the divergence is named in `conflicts` under BOTH
-    // policies. Under `take_subsystem` the apply overwrites the path anyway,
-    // so it is ALSO recorded in `replaced`.
+    // Promotion is a copy and the subsystem's copy always wins: a diverged
+    // target copy is overwritten, so it reports `clean` here and is recorded
+    // in `replaced` for the dialog's overwrite preview — never `conflict`.
     if !overwrite_ok {
-        if take_subsystem && !replaced.iter().any(|p| p == rel_path) {
+        if !replaced.iter().any(|p| p == rel_path) {
             replaced.push(rel_path.to_string());
         }
-        return PreflightOutcome::Conflict;
+        return PreflightOutcome::Clean;
     }
 
     // Copy semantics below (no merge — `three_way_merge` is never called):
@@ -769,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_path_is_listed() {
+    fn diverged_path_is_overwritten_not_listed_as_conflict() {
         let repo = diverging_repo();
         git(&repo, &["checkout", "-q", "target"]);
         write(&repo, "app.txt", "target edit\n");
@@ -778,10 +782,14 @@ mod tests {
         write(&repo, "app.txt", "source edit\n");
         let sha = commit_all(&repo, "source work");
 
+        // Promotion is a copy: the subsystem's copy always wins. A diverged
+        // target copy reports `clean` and is recorded as replaced — never a
+        // preflight conflict.
         let report = check(&repo, &[sha]);
-        assert_eq!(report.conflicts, vec!["app.txt".to_string()]);
-        assert_eq!(report.conflict, 1);
-        assert_eq!(outcome_of(&report, "app.txt"), PreflightOutcome::Conflict);
+        assert!(report.conflicts.is_empty(), "{report:?}");
+        assert_eq!(report.conflict, 0);
+        assert_eq!(outcome_of(&report, "app.txt"), PreflightOutcome::Clean);
+        assert_eq!(report.replaced, vec!["app.txt".to_string()]);
     }
 
     #[test]
@@ -801,13 +809,14 @@ mod tests {
 
         // Copy semantics, blob membership (§3, §7): the target copy (`A…`)
         // matches neither the oldest base nor the source tip, so it has
-        // diverged and preflight refuses — never `Merged`. Three-way would
-        // have merged these disjoint edits; the copy does not merge (G3).
+        // diverged — and the subsystem's copy overwrites it. Never `Merged`
+        // (G3), never `Conflict`: divergence is not a refusal.
         let report = check(&repo, &[sha]);
         assert_eq!(report.merged, 0, "copy never merges: {report:?}");
-        assert_eq!(report.conflict, 1, "{report:?}");
-        assert_eq!(report.conflicts, vec!["app.txt".to_string()]);
-        assert_eq!(outcome_of(&report, "app.txt"), PreflightOutcome::Conflict);
+        assert_eq!(report.conflict, 0, "{report:?}");
+        assert!(report.conflicts.is_empty(), "{report:?}");
+        assert_eq!(outcome_of(&report, "app.txt"), PreflightOutcome::Clean);
+        assert_eq!(report.replaced, vec!["app.txt".to_string()]);
     }
 
     #[test]
@@ -862,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn add_over_existing_membership_refuses_any_diverged_target() {
+    fn add_over_existing_membership_diverged_target_is_overwritten() {
         let repo = tmp("repo");
         init(&repo);
         write(&repo, "base.txt", "base\n");
@@ -887,11 +896,16 @@ mod tests {
         let report = check(&repo, &[sha]);
         assert_eq!(report.merged, 0, "copy never merges: {report:?}");
         assert_eq!(
-            report.conflicts,
+            report.conflict, 0,
+            "divergence is overwritten, not refused: {report:?}"
+        );
+        assert!(report.conflicts.is_empty(), "{report:?}");
+        assert_eq!(
+            report.replaced,
             vec!["newer.txt".to_string(), "older.txt".to_string()]
         );
-        assert_eq!(outcome_of(&report, "newer.txt"), PreflightOutcome::Conflict);
-        assert_eq!(outcome_of(&report, "older.txt"), PreflightOutcome::Conflict);
+        assert_eq!(outcome_of(&report, "newer.txt"), PreflightOutcome::Clean);
+        assert_eq!(outcome_of(&report, "older.txt"), PreflightOutcome::Clean);
     }
 
     #[test]
@@ -928,7 +942,9 @@ mod tests {
         };
         let report =
             compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
-        assert_eq!(report.conflict, 1);
+        assert_eq!(report.conflict, 0, "divergence is overwritten: {report:?}");
+        assert!(report.conflicts.is_empty(), "{report:?}");
+        assert_eq!(report.replaced, vec!["app.txt".to_string()]);
         // Copy semantics writes no scratch files (no merge-file temps).
         let leftovers: Vec<_> = std::fs::read_dir(&scratch).expect("read scratch").collect();
         assert!(
@@ -961,10 +977,10 @@ mod tests {
     /// Preflight and apply agree (§7, G3) for: a modified path (target
     /// behind), a divergent path (target not in blob set), a delete, an
     /// add-over-existing, and an identical no-op. Copy semantics: no `Merged`,
-    /// `three_way_merge` has zero call sites above. When preflight says
-    /// `Clean`, the apply writes the same bytes (`Written`/`Deleted`/
-    /// `Unchanged`); when it says `Conflict`, the engine would refuse
-    /// (`TARGET_DIVERGED`) and the apply is never run — they agree.
+    /// `three_way_merge` has zero call sites above. The subsystem's copy
+    /// always wins, so every shape reports `Clean` — diverged paths additionally
+    /// appear in `replaced`. When preflight says `Clean`, the apply writes the
+    /// same bytes (`Written`/`Deleted`/`Unchanged`).
     #[test]
     fn preflight_and_apply_agree_on_five_shapes() {
         use crate::services::engine::apply::{apply_file_delta, ApplyOptions, ApplyOutcome};
@@ -1012,18 +1028,27 @@ mod tests {
         let report =
             compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
         assert_eq!(report.merged, 0, "copy never merges: {report:?}");
+        assert_eq!(report.conflict, 0, "divergence is overwritten: {report:?}");
+        assert!(report.conflicts.is_empty(), "{report:?}");
         // Modified (behind: target == base, in set) → Clean.
         assert_eq!(outcome_of(&report, "mod.txt"), PreflightOutcome::Clean);
-        // Divergent (target matches neither base nor tip) → Conflict.
-        assert_eq!(outcome_of(&report, "div.txt"), PreflightOutcome::Conflict);
+        // Divergent (target matches neither base nor tip) → Clean + replaced.
+        assert_eq!(outcome_of(&report, "div.txt"), PreflightOutcome::Clean);
         // Delete (target == base, in set {base, None}) → Clean.
         assert_eq!(outcome_of(&report, "del.txt"), PreflightOutcome::Clean);
-        // Add-over-existing diverged → Conflict.
-        assert_eq!(outcome_of(&report, "new.txt"), PreflightOutcome::Conflict);
+        // Add-over-existing diverged → Clean + replaced.
+        assert_eq!(outcome_of(&report, "new.txt"), PreflightOutcome::Clean);
         // Identical no-op (target == source) → Clean.
         assert_eq!(outcome_of(&report, "same.txt"), PreflightOutcome::Clean);
+        assert_eq!(
+            report.replaced,
+            vec!["div.txt".to_string(), "new.txt".to_string()]
+        );
 
-        // Blob membership behind the verdicts (E3: dates never decide).
+        // Blob membership behind the verdicts (E3: dates never decide):
+        // membership-allowed paths report Clean without audit, while
+        // membership-failed paths report Clean AND appear in `replaced`
+        // (the subsystem's copy overwrites them).
         let target_tip = git(&repo, &["rev-parse", "target"]);
         let parent = git(&repo, &["rev-parse", &format!("{sha}^")]);
         let ordered: Vec<(String, Option<String>)> = vec![(sha.clone(), Some(parent.clone()))];
@@ -1033,9 +1058,14 @@ mod tests {
             let allowed = set.contains(&target_blob);
             let preflight = outcome_of(&report, path);
             assert_eq!(
+                preflight,
+                PreflightOutcome::Clean,
+                "every shape copies without refusal: {path}"
+            );
+            assert_eq!(
                 allowed,
-                preflight == PreflightOutcome::Clean,
-                "blob membership must match preflight for {path}"
+                !report.replaced.iter().any(|p| p == path),
+                "membership decides the audit bucket for {path}"
             );
         }
         let _ = ordered;
@@ -1134,13 +1164,13 @@ mod tests {
             .output();
     }
 
-    /// Dialog contract pin: `conflicts` names content the main system changed
-    /// under BOTH policies (`fail` refuses it, `take_subsystem` overwrites
-    /// it), while `replaced` carries it ONLY under `take_subsystem`. Moving
-    /// rescued paths out of `conflicts` would zero the dialog's overwrite
-    /// count and print "Ready to promote" over pending overwrites.
+    /// Dialog contract pin: divergence is NOT a conflict under either policy.
+    /// The subsystem's copy always wins, so a diverged path reports `clean`
+    /// and is recorded in `replaced` whether `on_conflict` is `fail` or
+    /// `take_subsystem`. `conflicts` stays empty in both cases — only true
+    /// refusals (gaps, global protection, unsafe paths) land there.
     #[test]
-    fn conflicts_names_divergence_under_both_policies_replaced_only_under_take_subsystem() {
+    fn divergence_is_clean_and_replaced_under_both_policies_never_a_conflict() {
         let repo = diverging_repo();
         git(&repo, &["checkout", "-q", "target"]);
         write(&repo, "app.txt", "target edit\n");
@@ -1169,25 +1199,17 @@ mod tests {
             };
             let report =
                 compute_preflight(&repo, &repo, &request, &scratch).expect("preflight computes");
-            assert_eq!(
-                report.conflicts,
-                vec!["app.txt".to_string()],
-                "divergence must be named under {on_conflict:?}"
+            assert!(
+                report.conflicts.is_empty(),
+                "divergence must never be a conflict under {on_conflict:?}: {report:?}"
             );
-            assert_eq!(outcome_of(&report, "app.txt"), PreflightOutcome::Conflict);
-            if on_conflict == PromotionOnConflict::TakeSubsystem {
-                assert_eq!(
-                    report.replaced,
-                    vec!["app.txt".to_string()],
-                    "take_subsystem overwrites: also reported as replaced"
-                );
-            } else {
-                assert!(
-                    report.replaced.is_empty(),
-                    "fail refuses: nothing may be reported as replaced: {:?}",
-                    report.replaced
-                );
-            }
+            assert_eq!(report.conflict, 0);
+            assert_eq!(outcome_of(&report, "app.txt"), PreflightOutcome::Clean);
+            assert_eq!(
+                report.replaced,
+                vec!["app.txt".to_string()],
+                "the overwrite is recorded under {on_conflict:?}"
+            );
             let _ = std::fs::remove_dir_all(&scratch);
         }
     }

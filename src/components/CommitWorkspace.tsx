@@ -6,23 +6,20 @@ import {
   GitBranch,
   Package,
   Settings as SettingsIcon,
-  Workflow,
 } from 'lucide-react';
 
 import { api } from '../api/invoke';
-import type { CommitStatusKind, WorkflowRun } from '../api/types';
+import type { CommitStatusKind } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
 import { CommitDetailsPanel } from './CommitDetails';
 import { CommitDiffView } from './CommitDiffView';
 import { CommitTable } from './CommitTable';
-import { StatusBadge } from './StatusBadge';
 import { cx } from './ui/cx';
 import { formatDateTime } from './ui/format';
 import {
   Button,
   EmptyState,
   ErrorState,
-  IconButton,
   InlineAlert,
   KeyValue,
   LoadingState,
@@ -35,28 +32,7 @@ import {
  * becomes a slide-over so no required action or message is ever unreachable.
  */
 
-type SourceTab = 'commits' | 'changes' | 'dependencies' | 'runs' | 'settings';
-
-function runChip(run: WorkflowRun) {
-  if (run.status === 'in_progress')
-    return <StatusBadge kind="promotion_running" label={`Run #${run.runNumber} running`} />;
-  if (run.status === 'queued' || run.status === 'requested' || run.status === 'waiting')
-    return <StatusBadge kind="promotion_queued" label={`Run #${run.runNumber} queued`} />;
-  if (run.conclusion === 'failure' || run.conclusion === 'timed_out')
-    return <StatusBadge kind="failed" label={`Run #${run.runNumber} failed`} />;
-  if (run.conclusion === 'success')
-    return (
-      <span className="meta text-status-applied-ink" title="Workflow succeeded">
-        <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-status-applied" />
-        Run #{run.runNumber} succeeded
-      </span>
-    );
-  return (
-    <span className="meta" title={`Conclusion: ${run.conclusion ?? run.status}`}>
-      Run #{run.runNumber} {run.conclusion ?? run.status}
-    </span>
-  );
-}
+type SourceTab = 'commits' | 'changes' | 'dependencies' | 'settings';
 
 export function CommitWorkspace() {
   return <CommitWorkspaceView />;
@@ -209,15 +185,6 @@ function CommitWorkspacePanel({
     [subsystem?.id, focusedSha, app.targetBranch, app.dataVersion],
   );
 
-  const runs = useAsyncData(
-    () => (subsystem ? api.listWorkflowRuns(subsystem.id, null, 25) : Promise.resolve(null)),
-    [subsystem?.id, app.dataVersion],
-  );
-
-  const commitRuns = (runs.data?.runs ?? []).filter((run) =>
-    focusedSha ? run.sourceShas.includes(focusedSha) : false,
-  );
-
   // Row subject/SHA only moves focus; the details rail is permanent on wide
   // screens, so the two gestures never conflict.
   const handleFocusSha = (sha: string) => {
@@ -348,7 +315,6 @@ function CommitWorkspacePanel({
               label: 'Dependencies',
               count: details.data?.dependencies.length,
             },
-            { id: 'runs', label: 'Workflow Runs', count: commitRuns.length },
             { id: 'settings', label: 'Settings' },
           ]}
         />
@@ -463,45 +429,6 @@ function CommitWorkspacePanel({
                 title="No manifest changes in this commit"
                 message="Promote a package commit together with the commits that use it."
               />
-            )}
-          </div>
-        ) : null}
-
-        {sourceTab === 'runs' ? (
-          <div className="scroll-area min-h-0 flex-1 p-2.5">
-            {runs.loading && !runs.data ? (
-              <LoadingState label="Loading workflow runs…" />
-            ) : runs.error ? (
-              <ErrorState error={runs.error} onRetry={runs.reload} />
-            ) : (runs.data?.runs.length ?? 0) === 0 ? (
-              <EmptyState
-                icon={Workflow}
-                title="No runs for this subsystem yet"
-                message="Runs appear here after a promotion is dispatched from this tool."
-              />
-            ) : (
-              <ul className="space-y-2">
-                {(runs.data?.runs ?? []).map((run) => (
-                  <li
-                    key={run.id}
-                    className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5"
-                  >
-                    {runChip(run)}
-                    <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                      {run.displayTitle}
-                    </span>
-                    <span className="meta">target {run.targetBranch}</span>
-                    <span className="mono text-right text-[11px] text-disabled tabular-nums">
-                      {formatDateTime(run.updatedAt)}
-                    </span>
-                    <IconButton
-                      icon={ExternalLink}
-                      label="Open run on GitHub"
-                      onClick={() => app.openExternal(run.htmlUrl)}
-                    />
-                  </li>
-                ))}
-              </ul>
             )}
           </div>
         ) : null}

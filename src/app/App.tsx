@@ -7,7 +7,6 @@ import { Dashboard } from '../pages/Dashboard';
 import { IntegrationHistory } from '../pages/IntegrationHistory';
 import { PromoteCommits } from '../pages/PromoteCommits';
 import { Settings } from '../pages/Settings';
-import { WorkflowRuns } from '../pages/WorkflowRuns';
 import { useApp } from './context';
 
 /** Shell + active screen + the app-level promotion dialog shared by multiple screens. */
@@ -56,7 +55,6 @@ export default function App() {
         {route === 'dashboard' ? <Dashboard /> : null}
         {route === 'commit-browser' ? <CommitBrowser /> : null}
         {route === 'promote-commits' ? <PromoteCommits /> : null}
-        {route === 'workflow-runs' ? <WorkflowRuns /> : null}
         {route === 'integration-history' ? <IntegrationHistory /> : null}
         {route === 'settings' ? <Settings /> : null}
       </AppShell>
@@ -82,8 +80,6 @@ export default function App() {
         onMessageChange={app.setPromotionMessage}
         allowGaps={app.promotion.allowGaps}
         onAllowGapsChange={app.setPromotionAllowGaps}
-        onConflict={app.promotion.onConflict}
-        onConflictChange={app.setPromotionOnConflict}
         excludedPaths={app.promotion.excludedPaths}
         onAddExcludedPath={app.addPromotionExcludedPath}
         onRemoveExcludedPath={app.removePromotionExcludedPath}
@@ -96,10 +92,6 @@ export default function App() {
         result={app.promotion.result}
         onDispatch={app.dispatchPromotion}
         onOpenExternal={app.openExternal}
-        onViewRuns={() => {
-          app.closePromotionDialog();
-          app.navigate('workflow-runs');
-        }}
       />
     </>
   );

@@ -218,6 +218,88 @@ fn included_commits_are_exactly_source_commit_trailers_in_order() {
 }
 
 #[test]
+fn resolved_event_main_commit_matches_real_git_metadata() {
+    let (src, main, _order, m) = sandbox_three();
+    let audit = integration_event_audit_live(
+        &main,
+        Some(&src),
+        &single_registry(),
+        "staging",
+        "hr-management",
+        &m,
+    )
+    .expect("audit");
+    assert!(!audit.main_commit_unavailable);
+    // Independent ground truth straight from git (setup `Command`, uncounted).
+    let truth = git(&main, &["log", "-1", "--format=%H%x1f%s%x1f%an%x1f%aI", &m]);
+    let mut parts = truth.split('\u{1f}');
+    let (expected_sha, expected_subject, expected_author, expected_at) = (
+        parts.next().unwrap_or(""),
+        parts.next().unwrap_or(""),
+        parts.next().unwrap_or(""),
+        parts.next().unwrap_or(""),
+    );
+    assert_eq!(expected_sha, m);
+    let main_commit = audit
+        .main_commit
+        .as_ref()
+        .expect("a resolved event carries its main commit");
+    assert!(!main_commit.unavailable);
+    assert_eq!(main_commit.sha, m);
+    assert_eq!(main_commit.short_sha, m.chars().take(7).collect::<String>());
+    assert_eq!(main_commit.subject, expected_subject);
+    assert_ne!(
+        main_commit.subject, main_commit.sha,
+        "the SHA must never stand in as the subject"
+    );
+    assert!(!main_commit.subject.is_empty());
+    assert_eq!(main_commit.author.as_deref(), Some(expected_author));
+    assert_eq!(main_commit.authored_at.as_deref(), Some(expected_at));
+}
+
+#[test]
+fn unresolved_main_commit_is_null_without_fabrication() {
+    let main = tmp("null-main");
+    init(&main, "master");
+    write(&main, "base.txt", "base\n");
+    let _ = commit_all(&main, "main base");
+    git(&main, &["branch", "staging"]);
+    git(&main, &["checkout", "-q", "staging"]);
+    write(&main, "work.txt", "work\n");
+    let plain = commit_all(&main, "ordinary work without trailers");
+
+    // Outside the scanned range: truthful Ok, null main commit, nothing made up.
+    let bogus_main = "d".repeat(40);
+    let missing = integration_event_audit_live(
+        &main,
+        None,
+        &single_registry(),
+        "staging",
+        "hr-management",
+        &bogus_main,
+    )
+    .expect("missing main commit is truthful, not an error");
+    assert!(missing.main_commit_unavailable);
+    assert!(
+        missing.main_commit.is_none(),
+        "an unresolvable main commit carries null, never a fabricated subject"
+    );
+
+    // Trailerless but reachable: same truthful shape.
+    let trailerless = integration_event_audit_live(
+        &main,
+        None,
+        &single_registry(),
+        "staging",
+        "hr-management",
+        &plain,
+    )
+    .expect("trailerless audit is truthful, not an error");
+    assert!(trailerless.main_commit_unavailable);
+    assert!(trailerless.main_commit.is_none());
+}
+
+#[test]
 fn unreachable_source_commit_is_unavailable_with_empty_subject() {
     let src = tmp("unreach-src");
     init(&src, "master");

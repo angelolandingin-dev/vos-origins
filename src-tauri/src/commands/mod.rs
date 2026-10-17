@@ -6,7 +6,6 @@ pub mod history;
 pub mod promotion;
 pub mod registry;
 pub mod system;
-pub mod workflows;
 
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::fixtures::FixtureWorld;

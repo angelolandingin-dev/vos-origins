@@ -212,6 +212,11 @@ pub async fn dispatch_promotion(
             findings: engine_findings_local_direct(&report, used_managed_fallback),
             delivery: PromotionDelivery::LocalDirect,
             next_commands,
+            replaced: report.changes.replaced.clone(),
+            deleted: report.changes.deleted.clone(),
+            unchanged: report.changes.unchanged.clone(),
+            flagged: report.changes.flagged.clone(),
+            excluded: report.changes.excluded.clone(),
         });
     }
 
@@ -251,6 +256,11 @@ pub async fn dispatch_promotion(
             findings: engine_findings_local(&report, used_managed_fallback),
             delivery: PromotionDelivery::Local,
             next_commands,
+            replaced: report.changes.replaced.clone(),
+            deleted: report.changes.deleted.clone(),
+            unchanged: report.changes.unchanged.clone(),
+            flagged: report.changes.flagged.clone(),
+            excluded: report.changes.excluded.clone(),
         });
     }
 
@@ -292,6 +302,11 @@ pub async fn dispatch_promotion(
             findings: engine_findings_worktree(&report, used_managed_fallback),
             delivery: PromotionDelivery::Worktree,
             next_commands,
+            replaced: report.changes.replaced.clone(),
+            deleted: report.changes.deleted.clone(),
+            unchanged: report.changes.unchanged.clone(),
+            flagged: report.changes.flagged.clone(),
+            excluded: report.changes.excluded.clone(),
         });
     }
 
@@ -314,12 +329,20 @@ pub async fn dispatch_promotion(
         findings: engine_findings(&report),
         delivery: PromotionDelivery::PushPr,
         next_commands: Vec::new(),
+        replaced: report.changes.replaced.clone(),
+        deleted: report.changes.deleted.clone(),
+        unchanged: report.changes.unchanged.clone(),
+        flagged: report.changes.flagged.clone(),
+        excluded: report.changes.excluded.clone(),
     })
 }
 
 /// Dry-run mergeability preflight for the promotion dialog: per-file
 /// `clean` / `merged` / `conflict` / `skipped` for the selected SHAs against
-/// the target branch tip, computed with the engine's own three-way merge.
+/// the target branch tip, computed from the same blobs and blob-membership
+/// rules the real apply uses. A diverged target copy reports `clean` (the
+/// subsystem's copy overwrites it) and is listed in `replaced` — it is never
+/// a conflict.
 /// Read-only: creates no branch, no commit, and no worktree, and performs no
 /// push or PR. The failure path is untouched — the real promotion still fails
 /// closed exactly as it does today.
@@ -459,6 +482,8 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
         conflict: report.conflict,
         skipped: report.skipped,
         conflicts: report.conflicts,
+        replaced: report.replaced,
+        excluded: report.excluded,
     })
 }
 
@@ -708,6 +733,11 @@ fn simulate(
         findings,
         delivery: request.delivery,
         next_commands: Vec::new(),
+        replaced: Vec::new(),
+        deleted: Vec::new(),
+        unchanged: Vec::new(),
+        flagged: Vec::new(),
+        excluded: Vec::new(),
     })
 }
 
@@ -718,7 +748,10 @@ fn engine_findings_local_direct(
     let mut findings = Vec::new();
     findings.push(ValidationFinding::info(
         "local_direct",
-        "Committed directly onto the local target branch; nothing was pushed and no PR was opened. Push when ready.",
+        format!(
+            "Committed the first-parent delta of {} selected SHA(s) directly onto the local target branch; nothing was pushed and no PR was opened. Push when ready.",
+            report.verification.order.len()
+        ),
     ));
     if used_managed_fallback {
         findings.push(ValidationFinding::warning(
@@ -727,13 +760,6 @@ fn engine_findings_local_direct(
             "Set the local clone in Settings (localMainRepositoryPath) or VOS_TARGET_REPO_DIR to promote inside your own clone.",
         ));
     }
-    findings.push(ValidationFinding::info(
-        "selection_scope",
-        format!(
-            "Applied only the first-parent delta of {} selected SHA(s). Unselected commits were never imported.",
-            report.verification.order.len()
-        ),
-    ));
     append_shared_findings(report, &mut findings);
     findings
 }
@@ -746,7 +772,8 @@ fn engine_findings_worktree(
     findings.push(ValidationFinding::info(
         "worktree_only",
         format!(
-            "Staged {} path(s) in the working tree; nothing was committed, nothing was pushed, and no PR was opened. Commit statuses are unchanged — review with `git diff --staged`, then commit yourself.",
+            "Staged the first-parent delta of {} selected SHA(s) ({} path(s)) in the working tree; nothing was committed, nothing was pushed, and no PR was opened. Commit statuses are unchanged — review with `git diff --staged`, then commit yourself.",
+            report.verification.order.len(),
             report.staged_paths.len()
         ),
     ));
@@ -772,12 +799,8 @@ fn engine_findings(report: &PromotionReport) -> Vec<ValidationFinding> {
     let mut findings = Vec::new();
     findings.push(ValidationFinding::info(
         "no_direct_push",
-        "The integration branch was pushed and a pull request opened; nothing was pushed directly to a protected branch.",
-    ));
-    findings.push(ValidationFinding::info(
-        "selection_scope",
         format!(
-            "Applied only the first-parent delta of {} selected SHA(s). Unselected commits were never imported.",
+            "Pushed the integration branch and opened a pull request from the first-parent delta of {} selected SHA(s); nothing was pushed directly to a protected branch.",
             report.verification.order.len()
         ),
     ));
@@ -792,7 +815,10 @@ fn engine_findings_local(
     let mut findings = Vec::new();
     findings.push(ValidationFinding::info(
         "local_only",
-        "Local branch + commit created in the target clone; nothing was pushed and no PR was opened. You push it yourself.",
+        format!(
+            "Created a local branch + commit in the target clone from the first-parent delta of {} selected SHA(s); nothing was pushed and no PR was opened. You push it yourself.",
+            report.verification.order.len()
+        ),
     ));
     if used_managed_fallback {
         findings.push(ValidationFinding::warning(
@@ -801,66 +827,23 @@ fn engine_findings_local(
             "Set the local clone in Settings (localMainRepositoryPath) or VOS_TARGET_REPO_DIR to promote inside your own clone.",
         ));
     }
-    findings.push(ValidationFinding::info(
-        "selection_scope",
-        format!(
-            "Applied only the first-parent delta of {} selected SHA(s). Unselected commits were never imported.",
-            report.verification.order.len()
-        ),
-    ));
     append_shared_findings(report, &mut findings);
     findings
 }
 
 fn append_shared_findings(report: &PromotionReport, findings: &mut Vec<ValidationFinding>) {
-    if !report.changes.updated.is_empty() {
-        findings.push(ValidationFinding::info(
-            "add_over_existing_updated",
-            format!(
-                "Applied as updates (subsystem copy is newer): {}",
-                report.changes.updated.join(", ")
-            ),
-        ));
-    }
-    if !report.changes.replaced.is_empty() {
-        findings.push(ValidationFinding::info(
-            "replaced",
-            format!("Replaced: {}", report.changes.replaced.join(", ")),
-        ));
-    }
-    if !report.changes.deleted.is_empty() {
-        findings.push(ValidationFinding::info(
-            "deleted",
-            format!("Deleted: {}", report.changes.deleted.join(", ")),
-        ));
-    }
-    if !report.changes.unchanged.is_empty() {
-        findings.push(ValidationFinding::info(
-            "unchanged",
-            format!(
-                "Unchanged (target already matched source): {}",
-                report.changes.unchanged.join(", ")
-            ),
-        ));
-    }
+    // Per-path change lists (replaced / deleted / unchanged / excluded) travel
+    // as structured fields on the result — the dialog renders them as one
+    // condensed summary with expandable details — so they are NOT repeated as
+    // raw path dumps here.
     if !report.changes.flagged.is_empty() {
         findings.push(ValidationFinding::warning(
             "flagged_overlap",
             format!(
-                "Cross-subsystem overlap — replaced {} path(s) whose target copy had independently diverged from the commit's base: {}. Review before merging.",
+                "Cross-subsystem overlap — {} replaced path(s) had independently diverged in the main system (listed under Replaced). Review before merging.",
                 report.changes.flagged.len(),
-                report.changes.flagged.join(", ")
             ),
             "These paths overwrote independent target work that happened to match source history. Review the diff before merging.",
-        ));
-    }
-    if !report.changes.excluded.is_empty() {
-        findings.push(ValidationFinding::info(
-            "excluded",
-            format!(
-                "Excluded via excludedPaths (skipped, not promoted): {}",
-                report.changes.excluded.join(", ")
-            ),
         ));
     }
     if !report.changes.ignored_skipped.is_empty() {
@@ -992,7 +975,7 @@ fn map_blocker(report: &PromotionReport) -> AppError {
         ),
         "TARGET_DIVERGED" => (
             ErrorCode::PatchConflict,
-            "Adapt the file upstream in the subsystem and re-promote, exclude the path via excludedPaths and re-promote, or re-run with onConflict take_subsystem to overwrite it with the subsystem's version (records Promotion-Conflicts + Promotion-Override trailers).",
+            "Exclude the diverged path via excludedPaths and re-promote, or adapt the file upstream in the subsystem and re-promote.",
         ),
         "GLOBAL_FILE_PROTECTED" => (
             ErrorCode::InvalidRequest,

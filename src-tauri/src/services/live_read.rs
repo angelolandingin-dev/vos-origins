@@ -19,7 +19,7 @@ use crate::github::models::{
     IntegrationEventCommit, IntegrationEventProvenance, IntegrationEventTotals,
     IntegrationEvidence, IntegrationHistory, IntegrationHistoryEntry, IntegrationHistoryKind,
     IntegrationPr, IntegrationStatus, PrState, PullRequestRef, ReviewState, SubsystemPolicy,
-    SubsystemSummary, TargetBranch, TargetBranchList, TargetBranchPolicy, WorkflowRunStatus,
+    SubsystemSummary, TargetBranch, TargetBranchList, TargetBranchPolicy,
 };
 use crate::services::engine::github_ops::{BranchInfo, GitHubOps, PullRequestInfo};
 use crate::services::engine::history::BranchStatusKind;
@@ -1270,26 +1270,75 @@ fn rename_new_keys(path: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The main commit's own changed paths in ONE `git show` spawn: raw status
-/// letters joined with numstat counts (same `--numstat` line grammar as
+/// The main commit's own changed paths AND its identifying metadata in ONE
+/// `git show` spawn: a one-line `%H/%s/%an/%aI` header joined with the raw
+/// status letters and numstat counts (same `--numstat` line grammar as
 /// [`numstat_map`], which stays the single-commit helper for details).
 /// `None` when the commit cannot be read; an empty-change commit yields
-/// `Some` with zero totals, which is truthful, not unavailable.
+/// `Some` with zero totals, which is truthful, not unavailable. The header is
+/// validated (first field must be the requested SHA) and the subject is kept
+/// verbatim — never the SHA standing in as the subject.
 fn main_commit_changes(
     target_dir: &Path,
     sha: &str,
-) -> Option<(Vec<IntegrationEventChange>, IntegrationEventTotals)> {
+) -> Option<(
+    Vec<IntegrationEventChange>,
+    IntegrationEventTotals,
+    IntegrationEventCommit,
+)> {
     let out = git::run(
         target_dir,
-        &["show", "--format=", "--numstat", "--raw", "-M", sha],
+        &[
+            "show",
+            "--format=%H%x1f%s%x1f%an%x1f%aI",
+            "--numstat",
+            "--raw",
+            "-M",
+            sha,
+        ],
     )
     .ok()?;
     if out.status != 0 {
         return None;
     }
+    let text = out.stdout_str();
+    let mut lines = text.lines();
+    // Exactly one header line: `%s`/`%an` never emit newlines, so a subject
+    // containing a tab cannot leak into the numstat parse below.
+    let header = lines.next().unwrap_or("");
+    let mut header_parts = header.split('\u{1f}');
+    let (Some(header_sha), Some(subject), Some(author), Some(authored_at)) = (
+        header_parts.next(),
+        header_parts.next(),
+        header_parts.next(),
+        header_parts.next(),
+    ) else {
+        return None;
+    };
+    if header_sha != sha {
+        return None;
+    }
+    let main_commit = IntegrationEventCommit {
+        sha: sha.to_string(),
+        short_sha: sha.chars().take(7).collect(),
+        subject: subject.to_string(),
+        author: if author.is_empty() {
+            None
+        } else {
+            Some(author.to_string())
+        },
+        authored_at: if authored_at.is_empty() {
+            None
+        } else {
+            Some(authored_at.to_string())
+        },
+        unavailable: false,
+    };
     let mut stats: HashMap<String, (u32, u32)> = HashMap::new();
     let mut raws: Vec<(char, String)> = Vec::new();
-    for line in out.stdout_str().lines() {
+    // The header line is already consumed above, so a subject containing a
+    // tab can never be mistaken for a numstat row here.
+    for line in lines {
         if let Some(rest) = line.strip_prefix(':') {
             // `:oldmode newmode oldsha newsha STATUS\tpath[\tnewpath]`.
             let Some((meta, paths)) = rest.split_once('\t') else {
@@ -1353,7 +1402,7 @@ fn main_commit_changes(
         additions: total_add,
         deletions: total_del,
     };
-    Some((changes, totals))
+    Some((changes, totals, main_commit))
 }
 
 fn unavailable_audit(
@@ -1365,8 +1414,10 @@ fn unavailable_audit(
     IntegrationEventAudit {
         // `kind` has no truthful value without a resolved event; the contract
         // requires one, so `Merged` is the neutral placeholder and `detail`
-        // carries the actual story.
+        // carries the actual story. `main_commit` stays null: there is no
+        // resolved commit to describe.
         main_commit_sha: main_commit_sha.to_string(),
+        main_commit: None,
         kind: IntegrationHistoryKind::Merged,
         subsystem_id: subsystem_id.to_string(),
         target_branch: branch.to_string(),
@@ -1388,9 +1439,11 @@ fn unavailable_audit(
 /// One integration event re-derived from git: the event resolves through the
 /// same tip-keyed [`history::cached_replay`] the history list uses (so the two
 /// agree on kind/actor/date/detail), `includedCommits` are exactly the
-/// `Source-Commit` trailers already parsed onto the event, and `changes` come
-/// from one `git show`. A missing/unreachable event is an ordinary truthful
-/// result, never an `Err`.
+/// `Source-Commit` trailers already parsed onto the event, `changes` come
+/// from one `git show`, and `mainCommit` (subject/author/authored date)
+/// rides that same `git show` as a one-line format header — no extra spawn.
+/// A missing/unreachable event is an ordinary truthful result, never an
+/// `Err`.
 pub fn integration_event_audit_live(
     target_dir: &Path,
     source_dir: Option<&Path>,
@@ -1472,11 +1525,14 @@ pub fn integration_event_audit_live(
         .map(|(key, value)| IntegrationEventProvenance { key, value })
         .collect();
     let included_commits = enrich_included_commits(source_dir, &event.source_commits);
-    let (changes, totals) = match main_commit_changes(target_dir, &event.commit) {
-        Some((changes, totals)) => (changes, Some(totals)),
+    let (changes, totals, main_commit) = match main_commit_changes(target_dir, &event.commit) {
+        Some((changes, totals, main_commit)) => (changes, Some(totals), Some(main_commit)),
         None => {
             return Ok(IntegrationEventAudit {
                 main_commit_sha: event.commit.clone(),
+                // The commit body could not be read, so its metadata cannot
+                // be described either: null, never fabricated.
+                main_commit: None,
                 kind,
                 subsystem_id: event
                     .subsystem
@@ -1511,6 +1567,7 @@ pub fn integration_event_audit_live(
     };
     Ok(IntegrationEventAudit {
         main_commit_sha: event.commit.clone(),
+        main_commit,
         kind,
         subsystem_id: event
             .subsystem
@@ -2706,28 +2763,6 @@ pub fn commit_diff_live(
             None
         },
     })
-}
-
-// ---------------------------------------------------------------------------
-// Workflow runs stay fixture-labelled (no live source wired here)
-// ---------------------------------------------------------------------------
-
-/// Live mode has no workflow-run source: the engine runs in-tool and opens
-/// PRs directly, so runs are empty rather than fabricated.
-pub fn workflow_empty_live(total: u32) -> (String, DataSource) {
-    let _ = total;
-    (now_rfc3339(), DataSource::Live)
-}
-
-#[allow(dead_code)]
-fn _keep_models_referenced() {
-    let _ = WorkflowRunStatus::Unknown;
-    let _ = HashSet::<String>::new();
-    let _ = BranchInfo {
-        name: String::new(),
-        sha: String::new(),
-        protected: false,
-    };
 }
 
 #[cfg(test)]

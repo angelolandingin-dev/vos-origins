@@ -25,8 +25,6 @@ import type {
   SubsystemSummary,
   SubsystemSummaryCounts,
   TargetBranchList,
-  WorkflowRunDetails,
-  WorkflowRunList,
 } from './types';
 
 /** Typed entry point for the Rust backend (spec §9.2). Rust owns business rules; failures normalize to `ApiError` with a remedy. */
@@ -151,12 +149,6 @@ export const api = {
 
   preflightPromotion: (request: PromotionRequest) =>
     call<PromotionPreflight>('preflight_promotion', { request }),
-
-  listWorkflowRuns: (subsystemId: string | null, targetBranch: string | null, limit: number) =>
-    call<WorkflowRunList>('list_workflow_runs', { subsystemId, targetBranch, limit }),
-
-  getWorkflowRunDetails: (runId: number) =>
-    call<WorkflowRunDetails>('get_workflow_run_details', { runId }),
 
   listIntegrationPrs: (targetBranch: string, subsystemId: string | null) =>
     call<IntegrationPr[]>('list_integration_prs', { targetBranch, subsystemId }),

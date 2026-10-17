@@ -60,8 +60,6 @@ pub fn run() {
             commands::commits::get_integration_statuses,
             commands::promotion::dispatch_promotion,
             commands::promotion::preflight_promotion,
-            commands::workflows::list_workflow_runs,
-            commands::workflows::get_workflow_run_details,
             commands::history::list_integration_prs,
             commands::history::list_integration_history,
             commands::history::get_integration_event,

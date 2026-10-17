@@ -1,13 +1,5 @@
 import { useMemo } from 'react';
-import {
-  ExternalLink,
-  GitBranch,
-  GitPullRequestArrow,
-  History,
-  Plus,
-  RefreshCw,
-  Workflow,
-} from 'lucide-react';
+import { GitBranch, GitPullRequestArrow, History, Plus, RefreshCw } from 'lucide-react';
 
 import { api } from '../api/invoke';
 import type { CommitStatusKind, IntegrationHistoryKind } from '../api/types';
@@ -27,8 +19,6 @@ import {
 
 const COUNTED: Array<{ key: CommitStatusKind; label: string; group: string }> = [
   { key: 'eligible', label: 'Eligible', group: 'awaiting' },
-  { key: 'promotion_queued', label: 'Promotion queued', group: 'inflight' },
-  { key: 'promotion_running', label: 'Promotion running', group: 'inflight' },
   { key: 'pr_open', label: 'PR open', group: 'inflight' },
   { key: 'in_review', label: 'In review', group: 'inflight' },
   { key: 'integrated', label: 'Integrated', group: 'done' },
@@ -68,7 +58,6 @@ export function Dashboard() {
     });
   }, [subsystems, app.targetBranch, app.dataVersion]);
 
-  const runs = useAsyncData(() => api.listWorkflowRuns(null, null, 6), [app.dataVersion]);
   const history = useAsyncData(
     () => api.listIntegrationHistory(app.targetBranch, null, 6),
     [app.targetBranch, app.dataVersion],
@@ -241,68 +230,6 @@ export function Dashboard() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-2">
-          <Panel
-            className="min-w-0"
-            title="Recent promotion runs"
-            subtitle="Runs started by this tool"
-            actions={
-              <Button size="sm" variant="secondary" onClick={() => app.navigate('workflow-runs')}>
-                All runs
-              </Button>
-            }
-          >
-            {runs.loading ? (
-              <LoadingState label="Loading runs…" />
-            ) : (runs.data?.runs.length ?? 0) === 0 ? (
-              <EmptyState
-                icon={Workflow}
-                title="No promotion runs yet"
-                message="Dispatch a promotion to create the first run."
-              />
-            ) : (
-              <ul className="divide-y divide-line">
-                {(runs.data?.runs ?? []).map((run) => (
-                  <li
-                    key={run.id}
-                    className="flex h-[50px] flex-wrap items-center gap-2 overflow-hidden px-4"
-                  >
-                    <StatusBadge
-                      kind={
-                        run.status === 'in_progress'
-                          ? 'promotion_running'
-                          : run.status === 'queued'
-                            ? 'promotion_queued'
-                            : run.conclusion === 'success'
-                              ? 'pr_open'
-                              : run.conclusion === 'failure'
-                                ? 'failed'
-                                : 'unknown'
-                      }
-                      label={`#${run.runNumber} ${run.status === 'completed' ? (run.conclusion ?? 'done') : run.status}`}
-                    />
-                    <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                      {run.displayTitle}
-                    </span>
-                    <span className="meta">{run.subsystemId}</span>
-                    <span className="mono truncate text-disabled">{run.targetBranch}</span>
-                    <span className="truncate text-[11px] text-muted">
-                      {formatDateTime(run.updatedAt)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => app.openExternal(run.htmlUrl)}
-                      className="rounded-md p-1 text-muted hover:bg-hover hover:text-fg"
-                      aria-label={`Open run ${run.runNumber} on GitHub`}
-                      title="Open the run on GitHub"
-                    >
-                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Panel>
-
           <Panel
             className="min-w-0"
             title="Latest target activity"

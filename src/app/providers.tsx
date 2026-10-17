@@ -6,7 +6,6 @@ import type {
   DependencyChange,
   PromotionDelivery,
   PromotionMode,
-  PromotionOnConflict,
   PromotionPreflight,
 } from '../api/types';
 import {
@@ -44,7 +43,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     mode: 'individual',
     baseSha: '',
     delivery: 'local_direct',
-    onConflict: 'fail',
     message: '',
     allowGaps: false,
     excludedPaths: [],
@@ -103,7 +101,9 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       targetBranch,
       confirmationAcknowledged: false,
       delivery: promotion.delivery,
-      onConflict: promotion.onConflict,
+      // Promotion is a copy: the subsystem's copy always wins. The dialog no
+      // longer offers a choice; the wire field is retained for compatibility.
+      onConflict: 'take_subsystem',
       message: promotion.message,
       allowGaps: promotion.allowGaps,
       excludedPaths: promotion.excludedPaths,
@@ -117,7 +117,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.baseSha,
     promotion.delivery,
     promotion.message,
-    promotion.onConflict,
     promotion.allowGaps,
     promotion.excludedPaths,
   ]);
@@ -233,7 +232,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         mode: 'individual',
         baseSha: '',
         delivery: 'local_direct',
-        onConflict: 'fail',
         message: '',
         allowGaps: false,
         excludedPaths: options?.excludedPaths ?? [],
@@ -268,10 +266,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   const setPromotionDelivery = useCallback((delivery: PromotionDelivery) => {
     setPromotion((current) => ({ ...current, delivery }));
-  }, []);
-
-  const setPromotionOnConflict = useCallback((onConflict: PromotionOnConflict) => {
-    setPromotion((current) => ({ ...current, onConflict }));
   }, []);
 
   const setPromotionMessage = useCallback((message: string) => {
@@ -315,7 +309,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         targetBranch,
         confirmationAcknowledged: true,
         delivery: promotion.delivery,
-        onConflict: promotion.onConflict,
+        // Promotion is a copy: the subsystem's copy always wins (see above).
+        onConflict: 'take_subsystem',
         message: promotion.message,
         allowGaps: promotion.allowGaps,
         excludedPaths: promotion.excludedPaths,
@@ -363,7 +358,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.baseSha,
     promotion.delivery,
     promotion.message,
-    promotion.onConflict,
     promotion.allowGaps,
     promotion.excludedPaths,
     selectedSubsystemId,
@@ -414,7 +408,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionMode,
       setPromotionBaseSha,
       setPromotionDelivery,
-      setPromotionOnConflict,
       setPromotionMessage,
       setPromotionAllowGaps,
       setPromotionExcludedPaths,
@@ -453,7 +446,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionMode,
       setPromotionBaseSha,
       setPromotionDelivery,
-      setPromotionOnConflict,
       setPromotionMessage,
       setPromotionAllowGaps,
       setPromotionExcludedPaths,

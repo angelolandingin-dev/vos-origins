@@ -11,7 +11,8 @@
 //! `Unknown / needs verification` (see `branch_result_to_status_with` in
 //! `live_read`), never `Eligible`.
 //! Reverts may be invisible hand-reverts → divergence is decided by
-//! blob/content comparison in the engine (`TARGET_DIVERGED`); message parsing
+//! blob/content comparison in the engine (divergence is overwritten, never
+//! refused); message parsing
 //! here is a hint, never a verdict. Dates determine display order
 //! (deterministic timestamp-then-SHA sort in `build_plan`), never correctness.
 
