@@ -1262,7 +1262,7 @@ fn run_inner(
             report.blockers.push(Blocker::new(
                 "TARGET_DIVERGED",
                 format!(
-                    "Target has diverged on {}: {}. The target copy is not in the source blob set and its bytes exist nowhere in the source repository, so overwriting would discard independent work. Remedies: adapt the file upstream in the subsystem and re-promote; exclude the path via excludedPaths and re-promote; or re-run with onConflict take_subsystem to overwrite it with the subsystem's version (records Promotion-Conflicts + Promotion-Override trailers).",
+                    "Target has diverged on {}: {}. The target copy is not in the source blob set for the selected commits, and it is not reachable from them either, so overwriting would discard content those commits never produced - content that may come from another branch or an independent edit. Remedies: adapt the file upstream in the subsystem and re-promote; exclude the path via excludedPaths and re-promote; or re-run with onConflict take_subsystem to overwrite it with the subsystem's version (records Promotion-Conflicts + Promotion-Override trailers).",
                     paths,
                     parts.join("; ")
                 ),
