@@ -321,20 +321,24 @@ export function CommitTable({
                 return (
                   <tr
                     key={commit.sha}
+                    onClick={() => onFocusSha(commit.sha)}
                     className={cx(
-                      'row-hover h-[50px] border-b border-line',
+                      'row-hover h-[50px] cursor-pointer border-b border-line',
                       (focused || selected) && 'bg-selection',
                     )}
                   >
                     {selectable ? (
                       <td className="py-2 pl-2.5 align-top">
-                        <Checkbox
-                          checked={selected}
-                          onChange={() => {
-                            onToggleSha?.(commit.sha);
-                          }}
-                          label={`Select commit ${commit.shortSha} – ${commit.subject}`}
-                        />
+                        {/* Ticking a box must not also move the details selection. */}
+                        <span onClick={(event) => event.stopPropagation()}>
+                          <Checkbox
+                            checked={selected}
+                            onChange={() => {
+                              onToggleSha?.(commit.sha);
+                            }}
+                            label={`Select commit ${commit.shortSha} – ${commit.subject}`}
+                          />
+                        </span>
                       </td>
                     ) : null}
                     <td className="relative w-6 align-top">
@@ -358,7 +362,6 @@ export function CommitTable({
                       >
                         <button
                           type="button"
-                          onClick={() => onFocusSha(commit.sha)}
                           className="mono block w-full rounded-[3px] text-right text-accent-ink hover:underline"
                         >
                           {commit.shortSha}
@@ -369,7 +372,6 @@ export function CommitTable({
                       <Tooltip content={commit.subject} side="top" align="start">
                         <button
                           type="button"
-                          onClick={() => onFocusSha(commit.sha)}
                           className="block w-full truncate text-left text-xs text-fg hover:text-fg"
                         >
                           {commit.subject}
