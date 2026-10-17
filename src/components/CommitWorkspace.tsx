@@ -1,13 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Boxes,
   ExternalLink,
   FileText,
   GitBranch,
-  GitPullRequestArrow,
-  History,
   Package,
-  RefreshCw,
   Settings as SettingsIcon,
   Workflow,
 } from 'lucide-react';
@@ -18,7 +15,6 @@ import { useApp, useAsyncData } from '../app/context';
 import { CommitDetailsPanel } from './CommitDetails';
 import { CommitDiffView } from './CommitDiffView';
 import { CommitTable } from './CommitTable';
-import { DiffViewer } from './DiffViewer';
 import { StatusBadge } from './StatusBadge';
 import { cx } from './ui/cx';
 import { formatDateTime } from './ui/format';
@@ -40,7 +36,6 @@ import {
  */
 
 type SourceTab = 'commits' | 'changes' | 'dependencies' | 'runs' | 'settings';
-type BottomTab = 'diff' | 'logs' | 'prs';
 
 function runChip(run: WorkflowRun) {
   if (run.status === 'in_progress')
@@ -140,17 +135,12 @@ function CommitWorkspacePanel({
       : true,
   );
   const [pageNumber, setPageNumber] = useState(1);
-  const [bottomTab, setBottomTab] = useState<BottomTab>('diff');
-  const [diffPath, setDiffPath] = useState<string | null>(null);
   // Dedicated full-diff view (GitHub Desktop History style): replaces the whole
   // workspace with a back control, a changed-files column and stacked per-file
-  // diffs. The bottom strip stays a single-file preview only.
+  // diffs.
   const [diffView, setDiffView] = useState<{ sha: string; initialPath: string | null } | null>(
     null,
   );
-  // Tall work surface: resizable split, default 440px (~19 rows at 20px).
-  const [diffHeight, setDiffHeight] = useState(440);
-  const resizingRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
@@ -223,14 +213,6 @@ function CommitWorkspacePanel({
     [subsystem?.id, focusedSha, app.targetBranch, app.dataVersion],
   );
 
-  const diff = useAsyncData(
-    () =>
-      subsystem && focusedSha
-        ? api.getCommitDiff(subsystem.id, focusedSha, diffPath, app.targetBranch)
-        : Promise.resolve(null),
-    [subsystem?.id, focusedSha, diffPath, app.targetBranch, app.dataVersion],
-  );
-
   const runs = useAsyncData(
     () => (subsystem ? api.listWorkflowRuns(subsystem.id, null, 25) : Promise.resolve(null)),
     [subsystem?.id, app.dataVersion],
@@ -239,7 +221,6 @@ function CommitWorkspacePanel({
   const commitRuns = (runs.data?.runs ?? []).filter((run) =>
     focusedSha ? run.sourceShas.includes(focusedSha) : false,
   );
-  const activeDiffPath = diffPath ?? diff.data?.filePath ?? null;
 
   // Row subject/SHA only moves focus; the details rail is permanent on wide
   // screens, so the two gestures never conflict.
@@ -247,27 +228,8 @@ function CommitWorkspacePanel({
     app.setFocusedSha(sha);
   };
 
-  const startDiffResize = (event: React.MouseEvent) => {
-    event.preventDefault();
-    resizingRef.current = true;
-    const startY = event.clientY;
-    const startHeight = diffHeight;
-    const onMove = (move: MouseEvent) => {
-      if (!resizingRef.current) return;
-      const next = Math.min(720, Math.max(280, startHeight + (startY - move.clientY)));
-      setDiffHeight(next);
-    };
-    const onUp = () => {
-      resizingRef.current = false;
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  };
-
   // View Full Diff and every per-file affordance open the dedicated diff
-  // view; the bottom strip stays a single-file preview with its own picker.
+  // view.
   const openDiffView = (sha: string, filePath: string | null) => {
     app.setFocusedSha(sha);
     setDiffView({ sha, initialPath: filePath || null });
@@ -315,7 +277,6 @@ function CommitWorkspacePanel({
       onPromote={promote}
       onPromoteSelection={promoteSelection}
       onShowDiff={showDiff}
-      activeDiffPath={activeDiffPath}
       onOpenExternal={app.openExternal}
       onClose={isWide ? undefined : () => onDetailsVisibleChange(false)}
       mainRepository={app.auth.data?.mainRepository ?? null}
@@ -340,417 +301,262 @@ function CommitWorkspacePanel({
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 gap-2.5">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5">
-        <Panel
-          className="min-h-[180px] min-w-0 flex-1"
-          bodyClassName="flex min-h-0 flex-1 flex-col"
-          title={
-            <span className="flex items-center gap-2">
-              <span className="flex h-4 w-4 items-center justify-center text-muted">
-                <Boxes className="h-4 w-4" aria-hidden="true" />
-              </span>
-              <span className="truncate">{subsystem.name}</span>
+      <Panel
+        className="min-h-0 min-w-0 flex-1"
+        bodyClassName="flex min-h-0 flex-1 flex-col"
+        title={
+          <span className="flex items-center gap-2">
+            <span className="flex h-4 w-4 items-center justify-center text-muted">
+              <Boxes className="h-4 w-4" aria-hidden="true" />
             </span>
-          }
-          subtitle={<span className="mono">{subsystem.repository}</span>}
-          actions={
-            <>
-              <span className="hidden items-center gap-2 lg:flex">
-                <GitBranch className="h-4 w-4 text-disabled" aria-hidden="true" />
-                <span
-                  className="mono inline-flex h-[25px] max-w-[150px] items-center truncate rounded-md border border-line bg-surface px-2 text-xs text-muted"
-                  title="The source branch is fixed by the registry entry."
-                >
-                  {subsystem.sourceBranch}
-                </span>
-              </span>
-              <Button
-                size="sm"
-                variant="secondary"
-                icon={ExternalLink}
-                onClick={() =>
-                  app.openExternal(
-                    `https://github.com/${subsystem.repository}/tree/${subsystem.sourceBranch}`,
-                  )
-                }
-                title="Open the subsystem repository on GitHub"
+            <span className="truncate">{subsystem.name}</span>
+          </span>
+        }
+        subtitle={<span className="mono">{subsystem.repository}</span>}
+        actions={
+          <>
+            <span className="hidden items-center gap-2 lg:flex">
+              <GitBranch className="h-4 w-4 text-disabled" aria-hidden="true" />
+              <span
+                className="mono inline-flex h-[25px] max-w-[150px] items-center truncate rounded-md border border-line bg-surface px-2 text-xs text-muted"
+                title="The source branch is fixed by the registry entry."
               >
-                View on GitHub
-              </Button>
-            </>
-          }
-        >
-          <Tabs
-            ariaLabel="Selected subsystem sections"
-            value={sourceTab}
-            onChange={(id) => onSourceTabChange(id as SourceTab)}
-            items={[
-              { id: 'commits', label: 'Commits', count: commitPage.data?.total },
-              { id: 'changes', label: 'Changes', count: details.data?.files.length },
-              {
-                id: 'dependencies',
-                label: 'Dependencies',
-                count: details.data?.dependencies.length,
-              },
-              { id: 'runs', label: 'Workflow Runs', count: commitRuns.length },
-              { id: 'settings', label: 'Settings' },
-            ]}
+                {subsystem.sourceBranch}
+              </span>
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={ExternalLink}
+              onClick={() =>
+                app.openExternal(
+                  `https://github.com/${subsystem.repository}/tree/${subsystem.sourceBranch}`,
+                )
+              }
+              title="Open the subsystem repository on GitHub"
+            >
+              View on GitHub
+            </Button>
+          </>
+        }
+      >
+        <Tabs
+          ariaLabel="Selected subsystem sections"
+          value={sourceTab}
+          onChange={(id) => onSourceTabChange(id as SourceTab)}
+          items={[
+            { id: 'commits', label: 'Commits', count: commitPage.data?.total },
+            { id: 'changes', label: 'Changes', count: details.data?.files.length },
+            {
+              id: 'dependencies',
+              label: 'Dependencies',
+              count: details.data?.dependencies.length,
+            },
+            { id: 'runs', label: 'Workflow Runs', count: commitRuns.length },
+            { id: 'settings', label: 'Settings' },
+          ]}
+        />
+
+        {sourceTab === 'commits' ? (
+          <CommitTable
+            page={commitPage.data}
+            loading={commitPage.loading}
+            error={commitPage.error}
+            onRetry={commitPage.reload}
+            targetBranch={app.targetBranch}
+            search={search}
+            onSearchChange={handleSearchChange}
+            statusFilter={statusFilter}
+            onStatusFilterChange={handleStatusFilterChange}
+            sort={sort}
+            onSortChange={handleSortChange}
+            pageNumber={pageNumber}
+            onPageChange={setPageNumber}
+            pageSize={pageSize}
+            onPageSizeChange={handlePageSizeChange}
+            selectedShas={app.selectedShas}
+            onToggleSha={app.toggleSha}
+            onSelectShas={app.setSelectedShas}
+            focusedSha={focusedSha}
+            onFocusSha={handleFocusSha}
+            onPromoteSelected={promoteSelection}
+            onClearSelection={app.clearSelection}
+            detailsVisible={detailsVisible}
+            onToggleDetails={() => onDetailsVisibleChange(!detailsVisible)}
+            emptyMessage={`No commits were returned from ${subsystem.repository}@${subsystem.sourceBranch}. Check the registry entry and branch protection.`}
           />
+        ) : null}
 
-          {sourceTab === 'commits' ? (
-            <CommitTable
-              page={commitPage.data}
-              loading={commitPage.loading}
-              error={commitPage.error}
-              onRetry={commitPage.reload}
-              targetBranch={app.targetBranch}
-              search={search}
-              onSearchChange={handleSearchChange}
-              statusFilter={statusFilter}
-              onStatusFilterChange={handleStatusFilterChange}
-              sort={sort}
-              onSortChange={handleSortChange}
-              pageNumber={pageNumber}
-              onPageChange={setPageNumber}
-              pageSize={pageSize}
-              onPageSizeChange={handlePageSizeChange}
-              selectedShas={app.selectedShas}
-              onToggleSha={app.toggleSha}
-              onSelectShas={app.setSelectedShas}
-              focusedSha={focusedSha}
-              onFocusSha={handleFocusSha}
-              onPromoteSelected={promoteSelection}
-              onClearSelection={app.clearSelection}
-              detailsVisible={detailsVisible}
-              onToggleDetails={() => onDetailsVisibleChange(!detailsVisible)}
-              emptyMessage={`No commits were returned from ${subsystem.repository}@${subsystem.sourceBranch}. Check the registry entry and branch protection.`}
-            />
-          ) : null}
-
-          {sourceTab === 'changes' ? (
-            <div className="scroll-area min-h-0 flex-1 p-2.5">
-              {details.loading && !details.data ? (
-                <LoadingState label="Loading changed files…" />
-              ) : details.data?.files.length ? (
-                <ul className="space-y-1">
-                  {details.data.files.map((file) => (
-                    <li key={file.path}>
-                      <button
-                        type="button"
-                        onClick={() => showDiff(details.data!.sha, file.path)}
-                        className="flex h-[29px] w-full items-center gap-2.5 rounded-md border border-line bg-surface px-2.5 text-left hover:bg-hover"
-                      >
-                        <FileText className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
-                        <span className="mono min-w-0 flex-1 truncate text-fg tabular-nums">
-                          {file.path}
-                        </span>
-                        <span className="meta">{file.change}</span>
-                        <span className="mono w-12 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
-                          +{file.additions}
-                        </span>
-                        <span className="mono w-12 shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
-                          -{file.deletions}
-                        </span>
-                      </button>
-                      {file.policyNote ? (
-                        <p
-                          className="mono mt-0.5 truncate pl-7 text-[11px] text-status-unknown-ink"
-                          title={file.policyNote}
-                        >
-                          {file.policyNote}
-                        </p>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <EmptyState
-                  icon={FileText}
-                  title="No changed files"
-                  message="Select a commit to inspect its file list."
-                />
-              )}
-            </div>
-          ) : null}
-
-          {sourceTab === 'dependencies' ? (
-            <div className="scroll-area min-h-0 flex-1 space-y-3 p-2.5">
-              {details.data?.dependencies.length ? (
-                <ul className="space-y-2">
-                  {details.data.dependencies.map((dependency) => (
-                    <li
-                      key={`${dependency.section}-${dependency.name}`}
-                      className={cx(
-                        'rounded-md border border-line p-2.5 text-xs',
-                        dependency.conflict
-                          ? 'bg-status-blocked-soft text-status-blocked-ink'
-                          : 'bg-surface text-muted',
-                      )}
+        {sourceTab === 'changes' ? (
+          <div className="scroll-area min-h-0 flex-1 p-2.5">
+            {details.loading && !details.data ? (
+              <LoadingState label="Loading changed files…" />
+            ) : details.data?.files.length ? (
+              <ul className="space-y-1">
+                {details.data.files.map((file) => (
+                  <li key={file.path}>
+                    <button
+                      type="button"
+                      onClick={() => showDiff(details.data!.sha, file.path)}
+                      className="flex h-[29px] w-full items-center gap-2.5 rounded-md border border-line bg-surface px-2.5 text-left hover:bg-hover"
                     >
-                      <div className="flex items-center gap-2">
-                        <Package className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
-                        <span className="mono truncate text-fg">{dependency.name}</span>
-                        <span className="meta">{dependency.section}</span>
-                        <span className="ml-auto tracking-wide text-disabled uppercase">
-                          {dependency.change}
-                        </span>
-                      </div>
-                      <p className="mono mt-1.5 truncate tabular-nums">
-                        {dependency.fromRange ?? '(absent)'} → {dependency.toRange ?? '(removed)'}
+                      <FileText className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
+                      <span className="mono min-w-0 flex-1 truncate text-fg tabular-nums">
+                        {file.path}
+                      </span>
+                      <span className="meta">{file.change}</span>
+                      <span className="mono w-12 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
+                        +{file.additions}
+                      </span>
+                      <span className="mono w-12 shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
+                        -{file.deletions}
+                      </span>
+                    </button>
+                    {file.policyNote ? (
+                      <p
+                        className="mono mt-0.5 truncate pl-7 text-[11px] text-status-unknown-ink"
+                        title={file.policyNote}
+                      >
+                        {file.policyNote}
                       </p>
-                      {dependency.note ? (
-                        <p className="mt-1 truncate text-muted" title={dependency.note}>
-                          {dependency.note}
-                        </p>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <EmptyState
-                  icon={Package}
-                  title="No manifest changes in this commit"
-                  message="Promote a package commit together with the commits that use it."
-                />
-              )}
-            </div>
-          ) : null}
-
-          {sourceTab === 'runs' ? (
-            <div className="scroll-area min-h-0 flex-1 p-2.5">
-              {runs.loading && !runs.data ? (
-                <LoadingState label="Loading workflow runs…" />
-              ) : runs.error ? (
-                <ErrorState error={runs.error} onRetry={runs.reload} />
-              ) : (runs.data?.runs.length ?? 0) === 0 ? (
-                <EmptyState
-                  icon={Workflow}
-                  title="No runs for this subsystem yet"
-                  message="Runs appear here after a promotion is dispatched from this tool."
-                />
-              ) : (
-                <ul className="space-y-2">
-                  {(runs.data?.runs ?? []).map((run) => (
-                    <li
-                      key={run.id}
-                      className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5"
-                    >
-                      {runChip(run)}
-                      <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                        {run.displayTitle}
-                      </span>
-                      <span className="meta">target {run.targetBranch}</span>
-                      <span className="mono text-right text-[11px] text-disabled tabular-nums">
-                        {formatDateTime(run.updatedAt)}
-                      </span>
-                      <IconButton
-                        icon={ExternalLink}
-                        label="Open run on GitHub"
-                        onClick={() => app.openExternal(run.htmlUrl)}
-                      />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ) : null}
-
-          {sourceTab === 'settings' ? (
-            <div className="scroll-area min-h-0 flex-1 space-y-3 p-2.5">
-              <dl className="rounded-md border border-line bg-raised px-3 py-1">
-                <KeyValue label="Registry id">
-                  <span className="mono">{subsystem.id}</span>
-                </KeyValue>
-                <KeyValue label="Repository">
-                  <span className="mono">{subsystem.repository}</span>
-                </KeyValue>
-                <KeyValue label="Source branch">
-                  <span className="mono">{subsystem.sourceBranch}</span>
-                </KeyValue>
-                <KeyValue label="Path strategy">{subsystem.pathStrategy}</KeyValue>
-                <KeyValue label="Dependency strategy">{subsystem.dependencyStrategy}</KeyValue>
-                <KeyValue label="Registered">{formatDateTime(subsystem.registeredAt)}</KeyValue>
-                <KeyValue label="Last verified">{formatDateTime(subsystem.lastSyncedAt)}</KeyValue>
-                <KeyValue label="Enabled">{subsystem.enabled ? 'yes' : 'no'}</KeyValue>
-              </dl>
-
-              <div className="rounded-md border border-line bg-raised p-2.5">
-                <p className="flex items-center gap-2 text-xs font-semibold text-fg">
-                  <SettingsIcon className="h-4 w-4 text-disabled" aria-hidden="true" />
-                  Integration policy
-                </p>
-                <dl className="mt-1">
-                  <KeyValue label="Application files">{subsystem.policy.applicationFiles}</KeyValue>
-                  <KeyValue label="package.json">{subsystem.policy.packageJson}</KeyValue>
-                  <KeyValue label="Lockfiles">{subsystem.policy.lockfiles}</KeyValue>
-                  <KeyValue label="Shared configuration">
-                    {subsystem.policy.sharedConfiguration}
-                  </KeyValue>
-                  <KeyValue label="GitHub workflows">{subsystem.policy.githubWorkflows}</KeyValue>
-                  <KeyValue label="Secret files">{subsystem.policy.secretFiles}</KeyValue>
-                </dl>
-              </div>
-
-              <InlineAlert tone="warning" title="Disabling is a registry change">
-                Turn it off under Settings → Main system registry.
-              </InlineAlert>
-            </div>
-          ) : null}
-        </Panel>
-
-        <div
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Resize diff pane"
-          title="Drag to resize the diff work surface"
-          onMouseDown={startDiffResize}
-          className="group flex h-[7px] shrink-0 cursor-ns-resize items-center justify-center border-y border-line bg-raised"
-        >
-          <span
-            aria-hidden="true"
-            className="h-[3px] w-16 rounded-full bg-line-strong group-hover:bg-accent"
-          />
-        </div>
-
-        <Panel
-          className="min-w-0 shrink-0"
-          bodyClassName="flex min-h-0 flex-1 flex-col"
-          headerClassName="px-2 py-0"
-          title={undefined}
-        >
-          <div style={{ height: diffHeight }} className="flex min-h-0 flex-col">
-            <Tabs
-              ariaLabel="Diff, workflow logs and related pull requests"
-              value={bottomTab}
-              onChange={(id) => setBottomTab(id as BottomTab)}
-              items={[
-                { id: 'diff', label: 'Diff' },
-                { id: 'logs', label: 'Workflow Logs', count: commitRuns.length || undefined },
-                {
-                  id: 'prs',
-                  label: 'Related Pull Requests',
-                  count: details.data?.relatedPullRequests.length,
-                },
-              ]}
-            />
-
-            {bottomTab === 'diff' ? (
-              <DiffViewer
-                diff={diff.data}
-                loading={diff.loading}
-                error={diff.error}
-                onRetry={diff.reload}
-                files={details.data?.files ?? []}
-                selectedPath={activeDiffPath}
-                onSelectPath={setDiffPath}
-                onOpenExternal={app.openExternal}
-              />
-            ) : null}
-
-            {bottomTab === 'logs' ? (
-              <div className="scroll-area min-h-0 flex-1 p-2.5">
-                {commitRuns.length === 0 ? (
-                  <EmptyState
-                    icon={History}
-                    title="No workflow run for this commit"
-                    message="Dispatch a promotion to create one."
-                    action={
-                      <Button size="sm" icon={RefreshCw} onClick={runs.reload}>
-                        Refresh runs
-                      </Button>
-                    }
-                  />
-                ) : (
-                  <ul className="space-y-2">
-                    {commitRuns.map((run) => (
-                      <li key={run.id} className="rounded-md border border-line bg-surface p-2.5">
-                        <div className="flex flex-wrap items-center gap-2">
-                          {runChip(run)}
-                          <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                            {run.displayTitle}
-                          </span>
-                          <span className="mono text-disabled">{run.headBranch}</span>
-                          <IconButton
-                            icon={ExternalLink}
-                            label="Open run on GitHub"
-                            onClick={() => app.openExternal(run.htmlUrl)}
-                          />
-                        </div>
-                        <p className="mt-1.5 truncate text-[11px] text-muted">
-                          Requested by {run.actor} · target {run.targetBranch} · mode {run.mode} ·{' '}
-                          {formatDateTime(run.createdAt)}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ) : null}
-
-            {bottomTab === 'prs' ? (
-              <div className="scroll-area min-h-0 flex-1 p-2.5">
-                {details.data?.relatedPullRequests.length ? (
-                  <ul className="space-y-2">
-                    {details.data.relatedPullRequests.map((pr) => (
-                      <li
-                        key={`${pr.repository}-${pr.number}`}
-                        className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5"
-                      >
-                        <StatusBadge
-                          kind={
-                            pr.state === 'merged'
-                              ? 'integrated'
-                              : pr.state === 'open'
-                                ? 'pr_open'
-                                : 'unknown'
-                          }
-                          label={`PR #${pr.number} ${pr.state}`}
-                        />
-                        <span className="min-w-0 flex-1 truncate text-xs text-fg">{pr.title}</span>
-                        <span className="mono text-disabled">{pr.repository}</span>
-                        <span className="meta">base {pr.baseBranch}</span>
-                        <IconButton
-                          icon={ExternalLink}
-                          label="Open pull request"
-                          onClick={() => app.openExternal(pr.htmlUrl)}
-                        />
-                      </li>
-                    ))}
-                    {details.data.status.evidence?.pullRequestNumber &&
-                    app.auth.data?.mainRepository ? (
-                      <li className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5">
-                        <StatusBadge
-                          kind="integrated"
-                          label={`Integration PR #${details.data.status.evidence.pullRequestNumber}`}
-                        />
-                        <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                          Integration record for this SHA
-                        </span>
-                        <span className="mono text-disabled">{app.auth.data.mainRepository}</span>
-                        <IconButton
-                          icon={ExternalLink}
-                          label="Open integration PR"
-                          onClick={() =>
-                            app.openExternal(
-                              `https://github.com/${app.auth.data?.mainRepository}/pull/${details.data?.status.evidence?.pullRequestNumber}`,
-                            )
-                          }
-                        />
-                      </li>
                     ) : null}
-                  </ul>
-                ) : (
-                  <EmptyState
-                    icon={GitPullRequestArrow}
-                    title="No related pull requests"
-                    message="Source and integration PRs for this commit appear here."
-                  />
-                )}
-              </div>
-            ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <EmptyState
+                icon={FileText}
+                title="No changed files"
+                message="Select a commit to inspect its file list."
+              />
+            )}
           </div>
-        </Panel>
-      </div>
+        ) : null}
+
+        {sourceTab === 'dependencies' ? (
+          <div className="scroll-area min-h-0 flex-1 space-y-3 p-2.5">
+            {details.data?.dependencies.length ? (
+              <ul className="space-y-2">
+                {details.data.dependencies.map((dependency) => (
+                  <li
+                    key={`${dependency.section}-${dependency.name}`}
+                    className={cx(
+                      'rounded-md border border-line p-2.5 text-xs',
+                      dependency.conflict
+                        ? 'bg-status-blocked-soft text-status-blocked-ink'
+                        : 'bg-surface text-muted',
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Package className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
+                      <span className="mono truncate text-fg">{dependency.name}</span>
+                      <span className="meta">{dependency.section}</span>
+                      <span className="ml-auto tracking-wide text-disabled uppercase">
+                        {dependency.change}
+                      </span>
+                    </div>
+                    <p className="mono mt-1.5 truncate tabular-nums">
+                      {dependency.fromRange ?? '(absent)'} → {dependency.toRange ?? '(removed)'}
+                    </p>
+                    {dependency.note ? (
+                      <p className="mt-1 truncate text-muted" title={dependency.note}>
+                        {dependency.note}
+                      </p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <EmptyState
+                icon={Package}
+                title="No manifest changes in this commit"
+                message="Promote a package commit together with the commits that use it."
+              />
+            )}
+          </div>
+        ) : null}
+
+        {sourceTab === 'runs' ? (
+          <div className="scroll-area min-h-0 flex-1 p-2.5">
+            {runs.loading && !runs.data ? (
+              <LoadingState label="Loading workflow runs…" />
+            ) : runs.error ? (
+              <ErrorState error={runs.error} onRetry={runs.reload} />
+            ) : (runs.data?.runs.length ?? 0) === 0 ? (
+              <EmptyState
+                icon={Workflow}
+                title="No runs for this subsystem yet"
+                message="Runs appear here after a promotion is dispatched from this tool."
+              />
+            ) : (
+              <ul className="space-y-2">
+                {(runs.data?.runs ?? []).map((run) => (
+                  <li
+                    key={run.id}
+                    className="flex h-[50px] flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-2.5"
+                  >
+                    {runChip(run)}
+                    <span className="min-w-0 flex-1 truncate text-xs text-fg">
+                      {run.displayTitle}
+                    </span>
+                    <span className="meta">target {run.targetBranch}</span>
+                    <span className="mono text-right text-[11px] text-disabled tabular-nums">
+                      {formatDateTime(run.updatedAt)}
+                    </span>
+                    <IconButton
+                      icon={ExternalLink}
+                      label="Open run on GitHub"
+                      onClick={() => app.openExternal(run.htmlUrl)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : null}
+
+        {sourceTab === 'settings' ? (
+          <div className="scroll-area min-h-0 flex-1 space-y-3 p-2.5">
+            <dl className="rounded-md border border-line bg-raised px-3 py-1">
+              <KeyValue label="Registry id">
+                <span className="mono">{subsystem.id}</span>
+              </KeyValue>
+              <KeyValue label="Repository">
+                <span className="mono">{subsystem.repository}</span>
+              </KeyValue>
+              <KeyValue label="Source branch">
+                <span className="mono">{subsystem.sourceBranch}</span>
+              </KeyValue>
+              <KeyValue label="Path strategy">{subsystem.pathStrategy}</KeyValue>
+              <KeyValue label="Dependency strategy">{subsystem.dependencyStrategy}</KeyValue>
+              <KeyValue label="Registered">{formatDateTime(subsystem.registeredAt)}</KeyValue>
+              <KeyValue label="Last verified">{formatDateTime(subsystem.lastSyncedAt)}</KeyValue>
+              <KeyValue label="Enabled">{subsystem.enabled ? 'yes' : 'no'}</KeyValue>
+            </dl>
+
+            <div className="rounded-md border border-line bg-raised p-2.5">
+              <p className="flex items-center gap-2 text-xs font-semibold text-fg">
+                <SettingsIcon className="h-4 w-4 text-disabled" aria-hidden="true" />
+                Integration policy
+              </p>
+              <dl className="mt-1">
+                <KeyValue label="Application files">{subsystem.policy.applicationFiles}</KeyValue>
+                <KeyValue label="package.json">{subsystem.policy.packageJson}</KeyValue>
+                <KeyValue label="Lockfiles">{subsystem.policy.lockfiles}</KeyValue>
+                <KeyValue label="Shared configuration">
+                  {subsystem.policy.sharedConfiguration}
+                </KeyValue>
+                <KeyValue label="GitHub workflows">{subsystem.policy.githubWorkflows}</KeyValue>
+                <KeyValue label="Secret files">{subsystem.policy.secretFiles}</KeyValue>
+              </dl>
+            </div>
+
+            <InlineAlert tone="warning" title="Disabling is a registry change">
+              Turn it off under Settings → Main system registry.
+            </InlineAlert>
+          </div>
+        ) : null}
+      </Panel>
 
       {isWide ? (
         detailsVisible ? (

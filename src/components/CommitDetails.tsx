@@ -83,7 +83,6 @@ export interface CommitDetailsProps {
   onPromote: (sha: string) => void;
   onPromoteSelection: () => void;
   onShowDiff: (sha: string, filePath: string) => void;
-  activeDiffPath: string | null;
   onOpenExternal: (url: string) => void;
   onClose?: () => void;
   mainRepository: string | null;
@@ -99,7 +98,6 @@ export function CommitDetailsPanel({
   onPromote,
   onPromoteSelection,
   onShowDiff,
-  activeDiffPath,
   onOpenExternal,
   onClose,
   mainRepository,
@@ -298,7 +296,6 @@ export function CommitDetailsPanel({
               {details.files.map((file) => {
                 const glyph = fileGlyph(file);
                 const policy = POLICY_LABEL[file.policy];
-                const active = activeDiffPath === file.path;
                 return (
                   <li key={file.path}>
                     <button
@@ -306,8 +303,7 @@ export function CommitDetailsPanel({
                       onClick={() => onShowDiff(details.sha, file.path)}
                       title={`${file.path}\n${policy.note}`}
                       className={cx(
-                        'flex min-h-[29px] w-full items-start gap-2 rounded-md px-2.5 py-1 text-left transition-colors',
-                        active ? 'bg-selection' : 'hover:bg-hover',
+                        'flex min-h-[29px] w-full items-start gap-2 rounded-md px-2.5 py-1 text-left transition-colors hover:bg-hover',
                       )}
                     >
                       <span
