@@ -17,12 +17,60 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::git;
 use super::github_ops::PullRequestInfo;
 use super::provenance::parse_trailers;
 
 const FIELD: char = '\u{1f}';
+
+/// Shared scan of the target history: every status read (commit page, commit
+/// details, integration statuses, history) walks the same reachable history
+/// and replays the same trailer events, so the parsed result is memoized per
+/// branch tip. The key carries the resolved tip SHA — not just the branch
+/// name — so a fetch/push that moves the tip always recomputes: the same tip
+/// implies the same reachable objects, hence the same events. Bounded and
+/// time-limited like the response cache (perf only; git stays authoritative).
+const REPLAY_CACHE_TTL: Duration = Duration::from_secs(90);
+const REPLAY_CACHE_CAP: usize = 16;
+
+struct CachedReplay {
+    inserted: Instant,
+    replay: ReplayResult,
+}
+
+fn replay_cache() -> &'static Mutex<HashMap<String, CachedReplay>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedReplay>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn scan_counts() -> &'static Mutex<HashMap<String, u64>> {
+    static COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn replay_key(repo_dir: &Path, reference: &str, tip: &str) -> String {
+    format!("{}::{reference}::{tip}", repo_dir.to_string_lossy())
+}
+
+/// Test-only: how many full history scans have been computed for the current
+/// tip of `branch`. Scoped to this repo's key, so parallel tests using their
+/// own sandboxes cannot disturb the count.
+#[cfg(test)]
+pub fn replay_scans_for_tests(repo_dir: &Path, branch: &str) -> u64 {
+    let Some(reference) = resolve_ref(repo_dir, branch) else {
+        return 0;
+    };
+    let tip = git::rev_parse(repo_dir, &reference).unwrap_or_default();
+    let key = replay_key(repo_dir, &reference, &tip);
+    scan_counts()
+        .lock()
+        .map(|counts| counts.get(&key).copied().unwrap_or(0))
+        .unwrap_or(0)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
@@ -372,6 +420,52 @@ fn resolve_ref(repo_dir: &Path, branch: &str) -> Option<String> {
     .find(|candidate| git::rev_parse(repo_dir, candidate).is_some())
 }
 
+/// Memoized [`collect_events`] + [`replay_events`] for `reference` (a ref or
+/// SHA as resolved by [`resolve_ref`]). The tip SHA in the key makes this
+/// exact: identical tips see identical reachable history, so a hit can never
+/// serve stale statuses; a moved tip (fetch, push, local commit) always
+/// recomputes. Unresolvable references are never cached, so a clone that is
+/// still materializing cannot poison the entry a later read needs.
+pub fn cached_replay(repo_dir: &Path, reference: &str) -> ReplayResult {
+    let Some(tip) = git::rev_parse(repo_dir, reference) else {
+        let events = collect_events(repo_dir, reference);
+        return replay_events(&events);
+    };
+    let key = replay_key(repo_dir, reference, &tip);
+    if let Ok(cache) = replay_cache().lock() {
+        if let Some(hit) = cache.get(&key) {
+            if hit.inserted.elapsed() < REPLAY_CACHE_TTL {
+                return hit.replay.clone();
+            }
+        }
+    }
+    #[cfg(test)]
+    if let Ok(mut counts) = scan_counts().lock() {
+        *counts.entry(key.clone()).or_insert(0) += 1;
+    }
+    let events = collect_events(repo_dir, reference);
+    let replayed = replay_events(&events);
+    if let Ok(mut cache) = replay_cache().lock() {
+        if cache.len() >= REPLAY_CACHE_CAP && !cache.contains_key(&key) {
+            if let Some(oldest) = cache
+                .iter()
+                .min_by_key(|(_, hit)| hit.inserted)
+                .map(|(k, _)| k.clone())
+            {
+                cache.remove(&oldest);
+            }
+        }
+        cache.insert(
+            key,
+            CachedReplay {
+                inserted: Instant::now(),
+                replay: replayed.clone(),
+            },
+        );
+    }
+    replayed
+}
+
 pub fn compute_branch_status(
     repo_dir: &Path,
     branch: &str,
@@ -390,8 +484,7 @@ pub fn compute_branch_status(
             })
             .collect();
     };
-    let events = collect_events(repo_dir, &reference);
-    let replayed = replay_events(&events);
+    let replayed = cached_replay(repo_dir, &reference);
     shas.iter()
         .map(|sha| {
             let record = replayed.statuses.get(&status_key(subsystem, sha));

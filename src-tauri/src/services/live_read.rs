@@ -578,10 +578,12 @@ fn open_pr_status(pr: &PullRequestInfo, queried_branch: &str) -> CommitStatus {
 
 /// Core status computation against an already-resolved target checkout.
 /// `Integrated` only from reachable trailers; open PRs overlay as `PrOpen`.
-pub fn integration_statuses_live(
+/// Takes the open-PR list as a parameter so a caller that needs the same
+/// list (e.g. commit details' related-PRs section) fetches it once.
+pub fn integration_statuses_with_prs(
     target_dir: &Path,
     registry: &Registry,
-    github: &dyn GitHubOps,
+    open_prs: &[PullRequestInfo],
     target_branch: &str,
     subsystem_id: Option<&str>,
     shas: &[String],
@@ -601,9 +603,9 @@ pub fn integration_statuses_live(
         None => registry.subsystems.iter().map(|s| s.id.clone()).collect(),
     };
     // Fail closed: an unreadable PR list must not hide a pending promotion.
-    let open_prs = github
-        .list_open_pull_requests(&registry.main_repository, &target_branch)
-        .map_err(gh_error_to_app)?;
+    // (`integration_statuses_live` fetches the list; callers that already hold
+    // it — commit details — pass it in. An empty slice here means "no open
+    // PRs", never "lookup failed".)
     let checked_at = now_rfc3339();
     let mut out = Vec::new();
     for id in ids {
@@ -639,6 +641,33 @@ pub fn integration_statuses_live(
         }
     }
     Ok(out)
+}
+
+/// Core status computation against an already-resolved target checkout.
+/// `Integrated` only from reachable trailers; open PRs overlay as `PrOpen`.
+/// Fail closed: an unreadable PR list must not hide a pending promotion.
+pub fn integration_statuses_live(
+    target_dir: &Path,
+    registry: &Registry,
+    github: &dyn GitHubOps,
+    target_branch: &str,
+    subsystem_id: Option<&str>,
+    shas: &[String],
+) -> AppResult<Vec<IntegrationStatus>> {
+    // Fetched here (rather than by the caller) so the fail-closed mapping
+    // stays in one place: a PR-lookup failure errors, it never yields an
+    // empty overlay that could hide a pending promotion.
+    let open_prs = github
+        .list_open_pull_requests(&registry.main_repository, target_branch)
+        .map_err(gh_error_to_app)?;
+    integration_statuses_with_prs(
+        target_dir,
+        registry,
+        &open_prs,
+        target_branch,
+        subsystem_id,
+        shas,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -915,8 +944,9 @@ pub fn integration_history_live(
         .ok_or_else(|| {
             branch_not_permitted(&branch, "branch does not exist in the target checkout")
         })?;
-    let events = history::collect_events(target_dir, &reference);
-    let replayed = history::replay_events(&events);
+    // Shares the tip-keyed scan with the status reads above: same tip, same
+    // events, one `git log` per tip instead of one per command.
+    let replayed = history::cached_replay(target_dir, &reference);
     let mut entries: Vec<IntegrationHistoryEntry> = replayed
         .history
         .iter()
@@ -1748,7 +1778,9 @@ pub fn commit_details_live(
     };
     let parents: Vec<String> = parents_raw.split_whitespace().map(str::to_string).collect();
     let is_merge = parents.len() > 1;
-    let (base_sha, _deltas) = git::name_status_delta(source_dir, &full_sha).map_err(|err| {
+    // Single `name_status_delta` pass: the entries carry rename metadata and
+    // are reused below (a second call would re-spawn `rev-parse` + `diff`).
+    let (base_sha, deltas) = git::name_status_delta(source_dir, &full_sha).map_err(|err| {
         AppError::new(
             ErrorCode::RepositoryInaccessible,
             format!("Could not read the changed files for '{sha}'."),
@@ -1760,11 +1792,6 @@ pub fn commit_details_live(
     let mut files: Vec<ChangedFile> = Vec::new();
     let mut total_add = 0_u32;
     let mut total_del = 0_u32;
-    // Re-derive deltas to keep rename metadata (the helper above only
-    // validated readability).
-    let deltas = git::name_status_delta(source_dir, &full_sha)
-        .map(|(_, entries)| entries)
-        .unwrap_or_default();
     for delta in &deltas {
         let (path, previous, change) = match delta.status {
             'A' => (
@@ -1825,25 +1852,37 @@ pub fn commit_details_live(
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let dependencies = dependency_changes_for(source_dir, &full_sha, base_sha.as_deref());
+    // One open-PR listing serves both the status overlay and the related-PRs
+    // section below: a second `gh api` round trip for the same (repo, branch)
+    // pair inside one click can only add latency, never newer data.
+    // Fail-closed exactly like before: when the listing fails, the status
+    // degrades to Unknown and the related section stays empty (previously the
+    // status call errored into Unknown and the related call failed open).
+    let open_prs = github.list_open_pull_requests(&registry.main_repository, &target_branch);
     // Status for this SHA on the selected target.
-    let status = integration_statuses_live(
-        target_dir,
-        registry,
-        github,
-        &target_branch,
-        Some(&entry.id),
-        std::slice::from_ref(&full_sha),
-    )
-    .map(|mut v| {
-        v.pop()
-            .map(|s| s.status)
-            .unwrap_or_else(|| CommitStatus::unknown(&target_branch, "Status unavailable."))
-    })
-    .unwrap_or_else(|_| CommitStatus::unknown(&target_branch, "Status unavailable for this SHA."));
+    let status = match &open_prs {
+        Ok(prs) => integration_statuses_with_prs(
+            target_dir,
+            registry,
+            prs,
+            &target_branch,
+            Some(&entry.id),
+            std::slice::from_ref(&full_sha),
+        )
+        .map(|mut v| {
+            v.pop()
+                .map(|s| s.status)
+                .unwrap_or_else(|| CommitStatus::unknown(&target_branch, "Status unavailable."))
+        })
+        .unwrap_or_else(|_| {
+            CommitStatus::unknown(&target_branch, "Status unavailable for this SHA.")
+        }),
+        Err(_) => CommitStatus::unknown(&target_branch, "Status unavailable for this SHA."),
+    };
     // Related open integration PRs.
     let mut related: Vec<PullRequestRef> = Vec::new();
-    if let Ok(prs) = github.list_open_pull_requests(&registry.main_repository, &target_branch) {
-        for pr in &prs {
+    if let Ok(prs) = &open_prs {
+        for pr in prs {
             if history::pr_references_requested_shas(pr, &entry.id, std::slice::from_ref(&full_sha))
             {
                 related.push(PullRequestRef {
@@ -2819,5 +2858,75 @@ mod tests {
         let _ = commit_all(&small, "base");
         let (_, truncated_small) = target_path_dates(&small, "master");
         assert!(!truncated_small);
+    }
+
+    #[test]
+    fn status_scan_is_shared_across_reads_on_unchanged_tip() {
+        let (src, main, a, b, registry) = sandbox_status();
+        // Scoped to this sandbox's tip key, so parallel tests cannot disturb it.
+        let scans = || crate::services::engine::history::replay_scans_for_tests(&main, "staging");
+        let empty = StubGitHubOps::new();
+        let first = integration_statuses_live(
+            &main,
+            &registry,
+            &empty,
+            "staging",
+            Some("hr-management"),
+            &[a.clone(), b.clone()],
+        )
+        .expect("statuses");
+        assert_eq!(scans(), 1, "the first read walks the history once");
+        // Commit details walks the same history for one SHA: same tip, no
+        // second scan.
+        let details = commit_details_live(
+            &main,
+            &src,
+            &registry,
+            &empty,
+            "hr-management",
+            &b,
+            "staging",
+        )
+        .expect("details");
+        assert_eq!(details.sha, b);
+        assert_eq!(
+            scans(),
+            1,
+            "details on the same tip must reuse the scan, not walk history again"
+        );
+        let by_sha: HashMap<&str, &IntegrationStatus> =
+            first.iter().map(|s| (s.source_sha.as_str(), s)).collect();
+        assert_eq!(by_sha[&b.as_str()].status.kind, details.status.kind);
+        // Moving the tip (a new ordinary commit on staging) recomputes: the
+        // new tip's scan count is 1, i.e. the old tip's replay was NOT served.
+        git(&main, &["checkout", "-q", "staging"]);
+        write(&main, "new.txt", "new\n");
+        let _ = commit_all(&main, "ordinary newcomer");
+        let second = integration_statuses_live(
+            &main,
+            &registry,
+            &empty,
+            "staging",
+            Some("hr-management"),
+            &[a.clone(), b.clone()],
+        )
+        .expect("statuses after tip move");
+        assert_eq!(
+            scans(),
+            1,
+            "a moved tip must recompute its own scan, never reuse the old tip's replay"
+        );
+        let by_sha: HashMap<&str, &IntegrationStatus> =
+            second.iter().map(|s| (s.source_sha.as_str(), s)).collect();
+        assert_eq!(
+            by_sha[&b.as_str()].status.kind,
+            CommitStatusKind::Integrated,
+            "the trailer integration survives newer ordinary commits"
+        );
+        assert_eq!(
+            by_sha[&a.as_str()].status.kind,
+            CommitStatusKind::Eligible,
+            "an unintegrated SHA stays eligible after the tip moves"
+        );
     }
 }

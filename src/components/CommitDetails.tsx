@@ -25,6 +25,7 @@ import {
   InlineAlert,
   KeyValue,
   LoadingState,
+  Spinner,
 } from './ui/primitives';
 
 /** Right-hand commit details panel (spec §3.2). */
@@ -132,10 +133,19 @@ export function CommitDetailsPanel({
   const isPromotable = details.status.kind === 'eligible' || details.status.kind === 'reverted';
 
   return (
-    <div className="flex min-h-0 flex-col">
+    <div className="flex min-h-0 flex-col" aria-busy={loading}>
       <header className="flex items-center justify-between gap-2 border-b border-line px-2.5 py-1.5">
         <div className="flex items-center gap-2">
           <h2 className="panel-title">Commit Details</h2>
+          {loading ? (
+            <span
+              role="status"
+              aria-label="Loading the newly selected commit"
+              title="Loading the newly selected commit — the panel still shows the previous commit until it arrives."
+            >
+              <Spinner className="h-3.5 w-3.5" />
+            </span>
+          ) : null}
           {onClose ? (
             <IconButton icon={ArrowRight} label="Hide commit details" onClick={onClose} />
           ) : null}
