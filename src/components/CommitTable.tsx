@@ -62,15 +62,21 @@ export interface CommitTableProps {
   onPageChange: (page: number) => void;
   pageSize: number;
   onPageSizeChange: (size: number) => void;
-  selectedShas: string[];
-  onToggleSha: (sha: string) => void;
-  onSelectShas: (shas: string[]) => void;
+  /**
+   * Selection is optional. The Promote tab passes the full set and owns the
+   * promotion flow; the read-only Commit Browser omits it and renders no
+   * checkboxes, no select-all control and no batch promote affordance.
+   */
+  selectedShas?: string[];
+  onToggleSha?: (sha: string) => void;
+  onSelectShas?: (shas: string[]) => void;
   focusedSha: string | null;
   onFocusSha: (sha: string) => void;
-  onPromoteSelected: () => void;
-  onClearSelection: () => void;
-  detailsVisible: boolean;
-  onToggleDetails: () => void;
+  onPromoteSelected?: () => void;
+  onClearSelection?: () => void;
+  /** Details-rail toggle; omitted where there is no rail to toggle. */
+  detailsVisible?: boolean;
+  onToggleDetails?: () => void;
   toolbarExtras?: ReactNode;
   emptyMessage?: string;
 }
@@ -136,9 +142,24 @@ export function CommitTable({
   const total = page?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / Math.max(pageSize, 1)));
   const pageShas = useMemo(() => commits.map((commit) => commit.sha), [commits]);
+  const selectedList = selectedShas ?? [];
+  const selectable = Boolean(
+    selectedShas && onToggleSha && onSelectShas && onPromoteSelected && onClearSelection,
+  );
   const allPageSelected =
-    pageShas.length > 0 && pageShas.every((sha) => selectedShas.includes(sha));
-  const somePageSelected = pageShas.some((sha) => selectedShas.includes(sha));
+    selectable && pageShas.length > 0 && pageShas.every((sha) => selectedList.includes(sha));
+  const somePageSelected = selectable && pageShas.some((sha) => selectedList.includes(sha));
+
+  const handleSelectPage = (checked: boolean) => {
+    if (!onSelectShas) return;
+    if (checked) {
+      onSelectShas(Array.from(new Set([...selectedList, ...pageShas])));
+    } else {
+      onSelectShas(selectedList.filter((sha) => !pageShas.includes(sha)));
+    }
+  };
+  const handlePromoteSelected = () => onPromoteSelected?.();
+  const handleClearSelection = () => onClearSelection?.();
 
   const rangeStart = total === 0 ? 0 : (pageNumber - 1) * pageSize + 1;
   const rangeEnd = Math.min(pageNumber * pageSize, total);
@@ -189,34 +210,38 @@ export function CommitTable({
         {toolbarExtras}
 
         <div className="ml-auto flex items-center gap-2">
-          {selectedShas.length > 0 ? (
+          {selectable && selectedList.length > 0 ? (
             <>
               <span className="meta text-accent-ink tabular-nums">
                 <SquareCheck className="h-2.5 w-2.5" aria-hidden="true" />
-                {selectedShas.length} selected
+                {selectedList.length} selected
               </span>
-              <IconButton icon={X} label="Clear commit selection" onClick={onClearSelection} />
+              <IconButton icon={X} label="Clear commit selection" onClick={handleClearSelection} />
             </>
           ) : null}
-          <Button
-            size="sm"
-            variant="primary"
-            icon={GitPullRequestArrow}
-            disabled={selectedShas.length === 0}
-            onClick={onPromoteSelected}
-            title={
-              selectedShas.length === 0
-                ? 'Tick one or more commits to promote'
-                : `Promote ${selectedShas.length} selected commit(s) to a main-system branch`
-            }
-          >
-            Promote Selected
-          </Button>
-          <IconButton
-            icon={detailsVisible ? PanelRightClose : PanelRight}
-            label={detailsVisible ? 'Hide commit details panel' : 'Show commit details panel'}
-            onClick={onToggleDetails}
-          />
+          {selectable ? (
+            <Button
+              size="sm"
+              variant="primary"
+              icon={GitPullRequestArrow}
+              disabled={selectedList.length === 0}
+              onClick={handlePromoteSelected}
+              title={
+                selectedList.length === 0
+                  ? 'Tick one or more commits to promote'
+                  : `Promote ${selectedList.length} selected commit(s) to a main-system branch`
+              }
+            >
+              Promote Selected
+            </Button>
+          ) : null}
+          {onToggleDetails ? (
+            <IconButton
+              icon={detailsVisible ? PanelRightClose : PanelRight}
+              label={detailsVisible ? 'Hide commit details panel' : 'Show commit details panel'}
+              onClick={onToggleDetails}
+            />
+          ) : null}
         </div>
       </div>
 
@@ -257,22 +282,20 @@ export function CommitTable({
             </caption>
             <thead className="sticky top-0 z-10">
               <tr className="table-head">
-                <th scope="col" className="w-10 py-2 pl-2.5 text-left">
-                  <Checkbox
-                    checked={allPageSelected}
-                    inputRef={(element) => {
-                      if (element) element.indeterminate = !allPageSelected && somePageSelected;
-                    }}
-                    onChange={(event) => {
-                      if (event.target.checked) {
-                        onSelectShas(Array.from(new Set([...selectedShas, ...pageShas])));
-                      } else {
-                        onSelectShas(selectedShas.filter((sha) => !pageShas.includes(sha)));
-                      }
-                    }}
-                    label="Select all commits on this page"
-                  />
-                </th>
+                {selectable ? (
+                  <th scope="col" className="w-10 py-2 pl-2.5 text-left">
+                    <Checkbox
+                      checked={allPageSelected}
+                      inputRef={(element) => {
+                        if (element) element.indeterminate = !allPageSelected && somePageSelected;
+                      }}
+                      onChange={(event) => {
+                        handleSelectPage(event.target.checked);
+                      }}
+                      label="Select all commits on this page"
+                    />
+                  </th>
+                ) : null}
                 <th scope="col" className="w-6 py-2" />
                 <th scope="col" className="w-24 py-2 pr-2.5 text-right">
                   SHA
@@ -293,7 +316,7 @@ export function CommitTable({
             </thead>
             <tbody>
               {commits.map((commit) => {
-                const selected = selectedShas.includes(commit.sha);
+                const selected = selectable && selectedList.includes(commit.sha);
                 const focused = focusedSha === commit.sha;
                 return (
                   <tr
@@ -303,15 +326,17 @@ export function CommitTable({
                       (focused || selected) && 'bg-selection',
                     )}
                   >
-                    <td className="py-2 pl-2.5 align-top">
-                      <Checkbox
-                        checked={selected}
-                        onChange={() => {
-                          onToggleSha(commit.sha);
-                        }}
-                        label={`Select commit ${commit.shortSha} – ${commit.subject}`}
-                      />
-                    </td>
+                    {selectable ? (
+                      <td className="py-2 pl-2.5 align-top">
+                        <Checkbox
+                          checked={selected}
+                          onChange={() => {
+                            onToggleSha?.(commit.sha);
+                          }}
+                          label={`Select commit ${commit.shortSha} – ${commit.subject}`}
+                        />
+                      </td>
+                    ) : null}
                     <td className="relative w-6 align-top">
                       <span
                         aria-hidden="true"

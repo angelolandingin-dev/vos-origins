@@ -155,12 +155,19 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     [selectedShas],
   );
 
-  const setSelectedShas = useCallback((shas: string[]) => {
+  const setSelectedShas = useCallback((shas: string[], commits: CommitSummary[] = []) => {
     setSelectedShasState(shas);
     setSelectedSummaries((prev) => {
-      if (prev.size === 0) return prev;
-      let changed = false;
       const next = new Map(prev);
+      let changed = false;
+      // A handoff from the read-only browser carries its own summary so the
+      // Promote tab shows the subject immediately, before its listing loads.
+      for (const commit of commits) {
+        if (shas.includes(commit.sha) && next.get(commit.sha) !== commit) {
+          next.set(commit.sha, commit);
+          changed = true;
+        }
+      }
       for (const sha of Array.from(next.keys())) {
         if (!shas.includes(sha)) {
           next.delete(sha);

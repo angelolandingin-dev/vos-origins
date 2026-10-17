@@ -80,9 +80,12 @@ export interface CommitDetailsProps {
   error: ApiError | null;
   onRetry: () => void;
   targetBranch: string;
-  selectedShas: string[];
-  onPromote: (sha: string) => void;
-  onPromoteSelection: () => void;
+  /**
+   * Read-only handoff: selects this commit in the shared selection and opens
+   * the Promote tab, which owns the whole promotion flow. The browser never
+   * opens the promotion dialog itself.
+   */
+  onPromoteHandoff: (sha: string) => void;
   onShowDiff: (sha: string, filePath: string) => void;
   onOpenExternal: (url: string) => void;
   onClose?: () => void;
@@ -95,9 +98,7 @@ export function CommitDetailsPanel({
   error,
   onRetry,
   targetBranch,
-  selectedShas,
-  onPromote,
-  onPromoteSelection,
+  onPromoteHandoff,
   onShowDiff,
   onOpenExternal,
   onClose,
@@ -127,7 +128,6 @@ export function CommitDetailsPanel({
     }
   };
 
-  const isSelected = selectedShas.includes(details.sha);
   const alreadyIntegrated = details.status.kind === 'integrated';
   const hasOpenPr = details.status.kind === 'pr_open' || details.status.kind === 'in_review';
   const isPromotable = details.status.kind === 'eligible' || details.status.kind === 'reverted';
@@ -387,33 +387,21 @@ export function CommitDetailsPanel({
         ) : null}
 
         <div className="space-y-2 border-t border-line pt-3">
-          <div className="flex items-stretch gap-1">
-            <Button
-              variant="primary"
-              size="md"
-              icon={GitPullRequestArrow}
-              className="flex-1"
-              disabled={!isPromotable}
-              onClick={() => onPromote(details.sha)}
-              title={
-                isPromotable
-                  ? 'Choose the target main-system branch and confirm the source SHA'
-                  : 'Only eligible (or previously reverted) commits can be promoted'
-              }
-            >
-              Promote This Commit
-            </Button>
-            {selectedShas.length > 1 && isSelected ? (
-              <Button
-                variant="secondary"
-                size="md"
-                onClick={onPromoteSelection}
-                title="Promote every ticked commit in one ordered integration PR"
-              >
-                Promote {selectedShas.length} selected
-              </Button>
-            ) : null}
-          </div>
+          <Button
+            variant="primary"
+            size="md"
+            icon={GitPullRequestArrow}
+            className="w-full"
+            disabled={!isPromotable}
+            onClick={() => onPromoteHandoff(details.sha)}
+            title={
+              isPromotable
+                ? 'Select this commit and open the Promote tab to confirm it'
+                : 'Only eligible (or previously reverted) commits can be promoted'
+            }
+          >
+            Promote…
+          </Button>
 
           <Button
             variant="secondary"

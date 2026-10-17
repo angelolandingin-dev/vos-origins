@@ -224,8 +224,6 @@ function PromoteCommitsPanel({
             onFocusSha={app.setFocusedSha}
             onPromoteSelected={() => app.openPromotionDialog(app.selectedShas, selectedCommits)}
             onClearSelection={app.clearSelection}
-            detailsVisible={false}
-            onToggleDetails={() => undefined}
           />
         </Panel>
 

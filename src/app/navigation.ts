@@ -23,7 +23,7 @@ export const NAV_ITEMS: NavItem[] = [
   {
     id: 'commit-browser',
     label: 'Commit Browser',
-    description: 'Filter source history, select SHAs',
+    description: 'Browse source history and inspect commits',
   },
   {
     id: 'promote-commits',
@@ -54,7 +54,7 @@ export const ROUTE_META: Record<Route, { title: string; subtitle: string }> = {
   },
   'commit-browser': {
     title: 'Commit Browser',
-    subtitle: 'Filter source history, select SHAs',
+    subtitle: 'Browse source history and inspect commits',
   },
   'promote-commits': {
     title: 'Promote Commits',

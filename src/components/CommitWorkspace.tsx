@@ -195,10 +195,6 @@ function CommitWorkspacePanel({
   );
 
   const listing = useMemo(() => commitPage.data?.commits ?? [], [commitPage.data]);
-  const { rememberSelectedCommits } = app;
-  useEffect(() => {
-    rememberSelectedCommits(listing);
-  }, [listing, rememberSelectedCommits]);
   const focusedSha = useMemo(() => {
     if (app.focusedSha && listing.some((commit) => commit.sha === app.focusedSha))
       return app.focusedSha;
@@ -239,13 +235,15 @@ function CommitWorkspacePanel({
     openDiffView(sha, filePath);
   };
 
-  const promote = (sha: string) => {
+  // The browser is read-only: row subject/SHA only moves focus, and the
+  // single Promote… action hands the commit to the Promote tab through the
+  // shared selection, which owns the dialog, delivery modes, exclusions and
+  // preflight. The browser never opens a promotion flow itself.
+  const promoteHandoff = (sha: string) => {
     const commit = listing.find((candidate) => candidate.sha === sha);
-    app.openPromotionDialog([sha], commit ? [commit] : []);
-  };
-
-  const promoteSelection = () => {
-    app.openPromotionDialog(app.selectedShas, app.selectedCommits);
+    app.setSelectedShas([sha], commit ? [commit] : []);
+    app.setFocusedSha(sha);
+    app.navigate('promote-commits');
   };
 
   if (!subsystem) {
@@ -273,9 +271,7 @@ function CommitWorkspacePanel({
       error={details.error}
       onRetry={details.reload}
       targetBranch={app.targetBranch}
-      selectedShas={app.selectedShas}
-      onPromote={promote}
-      onPromoteSelection={promoteSelection}
+      onPromoteHandoff={promoteHandoff}
       onShowDiff={showDiff}
       onOpenExternal={app.openExternal}
       onClose={isWide ? undefined : () => onDetailsVisibleChange(false)}
@@ -374,13 +370,8 @@ function CommitWorkspacePanel({
             onPageChange={setPageNumber}
             pageSize={pageSize}
             onPageSizeChange={handlePageSizeChange}
-            selectedShas={app.selectedShas}
-            onToggleSha={app.toggleSha}
-            onSelectShas={app.setSelectedShas}
             focusedSha={focusedSha}
             onFocusSha={handleFocusSha}
-            onPromoteSelected={promoteSelection}
-            onClearSelection={app.clearSelection}
             detailsVisible={detailsVisible}
             onToggleDetails={() => onDetailsVisibleChange(!detailsVisible)}
             emptyMessage={`No commits were returned from ${subsystem.repository}@${subsystem.sourceBranch}. Check the registry entry and branch protection.`}
