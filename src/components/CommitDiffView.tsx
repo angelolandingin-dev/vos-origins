@@ -33,7 +33,9 @@ import {
  * changed-files column with per-file include checkboxes, and every changed
  * file's diff stacked continuously in one scroll, each rendered by the shared
  * `DiffViewer`. Per-file diffs mount (and fetch) lazily as they near the
- * viewport, so a large commit never renders all diffs at once.
+ * viewport; each mounted file renders its engine-bounded hunks in full, with
+ * no inner scroll container and no row windowing — the section list holds the
+ * view's only diff scroller.
  */
 
 function fileGlyph(file: ChangedFile): { glyph: string; className: string } {
@@ -415,7 +417,6 @@ export function CommitDiffView({
                       targetBranch={targetBranch}
                       file={file}
                       mode={mode}
-                      onModeChange={setMode}
                       onOpenExternal={app.openExternal}
                     />
                   ) : (
@@ -439,7 +440,6 @@ function FileDiffSection({
   targetBranch,
   file,
   mode,
-  onModeChange,
   onOpenExternal,
 }: {
   subsystemId: string;
@@ -447,7 +447,6 @@ function FileDiffSection({
   targetBranch: string;
   file: ChangedFile;
   mode: 'side' | 'unified';
-  onModeChange: (mode: 'side' | 'unified') => void;
   onOpenExternal: (url: string) => void;
 }) {
   const app = useApp();
@@ -475,12 +474,8 @@ function FileDiffSection({
       loading={diff.loading}
       error={diff.error}
       onRetry={diff.reload}
-      files={[file]}
-      selectedPath={file.path}
-      onSelectPath={() => undefined}
-      onOpenExternal={onOpenExternal}
       mode={mode}
-      onModeChange={onModeChange}
+      onOpenExternal={onOpenExternal}
     />
   );
 }

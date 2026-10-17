@@ -1,31 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
-import { Columns2, ExternalLink, FileCode2, Rows3, TriangleAlert } from 'lucide-react';
+import { ExternalLink, FileCode2, TriangleAlert } from 'lucide-react';
 
 import type { ApiError } from '../api/invoke';
-import type { ChangedFile, CommitDiff, DiffHunk, DiffLine } from '../api/types';
+import type { CommitDiff, DiffHunk, DiffLine } from '../api/types';
 import { cx } from './ui/cx';
-import {
-  Button,
-  Combobox,
-  EmptyState,
-  ErrorState,
-  IconButton,
-  InlineAlert,
-  LoadingState,
-  Tooltip,
-} from './ui/primitives';
+import { EmptyState, ErrorState, IconButton, InlineAlert, LoadingState } from './ui/primitives';
 
 /**
- * Read-only bounded diff viewer (spec §3.2): lightweight renderer with windowed rows;
- * over-bound responses flag truncated; the full file stays one click away on GitHub.
+ * Read-only bounded diff renderer (spec §3.2): renders the engine-bounded
+ * hunks in full — no internal scroll container, no row windowing. The single
+ * scroller lives in the parent (the diff view's section list); this component
+ * must never introduce one of its own. Over-bound responses flag truncated
+ * (around 1500 lines per file); the full file stays one click away on GitHub.
  *
- * Fixed comparative measure: every row is exactly ROW_HEIGHT tall and both line-number
- * gutters are a constant width, so the two compared states are read at one scale
- * rather than re-zoomed per view.
+ * Fixed comparative measure: every row is exactly ROW_HEIGHT tall and both
+ * line-number gutters are a constant width, so the two compared states are
+ * read at one scale rather than re-zoomed per view.
  */
 
 const ROW_HEIGHT = 20;
-const OVERSCAN = 12;
 
 type Row =
   | { kind: 'hunk'; header: string }
@@ -101,13 +93,9 @@ export interface DiffViewerProps {
   loading: boolean;
   error: ApiError | null;
   onRetry: () => void;
-  files: ChangedFile[];
-  selectedPath: string | null;
-  onSelectPath: (path: string) => void;
+  /** Side-by-side/unified mode is owned by the parent, which holds the single toggle. */
+  mode: 'side' | 'unified';
   onOpenExternal: (url: string) => void;
-  /** Controlled side-by-side/unified mode; falls back to internal state when omitted. */
-  mode?: 'side' | 'unified';
-  onModeChange?: (mode: 'side' | 'unified') => void;
 }
 
 export function DiffViewer({
@@ -115,17 +103,9 @@ export function DiffViewer({
   loading,
   error,
   onRetry,
-  files,
-  selectedPath,
-  onSelectPath,
+  mode,
   onOpenExternal,
-  mode: controlledMode,
-  onModeChange,
 }: DiffViewerProps) {
-  const [internalMode, setInternalMode] = useState<'side' | 'unified'>('side');
-  const mode = controlledMode ?? internalMode;
-  const setMode = onModeChange ?? setInternalMode;
-
   if (loading && !diff) return <LoadingState label="Fetching the file diff…" />;
   if (error) return <ErrorState error={error} onRetry={onRetry} compact />;
   if (!diff) {
@@ -139,62 +119,17 @@ export function DiffViewer({
   }
 
   const rows = mode === 'side' ? buildSideBySideRows(diff.hunks) : buildUnifiedRows(diff.hunks);
-  const total = rows.length;
-  const fileOptions = files.map((file) => ({
-    value: file.path,
-    label: file.path,
-    meta: `+${file.additions}/-${file.deletions}`,
-    title: `${file.path} (+${file.additions}/-${file.deletions})`,
-  }));
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
-        <FileCode2 className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
-        {files.length > 1 ? (
-          <Combobox
-            ariaLabel="Changed file to preview"
-            value={selectedPath ?? diff.filePath}
-            options={
-              fileOptions.length > 0
-                ? fileOptions
-                : [{ value: diff.filePath, label: diff.filePath }]
-            }
-            onSelect={(next) => onSelectPath(next)}
-            searchPlaceholder="Filter files by path…"
-            emptyMessage="No files match this filter."
-            className="w-[320px] max-w-full"
-            listLabel="Changed files"
-          />
-        ) : (
-          <Tooltip content={diff.filePath} side="bottom" align="start">
-            <span className="mono min-w-0 flex-1 truncate text-fg">{diff.filePath}</span>
-          </Tooltip>
-        )}
-
         <span className="meta">{diff.language}</span>
-        <span className="mono text-right text-[11px] text-status-applied-ink tabular-nums">
-          +{diff.additions}
-        </span>
-        <span className="mono text-right text-[11px] text-status-blocked-ink tabular-nums">
-          -{diff.deletions}
+        <span className="mono text-right text-[11px] text-disabled tabular-nums">
+          {rows.length} rows
         </span>
         {diff.binary ? <span className="meta text-status-unknown-ink">binary</span> : null}
 
         <div className="ml-auto flex items-center gap-2">
-          <span className="mono text-right text-[11px] text-disabled tabular-nums">
-            {total} rows
-          </span>
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={mode === 'side' ? Columns2 : Rows3}
-            onClick={() => setMode(mode === 'side' ? 'unified' : 'side')}
-            title={mode === 'side' ? 'Switch to unified diff' : 'Switch to side-by-side diff'}
-            aria-label={mode === 'side' ? 'Switch to unified diff' : 'Switch to side-by-side diff'}
-          >
-            {mode === 'side' ? 'Side-by-side' : 'Unified'}
-          </Button>
           <IconButton
             icon={ExternalLink}
             label="Open this file on GitHub"
@@ -211,8 +146,7 @@ export function DiffViewer({
         </div>
       ) : null}
 
-      {/* Remount resets scroll without an effect that would cascade a render. */}
-      <DiffBody key={`${diff.sha}|${diff.filePath}|${mode}`} rows={rows} filePath={diff.filePath} />
+      <DiffRows rows={rows} />
 
       {diff.truncated ? (
         <div className="border-t border-status-unknown/40 bg-status-unknown-soft px-2.5 py-1.5">
@@ -226,76 +160,86 @@ export function DiffViewer({
   );
 }
 
-function DiffBody({ rows, filePath }: { rows: Row[]; filePath: string }) {
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(320);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const element = scrollRef.current;
-    if (!element) return;
-    const update = () => setViewportHeight(element.clientHeight || 320);
-    update();
-    if (typeof ResizeObserver === 'function') {
-      const observer = new ResizeObserver(update);
-      observer.observe(element);
-      return () => observer.disconnect();
-    }
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
-
-  const total = rows.length;
-  const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const end = Math.min(total, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
-  const visible = rows.slice(start, end);
-
+/** Full row rendering: every hunk row mounts — the engine bounds the total, not the viewport. */
+function DiffRows({ rows }: { rows: Row[] }) {
   return (
-    <div
-      ref={scrollRef}
-      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-      className="scroll-area min-h-0 flex-1 overflow-y-auto bg-ground"
-      tabIndex={0}
-      role="region"
-      aria-label={`Diff of ${filePath}`}
-    >
-      <div style={{ height: total * ROW_HEIGHT }} className="relative">
-        <div
-          className="absolute inset-x-0"
-          style={{ transform: `translateY(${start * ROW_HEIGHT}px)` }}
-        >
-          {visible.map((row, index) => {
-            const key = `${start + index}`;
+    <div className="bg-ground">
+      {rows.map((row, index) => {
+        if (row.kind === 'hunk') {
+          return (
+            <div
+              key={index}
+              style={{ height: ROW_HEIGHT }}
+              className="mono flex items-center gap-3 bg-accent-soft px-2.5 text-[11px] text-accent-ink"
+            >
+              <span className="truncate">{row.header}</span>
+            </div>
+          );
+        }
 
-            if (row.kind === 'hunk') {
-              return (
-                <div
-                  key={key}
-                  style={{ height: ROW_HEIGHT }}
-                  className="mono flex items-center gap-3 bg-accent-soft px-2.5 text-[11px] text-accent-ink"
-                >
-                  <span className="truncate">{row.header}</span>
-                </div>
-              );
-            }
+        if (row.kind === 'unified') {
+          const { line } = row;
+          const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
+          return (
+            <div
+              key={index}
+              style={{ height: ROW_HEIGHT }}
+              className={cx(
+                'mono flex items-center gap-2 px-2 text-[11px] leading-none',
+                lineClasses(line.kind),
+              )}
+            >
+              <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
+                {line.oldLine ?? ''}
+              </span>
+              <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
+                {line.newLine ?? ''}
+              </span>
+              <span
+                className={cx(
+                  'w-3 shrink-0 text-center select-none',
+                  line.kind === 'added'
+                    ? 'text-status-applied'
+                    : line.kind === 'removed'
+                      ? 'text-status-blocked'
+                      : 'text-disabled',
+                )}
+              >
+                {sign}
+              </span>
+              <span className="min-w-0 truncate text-fg" title={line.text}>
+                {line.text || ' '}
+              </span>
+            </div>
+          );
+        }
 
-            if (row.kind === 'unified') {
-              const { line } = row;
+        return (
+          <div
+            key={index}
+            style={{ height: ROW_HEIGHT }}
+            className="mono grid grid-cols-2 text-[11px] leading-none"
+          >
+            {(['left', 'right'] as const).map((side) => {
+              const line = side === 'left' ? row.left : row.right;
+              if (!line) {
+                return (
+                  <div key={side} className={cx('flex items-center px-2', lineClasses('empty'))} />
+                );
+              }
+              const lineNumber = side === 'left' ? line.oldLine : line.newLine;
               const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
               return (
                 <div
-                  key={key}
-                  style={{ height: ROW_HEIGHT }}
+                  key={side}
                   className={cx(
-                    'mono flex items-center gap-2 px-2 text-[11px] leading-none',
+                    'flex min-w-0 items-center gap-2 px-2',
                     lineClasses(line.kind),
+                    side === 'right' && 'border-l border-line',
                   )}
                 >
                   <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
-                    {line.oldLine ?? ''}
-                  </span>
-                  <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
-                    {line.newLine ?? ''}
+                    {lineNumber ?? ''}
                   </span>
                   <span
                     className={cx(
@@ -314,61 +258,10 @@ function DiffBody({ rows, filePath }: { rows: Row[]; filePath: string }) {
                   </span>
                 </div>
               );
-            }
-
-            return (
-              <div
-                key={key}
-                style={{ height: ROW_HEIGHT }}
-                className="mono grid grid-cols-2 text-[11px] leading-none"
-              >
-                {(['left', 'right'] as const).map((side) => {
-                  const line = side === 'left' ? row.left : row.right;
-                  if (!line) {
-                    return (
-                      <div
-                        key={side}
-                        className={cx('flex items-center px-2', lineClasses('empty'))}
-                      />
-                    );
-                  }
-                  const lineNumber = side === 'left' ? line.oldLine : line.newLine;
-                  const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
-                  return (
-                    <div
-                      key={side}
-                      className={cx(
-                        'flex min-w-0 items-center gap-2 px-2',
-                        lineClasses(line.kind),
-                        side === 'right' && 'border-l border-line',
-                      )}
-                    >
-                      <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
-                        {lineNumber ?? ''}
-                      </span>
-                      <span
-                        className={cx(
-                          'w-3 shrink-0 text-center select-none',
-                          line.kind === 'added'
-                            ? 'text-status-applied'
-                            : line.kind === 'removed'
-                              ? 'text-status-blocked'
-                              : 'text-disabled',
-                        )}
-                      >
-                        {sign}
-                      </span>
-                      <span className="min-w-0 truncate text-fg" title={line.text}>
-                        {line.text || ' '}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
-      </div>
+            })}
+          </div>
+        );
+      })}
     </div>
   );
 }
