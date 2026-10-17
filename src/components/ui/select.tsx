@@ -75,7 +75,7 @@ export function Select({
           avoidCollisions
           sticky="partial"
           onCloseAutoFocus={(event) => event.preventDefault()}
-          className="z-[70] max-h-[280px] min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border border-line bg-overlay animate-fade-in"
+          className="z-[70] max-h-[280px] w-[var(--radix-select-trigger-width)] min-w-[4.5rem] overflow-hidden rounded-md border border-line bg-overlay animate-fade-in"
         >
           <SelectPrimitive.ScrollUpButton className="flex h-[25px] items-center justify-center bg-overlay text-muted">
             <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
@@ -88,17 +88,21 @@ export function Select({
                 disabled={option.disabled}
                 title={option.title ?? option.label}
                 className={cx(
-                  'flex h-[29px] cursor-pointer items-center gap-2 rounded-[3px] px-2.5 text-xs text-fg outline-none select-none',
+                  'flex h-[29px] w-full cursor-pointer items-center justify-start gap-2 rounded-[3px] px-2.5 text-left text-xs text-fg outline-none select-none',
                   'hover:bg-hover focus:bg-selection data-[state=checked]:bg-selection',
                   'data-[disabled]:cursor-not-allowed data-[disabled]:opacity-60',
                 )}
               >
-                <SelectPrimitive.ItemIndicator asChild>
-                  <Check className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
-                </SelectPrimitive.ItemIndicator>
-                <span className="w-3.5 shrink-0 data-[state=checked]:hidden" aria-hidden="true" />
+                <span
+                  className="flex w-3.5 shrink-0 items-center justify-center"
+                  aria-hidden="true"
+                >
+                  <SelectPrimitive.ItemIndicator asChild>
+                    <Check className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden="true" />
+                  </SelectPrimitive.ItemIndicator>
+                </span>
                 <SelectPrimitive.ItemText asChild>
-                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  <span className="min-w-0 flex-1 truncate text-left">{option.label}</span>
                 </SelectPrimitive.ItemText>
               </SelectPrimitive.Item>
             ))}
