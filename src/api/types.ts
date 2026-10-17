@@ -320,11 +320,6 @@ export interface PromotionRequest {
    * source commit's subject.
    */
   message: string;
-  /**
-   * Override the non-contiguous-selection refusal: a skipped commit's changes
-   * are included in the promotion. Omitted ⇒ false.
-   */
-  allowGaps?: boolean | null;
   /** Paths to leave out of the promotion (exact paths or directory prefixes). */
   excludedPaths?: string[] | null;
 }

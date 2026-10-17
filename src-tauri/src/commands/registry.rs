@@ -407,17 +407,15 @@ mod tests {
     fn promotion_wire_fields_are_exact() {
         use crate::github::models::PromotionRequest;
         let req: PromotionRequest = serde_json::from_str(
-            r#"{"subsystemId":"hr","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true,"delivery":"local_direct","onConflict":"fail","message":"m","allowGaps":true,"excludedPaths":["a.txt"]}"#,
+            r#"{"subsystemId":"hr","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true,"delivery":"local_direct","onConflict":"fail","message":"m","excludedPaths":["a.txt"]}"#,
         )
         .expect("parses");
-        assert!(req.allow_gaps);
         assert_eq!(req.excluded_paths, vec!["a.txt".to_string()]);
         // Defaults when omitted.
         let req: PromotionRequest = serde_json::from_str(
             r#"{"subsystemId":"hr","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true}"#,
         )
         .expect("parses without new fields");
-        assert!(!req.allow_gaps);
         assert!(req.excluded_paths.is_empty());
     }
 }

@@ -645,13 +645,6 @@ pub struct PromotionRequest {
     /// source commit's subject.
     #[serde(default)]
     pub message: String,
-    /// Wire `allowGaps`: override the non-contiguous gap refusal. Recorded in
-    /// the commit trailers as `Promotion-Gaps` + `Promotion-Override: true`
-    /// (trailers survive squash-merge; the PR body does not) and mirrored in
-    /// the PR body (addendum F). Nothing may depend on reading it back after
-    /// a merge.
-    #[serde(default)]
-    pub allow_gaps: bool,
     /// Wire `excludedPaths`: paths skipped by the plan and reported as
     /// excluded.
     #[serde(default)]

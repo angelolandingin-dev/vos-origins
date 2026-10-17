@@ -118,7 +118,6 @@ pub async fn dispatch_promotion(
         delivery,
         on_conflict: request.on_conflict,
         message: request.message.clone(),
-        allow_gaps: request.allow_gaps,
         excluded_paths: request.excluded_paths.clone(),
     };
     let is_push_pr = delivery == PromotionDelivery::PushPr;
@@ -418,9 +417,8 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
     let base_sha = request.base_sha.clone();
     let target_branch = request.target_branch.clone();
     let on_conflict = request.on_conflict;
-    // Pin the same snapshot the apply would use (addendum C): globalFiles,
-    // allowGaps and excludedPaths travel with this call, never re-read.
-    let allow_gaps = request.allow_gaps;
+    // Pin the same snapshot the apply would use (addendum C): globalFiles
+    // and excludedPaths travel with this call, never re-read.
     let excluded_paths = request.excluded_paths.clone();
     let global_files = subsystem.global_files.clone().unwrap_or_default();
     // The source tip feeds the "reverts newer work" warning (information
@@ -438,7 +436,6 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
             base_sha: base_sha.as_deref(),
             target_branch: &target_branch,
             on_conflict,
-            allow_gaps,
             excluded_paths: &excluded_paths,
             global_files: &global_files,
             source_tip: source_tip.as_deref(),
@@ -706,7 +703,7 @@ fn simulate(
     findings.push(ValidationFinding::info(
         "selection_scope",
         format!(
-            "Only the first-parent delta of the {} selected SHA(s) would be applied. Unselected earlier or later source commits are never imported.",
+            "Only the first-parent delta of the {} selected SHA(s) would be applied. A skipped commit's edits to files no selected commit touches are not written.",
             request.source_commit_shas.len()
         ),
     ));
@@ -799,7 +796,7 @@ fn engine_findings_worktree(
     findings.push(ValidationFinding::info(
         "selection_scope",
         format!(
-            "Applied only the first-parent delta of {} selected SHA(s). Unselected commits were never imported.",
+            "Applied only the first-parent delta of {} selected SHA(s). Files copied whole may include a skipped commit's edits to those same files; a skipped commit's edits to files no selected commit touches are not written.",
             report.verification.order.len()
         ),
     ));
@@ -980,10 +977,6 @@ fn map_blocker(report: &PromotionReport) -> AppError {
         "SHARED_CONFIG_REQUIRES_REVIEW" => (
             ErrorCode::InvalidRequest,
             "Shared/global config changed. This requires explicit review before it can be promoted.",
-        ),
-        "NON_CONTIGUOUS_PATH_OVERLAP" => (
-            ErrorCode::InvalidRequest,
-            "Select the skipped commit(s) too, exclude the affected path(s) via excludedPaths, or re-run with allowGaps:true (records Promotion-Gaps + Promotion-Override trailers).",
         ),
         "TARGET_DIVERGED" => (
             ErrorCode::PatchConflict,

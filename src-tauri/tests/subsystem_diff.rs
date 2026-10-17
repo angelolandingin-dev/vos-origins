@@ -142,8 +142,6 @@ fn partial_promotion_end_to_end_missing_behind_identical_with_statuses() {
         mode: "individual",
         target: "staging",
         subject: "B edits g and adds h",
-        gap_shas: &[],
-        gap_override: false,
     });
     let _ = commit_all(&main, &message);
 

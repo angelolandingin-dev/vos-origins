@@ -585,7 +585,7 @@ impl GitHubAdapter {
 fn promotion_note(status: &CommitStatus) -> Option<String> {
     match status.kind {
         CommitStatusKind::Eligible => Some(
-            "Promoting applies the first-parent delta of this exact SHA only. Newer and unselected commits are never imported."
+            "Promoting applies the first-parent delta of this exact SHA only. Files copied whole may include a skipped commit's edits to those same files; a skipped commit's edits to files no selected commit touches are not written."
                 .to_string(),
         ),
         CommitStatusKind::Integrated => Some(

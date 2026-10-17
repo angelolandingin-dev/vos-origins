@@ -44,7 +44,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     baseSha: '',
     delivery: 'local_direct',
     message: '',
-    allowGaps: false,
     excludedPaths: [],
     dispatching: false,
     error: null,
@@ -105,7 +104,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       // longer offers a choice; the wire field is retained for compatibility.
       onConflict: 'take_subsystem',
       message: promotion.message,
-      allowGaps: promotion.allowGaps,
       excludedPaths: promotion.excludedPaths,
     });
   }, [
@@ -117,7 +115,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.baseSha,
     promotion.delivery,
     promotion.message,
-    promotion.allowGaps,
     promotion.excludedPaths,
   ]);
 
@@ -233,7 +230,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         baseSha: '',
         delivery: 'local_direct',
         message: '',
-        allowGaps: false,
         excludedPaths: options?.excludedPaths ?? [],
         dispatching: false,
         error: null,
@@ -272,10 +268,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setPromotion((current) => ({ ...current, message }));
   }, []);
 
-  const setPromotionAllowGaps = useCallback((allowGaps: boolean) => {
-    setPromotion((current) => ({ ...current, allowGaps }));
-  }, []);
-
   const setPromotionExcludedPaths = useCallback((paths: string[]) => {
     setPromotion((current) => ({ ...current, excludedPaths: paths }));
   }, []);
@@ -312,7 +304,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         // Promotion is a copy: the subsystem's copy always wins (see above).
         onConflict: 'take_subsystem',
         message: promotion.message,
-        allowGaps: promotion.allowGaps,
         excludedPaths: promotion.excludedPaths,
       })
       .then((result) => {
@@ -358,7 +349,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     promotion.baseSha,
     promotion.delivery,
     promotion.message,
-    promotion.allowGaps,
     promotion.excludedPaths,
     selectedSubsystemId,
     targetBranch,
@@ -409,7 +399,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionBaseSha,
       setPromotionDelivery,
       setPromotionMessage,
-      setPromotionAllowGaps,
       setPromotionExcludedPaths,
       addPromotionExcludedPath,
       removePromotionExcludedPath,
@@ -447,7 +436,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionBaseSha,
       setPromotionDelivery,
       setPromotionMessage,
-      setPromotionAllowGaps,
       setPromotionExcludedPaths,
       addPromotionExcludedPath,
       removePromotionExcludedPath,

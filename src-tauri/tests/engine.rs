@@ -519,7 +519,6 @@ struct PromoteOptions {
     real_lockfile: bool,
     delivery: PromotionDelivery,
     on_conflict: PromotionOnConflict,
-    allow_gaps: bool,
     excluded_paths: Vec<String>,
 }
 
@@ -538,7 +537,6 @@ impl Default for PromoteOptions {
             real_lockfile: false,
             delivery: PromotionDelivery::PushPr,
             on_conflict: PromotionOnConflict::Fail,
-            allow_gaps: false,
             excluded_paths: Vec::new(),
         }
     }
@@ -560,7 +558,6 @@ fn promote(
         delivery: options.delivery,
         on_conflict: options.on_conflict,
         message: "test promotion".to_string(),
-        allow_gaps: options.allow_gaps,
         excluded_paths: options.excluded_paths,
     };
     let temp_root = sandbox_root();
@@ -1303,13 +1300,11 @@ fn case11_divergent_target_copy_is_overwritten_by_subsystem() {
         "overwrite warning is emitted: {:?}",
         report.warnings
     );
-    // A diverged target copy is the normal case, not an override: the audit
-    // is a single honest key, with no `Promotion-Override` flag (that flag is
-    // reserved for `allowGaps`).
+    // A diverged target copy is the normal case: the audit is a single
+    // honest key.
     let msg = report.provenance_message.clone().unwrap_or_default();
     assert!(msg.contains("Promotion-Replaced:"), "{msg}");
     assert!(msg.contains("src/modules/hr/c.txt"), "{msg}");
-    assert!(!msg.contains("Promotion-Override"), "{msg}");
 }
 
 #[test]
@@ -1589,7 +1584,6 @@ fn case15_duplicate_and_open_pr_are_blocked() {
         delivery: PromotionDelivery::PushPr,
         on_conflict: PromotionOnConflict::Fail,
         message: "test promotion".to_string(),
-        allow_gaps: false,
         excluded_paths: Vec::new(),
     };
     let temp_root = sandbox_root();
@@ -1965,7 +1959,6 @@ fn oracle_finding9_pr_lookup_failure_is_distinct_from_already_open() {
         delivery: PromotionDelivery::PushPr,
         on_conflict: PromotionOnConflict::Fail,
         message: "test promotion".to_string(),
-        allow_gaps: false,
         excluded_paths: Vec::new(),
     };
     let engine_options = EngineOptions {
@@ -2374,7 +2367,6 @@ fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
             delivery: PromotionDelivery::Local,
             on_conflict: PromotionOnConflict::Fail,
             message: "test promotion".to_string(),
-            allow_gaps: false,
             excluded_paths: Vec::new(),
         };
         let engine_options = EngineOptions {
@@ -2706,7 +2698,6 @@ fn local_direct_target_tip_moved_fails_closed() {
         delivery: PromotionDelivery::LocalDirect,
         on_conflict: PromotionOnConflict::Fail,
         message: "test promotion".to_string(),
-        allow_gaps: false,
         excluded_paths: Vec::new(),
     };
     let engine_options = EngineOptions {
@@ -3905,16 +3896,16 @@ fn worktree_wire_value_parses_and_next_commands_carry_diff_and_commit() {
 }
 
 // ===========================================================================
-// Integrity batch: gap / overwrite / excluded / global / reporting /
-// housekeeping (G1, G2, G5, G6)
+// Integrity batch: non-contiguous selection / overwrite / excluded / global /
+// reporting / housekeeping (G1, G2, G5, G6)
 // ===========================================================================
 
-/// Gap refusal is ancestry-aware, not blanket (second addendum A). Chain
-/// `A→B→C→D`, select `[B, D]`, `C` touches `P`, `D` touches only `Q`: writing
-/// `P` comes from `B`, which predates `C`, so nothing of `C` ships to `P` —
-/// the promotion ALLOWS, naming nothing.
+/// A non-contiguous selection (`[B, D]` skipping `C`) always promotes: there
+/// is no gap refusal. When `C`'s edit predates the newest selected toucher of
+/// the shared path, the shipped blob is the selected commit's own content and
+/// `C`'s edit is not carried.
 #[test]
-fn gap_refusal_allows_when_newest_toucher_predates_skip() {
+fn non_contiguous_selection_promotes_when_skip_predates_newest_toucher() {
     let src_dir = make_temp_dir("gap-src");
     init_repo(&src_dir, "master");
     // A base, B touches P+R, C touches P only, D touches Q only.
@@ -3936,8 +3927,6 @@ fn gap_refusal_allows_when_newest_toucher_predates_skip() {
     let main = create_main_repo(&main_dir, &[], &[("p.txt", b"a\n"), ("q.txt", b"a\n")]);
     let github = StubGitHubOps::new();
     let registry = test_registry();
-    // B predates C, so C's bytes cannot be inside B's blob for P. D does not
-    // touch P at all. No smuggling on any path → allows.
     let allowed = promote(
         &src_dir,
         &main.dir,
@@ -3950,43 +3939,61 @@ fn gap_refusal_allows_when_newest_toucher_predates_skip() {
     );
     assert!(
         allowed.ok,
-        "B-C-D with D not touching P must allow: {:?}",
+        "non-contiguous selection must promote: {:?}",
         allowed.blockers
     );
     let branch = allowed.integration_branch.clone().unwrap();
-    assert!(try_branch_has(&main.dir, &branch, "src/modules/hr/c.txt") || true);
+    // The newest selected toucher of P is B (D does not touch P), so the
+    // shipped blob is B's own `b` — C's later edit is not carried.
+    assert_eq!(branch_file_text(&main.dir, &branch, "p.txt"), "b\n");
+    assert_eq!(branch_file_text(&main.dir, &branch, "q.txt"), "d\n");
     assert!(try_branch_has(&main.dir, &branch, "r.txt"));
 }
 
-/// True positive: the newest selected toucher of a path descends from the
-/// skipped commit → still refuses, naming that skipped SHA and that path only.
+/// PIN: a non-contiguous selection whose paths overlap promotes successfully
+/// AND carries the skipped commit's edits. Selecting `[B, D]` while skipping
+/// `C`, where `D` touches the same path `P` as `C`, ships `D`'s whole-file
+/// blob for `P` — which already contains `C`'s edits. This is deliberate:
+/// whole-file copy means a skipped commit's edits to a file a selected commit
+/// also touches are included. Do not "fix" this back into a refusal.
 #[test]
-fn gap_refusal_fires_when_newest_toucher_descends_from_skip() {
-    let src_dir = make_temp_dir("gap-true-src");
+fn pin_non_contiguous_overlap_promotes_and_carries_skipped_edits() {
+    let src_dir = make_temp_dir("gap-pin-src");
     init_repo(&src_dir, "master");
+    // A base, then B/C/D each edit a different line of the same file.
     commit_files(
         &src_dir,
         "A base",
-        &[("p.txt", b"a\n"), ("q.txt", b"a\n")],
+        &[("p.txt", b"l1-a\nl2-a\n"), ("q.txt", b"a\n")],
         &[],
     );
-    let b = commit_files(&src_dir, "B touches P", &[("p.txt", b"b\n")], &[]);
-    let c = commit_files(&src_dir, "C touches P again", &[("p.txt", b"c\n")], &[]);
-    // D touches P too (descends from C) and Q (so Q is in the apply set but
-    // no skip touches Q — Q must not be named).
+    let b = commit_files(
+        &src_dir,
+        "B edits line 1",
+        &[("p.txt", b"l1-b\nl2-a\n")],
+        &[],
+    );
+    let c = commit_files(
+        &src_dir,
+        "C edits line 2",
+        &[("p.txt", b"l1-b\nl2-c\n")],
+        &[],
+    );
     let d = commit_files(
         &src_dir,
-        "D touches P and Q",
-        &[("p.txt", b"d\n"), ("q.txt", b"d\n")],
+        "D edits line 1 again",
+        &[("p.txt", b"l1-d\nl2-c\n"), ("q.txt", b"d\n")],
         &[],
     );
-    let main_dir = make_temp_dir("gap-true-main");
-    let main = create_main_repo(&main_dir, &[], &[("p.txt", b"a\n"), ("q.txt", b"a\n")]);
+    let main_dir = make_temp_dir("gap-pin-main");
+    let main = create_main_repo(
+        &main_dir,
+        &[],
+        &[("p.txt", b"l1-a\nl2-a\n"), ("q.txt", b"a\n")],
+    );
     let github = StubGitHubOps::new();
     let registry = test_registry();
-    // Select B,D skipping C: newest toucher of P is D, which descends from C,
-    // C touches P, D's blob (d) != base (a) → refuses naming C + P only.
-    let refused = promote(
+    let report = promote(
         &src_dir,
         &main.dir,
         &github,
@@ -3996,30 +4003,26 @@ fn gap_refusal_fires_when_newest_toucher_descends_from_skip() {
             ..Default::default()
         },
     );
-    assert!(!refused.ok);
     assert!(
-        codes(&refused).contains(&"NON_CONTIGUOUS_PATH_OVERLAP".to_string()),
-        "{:?}",
-        codes(&refused)
+        report.ok,
+        "overlapping non-contiguous selection must promote: {:?}",
+        report.blockers
     );
-    let msg = refused
-        .blockers
-        .iter()
-        .map(|b| b.message.clone())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(msg.contains("C touches P again"), "{msg}");
-    assert!(msg.contains("p.txt"), "{msg}");
-    assert!(
-        !msg.contains("q.txt"),
-        "Q must not be named (no skip touches it): {msg}"
-    );
+    let branch = report.integration_branch.clone().unwrap();
+    // P ships D's whole-file blob, which still carries C's line-2 edit even
+    // though C was skipped. This is the pinned truth, not a bug.
+    let p = branch_file_text(&main.dir, &branch, "p.txt");
+    assert_eq!(p, "l1-d\nl2-c\n", "the skipped commit's edit is carried");
+    assert!(p.contains("l2-c"), "C's edit survives in the shipped blob");
+    assert_eq!(branch_file_text(&main.dir, &branch, "q.txt"), "d\n");
     let _ = c;
 }
 
-/// Undone effect still allows without an override (`newest == oldest base`).
+/// A non-contiguous selection whose net effect on the shared path is undone
+/// (`newest selected == oldest base`) still promotes; the path ships the base
+/// content.
 #[test]
-fn gap_undone_effect_allows_without_override() {
+fn non_contiguous_undone_effect_promotes() {
     let src_dir = make_temp_dir("gap-undone-src");
     init_repo(&src_dir, "master");
     commit_files(&src_dir, "A base", &[("p.txt", b"a\n")], &[]);
@@ -4036,8 +4039,7 @@ fn gap_undone_effect_allows_without_override() {
     let github = StubGitHubOps::new();
     let registry = test_registry();
     // E restores P to base (`a`) while keeping R (`b`, so the run is not a
-    // NOOP). Select B,E: skipped C touches P but P's newest (E==base) is
-    // undone → harmless; Q's skip is irrelevant (Q not selected).
+    // NOOP). Select B,E: P's newest selected blob is the base content again.
     let e = commit_files(
         &src_dir,
         "E undoes C on P keeps R",
@@ -4055,41 +4057,9 @@ fn gap_undone_effect_allows_without_override() {
         },
     );
     assert!(allowed.ok, "{:?}", allowed.blockers);
-}
-
-/// G1 override: allowGaps records trailers (not just PR body).
-#[test]
-fn gap_override_records_trailers() {
-    let src_dir = make_temp_dir("gap-override-src");
-    init_repo(&src_dir, "master");
-    commit_files(&src_dir, "A base", &[("p.txt", b"a\n")], &[]);
-    let b = commit_files(&src_dir, "B edit P", &[("p.txt", b"b\n")], &[]);
-    let _c = commit_files(&src_dir, "C edit P again", &[("p.txt", b"c\n")], &[]);
-    let d = commit_files(&src_dir, "D edit P once more", &[("p.txt", b"d\n")], &[]);
-    let main_dir = make_temp_dir("gap-override-main");
-    let main = create_main_repo(&main_dir, &[], &[("p.txt", b"a\n")]);
-    let github = StubGitHubOps::new();
-    let registry = test_registry();
-    let report = promote(
-        &src_dir,
-        &main.dir,
-        &github,
-        &registry,
-        PromoteOptions {
-            commits: vec![b.clone(), d.clone()],
-            allow_gaps: true,
-            ..Default::default()
-        },
-    );
-    assert!(report.ok, "{:?}", report.blockers);
-    let msg = report.provenance_message.clone().unwrap_or_default();
-    assert!(msg.contains("Promotion-Gaps:"), "{msg}");
-    assert!(msg.contains("Promotion-Override: true"), "{msg}");
-    // Wire field names (exact): allowGaps / excludedPaths.
-    let wire: serde_json::Value =
-        serde_json::json!({"allowGaps": true, "excludedPaths": ["p.txt"]});
-    assert_eq!(wire["allowGaps"], true);
-    assert_eq!(wire["excludedPaths"][0], "p.txt");
+    let branch = allowed.integration_branch.clone().unwrap();
+    assert_eq!(branch_file_text(&main.dir, &branch, "p.txt"), "a\n");
+    assert_eq!(branch_file_text(&main.dir, &branch, "r.txt"), "b\n");
 }
 
 /// G2: behind (target blob in set) allows; diverged refuses naming
@@ -4560,7 +4530,6 @@ fn selective_repromotion_over_previously_promoted_content_is_clean() {
         base_sha: None,
         target_branch: "staging",
         on_conflict: PromotionOnConflict::Fail,
-        allow_gaps: false,
         excluded_paths: &empty,
         global_files: &empty,
         source_tip: Some(source_tip.as_str()),
@@ -4632,7 +4601,6 @@ fn target_blob_absent_from_source_repo_is_overwritten() {
         base_sha: None,
         target_branch: "staging",
         on_conflict: PromotionOnConflict::Fail,
-        allow_gaps: false,
         excluded_paths: &empty,
         global_files: &empty,
         source_tip: Some(source_tip.as_str()),
@@ -4680,8 +4648,7 @@ fn target_blob_absent_from_source_repo_is_overwritten() {
 
 /// The subsystem's copy overwrites the diverged path and reports it as
 /// replaced + conflict-taken. The overwrite is recorded in the commit trailers
-/// under the single honest key (`Promotion-Replaced`), with no
-/// `Promotion-Override` flag (that flag is reserved for `allowGaps`).
+/// under the single honest key (`Promotion-Replaced`).
 #[test]
 fn subsystem_overwrites_diverged_path_reports_replaced_and_trailer() {
     let src_dir = make_temp_dir("src-takesub");
@@ -4743,10 +4710,6 @@ fn subsystem_overwrites_diverged_path_reports_replaced_and_trailer() {
     let msg = report.provenance_message.clone().unwrap_or_default();
     assert!(msg.contains("Promotion-Replaced:"), "{msg}");
     assert!(msg.contains("notes.txt"), "{msg}");
-    assert!(
-        !msg.contains("Promotion-Override"),
-        "no override flag without gaps: {msg}"
-    );
     assert!(
         !msg.contains("Promotion-Conflicts"),
         "collapsed to the single honest key: {msg}"

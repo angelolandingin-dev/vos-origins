@@ -75,12 +75,6 @@ pub struct EngineRequest {
     /// The promotion commit's own message (required; an empty one is refused so
     /// a multi-commit promotion is never labelled with only the last subject).
     pub message: String,
-    /// Wire `allowGaps`: when true, a non-contiguous selection (`[B, D]`
-    /// skipping `C`) is applied anyway and recorded in the commit trailers as
-    /// `Promotion-Gaps` + `Promotion-Override: true` (trailers survive
-    /// squash-merge and `local_direct`; the PR body does not).
-    #[allow(clippy::struct_field_names)]
-    pub allow_gaps: bool,
     /// Wire `excludedPaths`: paths skipped by the plan and reported as
     /// excluded. Makes the "exclude the path" remedy real.
     pub excluded_paths: Vec<String>,
@@ -105,7 +99,6 @@ impl EngineRequest {
             delivery: PromotionDelivery::PushPr,
             on_conflict: PromotionOnConflict::Fail,
             message: "test promotion".to_string(),
-            allow_gaps: false,
             excluded_paths: Vec::new(),
         }
     }
@@ -306,25 +299,6 @@ fn delete_vos_sources_refs(repo_dir: &Path) {
             continue;
         }
         let _ = git::run(repo_dir, &["update-ref", "-d", name]);
-    }
-}
-
-/// Worktree paths one delta entry touches — same expansion the apply uses
-/// (renames touch both sides, copies only materialize the new path).
-fn expanded_paths(entry: &git::DeltaEntry) -> Vec<String> {
-    if entry.status == 'D' {
-        entry.path.clone().into_iter().collect()
-    } else if entry.status == 'R' {
-        entry
-            .old_path
-            .clone()
-            .into_iter()
-            .chain(entry.new_path.clone())
-            .collect()
-    } else if entry.status == 'C' {
-        entry.new_path.clone().into_iter().collect()
-    } else {
-        entry.path.clone().into_iter().collect()
     }
 }
 
@@ -771,8 +745,8 @@ fn run_inner(
     // --- Policy snapshot pin (addendum C) ---------------------------------
     // `registry` (and thus `subsystem`, its `integration_policy` and
     // `global_files`) was read ONCE at the start of this run and this
-    // snapshot is used for both the preflight-equivalent checks below (gap /
-    // overwrite / global) and the apply that follows. The file is never
+    // snapshot is used for both the preflight-equivalent checks below
+    // (overwrite / global) and the apply that follows. The file is never
     // re-read mid-run, so the two cannot disagree because the file changed
     // mid-run. The standalone preflight command likewise loads the registry
     // once per call.
@@ -790,7 +764,7 @@ fn run_inner(
     }
 
     // Apply-paths only: dependency manifests are merged, lockfiles
-    // regenerated, main-owned/secret never imported — gaps/overwrites on those
+    // regenerated, main-owned/secret never imported — overwrites on those
     // are decided elsewhere. Excluded paths are skipped entirely.
     let apply_paths: Vec<String> = {
         let mut v: Vec<String> = Vec::new();
@@ -799,9 +773,8 @@ fn run_inner(
                 if !matches!(entry.status, PathStatus::Apply | PathStatus::ExplicitReview) {
                     continue;
                 }
-                // Renames already expanded to `to.path` by classify_entry; the
-                // old side is handled as a delete of the same logical path set
-                // via expanded_paths below. Use the classified path here.
+                // Renames already expanded to `to.path` by classify_entry.
+                // Use the classified path here.
                 if excluded_set.contains(&entry.path) {
                     continue;
                 }
@@ -831,7 +804,7 @@ fn run_inner(
     );
     let target_tree =
         crate::services::engine::blobset::tree_blob_map(&options.target_repo_dir, &target_tip);
-    // Oldest selected base blob per path (for gap + flagged).
+    // Oldest selected base blob per path (for the flagged/reporting check).
     let oldest_base = ordered_selection.first().and_then(|(_, b)| b.clone());
     let oldest_tree: std::collections::HashMap<String, String> = match oldest_base.as_deref() {
         Some(base) => {
@@ -861,245 +834,6 @@ fn run_inner(
     // Paths a `take_subsystem` policy overwrites despite membership failure
     // (reported as replaced + conflict-taken and trailered below).
     let mut conflict_takeover: Vec<String> = Vec::new();
-
-    // Map path -> newest selected toucher SHA (last in ancestry order whose
-    // delta touches the path). Needed for gap content-awareness.
-    let mut newest_toucher: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for planned in &verified_plan {
-        for delta in &planned.entries {
-            for p in expanded_paths(delta) {
-                // Only track apply paths (non-excluded).
-                if apply_paths.iter().any(|a| a == &p) {
-                    newest_toucher.insert(p, planned.sha.clone());
-                }
-            }
-        }
-    }
-
-    // --- Non-contiguous gap refusal (§2, content-aware) --------------------
-    // Selecting [B, D] while skipping C can silently ship C's edits to a path
-    // both touch, because the shipped blob already contains them. For each
-    // touched path, a skipped SHA counts only when the newest selected commit
-    // touching that path is a proper DESCENDANT of the skipped SHA
-    // (`is_ancestor(skip, newest_toucher)` — smuggling needs ancestry) AND
-    // blob(newest selected toucher) != blob(oldest selected base). A path
-    // whose effect is fully undone (newest == oldest base) skips harmlessly
-    // without an override. Shared predicate:
-    // `blobset::skipped_ships_through` (also used by preflight).
-    if request.mode == PromotionMode::Individual && verified_plan.len() > 1 && !request.allow_gaps {
-        if let (Some(oldest_b), Some(newest_sha)) = (
-            oldest_base.as_deref(),
-            ordered_selection.last().map(|(s, _)| s.as_str()),
-        ) {
-            let range = format!("{oldest_b}..{newest_sha}");
-            let selected_set: std::collections::HashSet<&str> =
-                ordered_selection.iter().map(|(s, _)| s.as_str()).collect();
-            // Skipped SHAs in ancestry order (oldest-first).
-            let mut skipped: Vec<String> = Vec::new();
-            if let Ok(out) = git::run(
-                &options.target_repo_dir,
-                &["rev-list", "--topo-order", "--reverse", &range],
-            ) {
-                if out.status == 0 {
-                    for line in out.stdout_str().lines() {
-                        let sha = line.trim().to_string();
-                        if sha.is_empty() || selected_set.contains(sha.as_str()) {
-                            continue;
-                        }
-                        // Only SHAs reachable from the source branch count;
-                        // rev-list over the fetched objects already ensures it.
-                        skipped.push(sha);
-                    }
-                }
-            }
-            if !skipped.is_empty() {
-                // Path -> skipped SHAs touching it.
-                let mut skipped_by_path: std::collections::HashMap<String, Vec<String>> =
-                    std::collections::HashMap::new();
-                let mut subject_by_sha: std::collections::HashMap<String, String> =
-                    std::collections::HashMap::new();
-                for sha in &skipped {
-                    subject_by_sha
-                        .entry(sha.clone())
-                        .or_insert_with(|| git::commit_subject(&options.target_repo_dir, sha));
-                    // Touched paths for this skipped commit.
-                    let touched: Vec<String> =
-                        match git::name_status_delta(&options.target_repo_dir, sha) {
-                            Ok((_, entries)) => {
-                                let mut v = Vec::new();
-                                for e in &entries {
-                                    for p in expanded_paths(e) {
-                                        if !v.contains(&p) {
-                                            v.push(p);
-                                        }
-                                    }
-                                }
-                                v
-                            }
-                            Err(_) => Vec::new(),
-                        };
-                    for p in touched {
-                        if apply_paths.iter().any(|a| a == &p) {
-                            skipped_by_path.entry(p).or_default().push(sha.clone());
-                        }
-                    }
-                }
-                // Material gaps only: a skipped SHA counts against a path only
-                // when the newest selected toucher of that path is a proper
-                // descendant of the skipped SHA (smuggling needs ancestry —
-                // the skipped bytes must be inside a blob that actually
-                // ships). Plus the undone-effect rule: newest blob ==
-                // oldest-base blob skips harmlessly.
-                let mut gap_paths: Vec<String> = Vec::new();
-                let mut gap_shas: Vec<String> = Vec::new();
-                for path in &apply_paths {
-                    let Some(touchers) = skipped_by_path.get(path) else {
-                        continue;
-                    };
-                    if touchers.is_empty() {
-                        continue;
-                    }
-                    let Some(newest_sha) = newest_toucher.get(path) else {
-                        continue;
-                    };
-                    // Ancestry filter: keep only skipped SHAs the newest
-                    // toucher descends from.
-                    let smuggling: Vec<&String> = touchers
-                        .iter()
-                        .filter(|s| {
-                            crate::services::engine::blobset::skipped_ships_through(
-                                &options.target_repo_dir,
-                                s,
-                                newest_sha,
-                            )
-                        })
-                        .collect();
-                    if smuggling.is_empty() {
-                        continue;
-                    }
-                    let newest_blob = newest_toucher.get(path).and_then(|sha| {
-                        crate::services::engine::blobset::tree_blob_map(
-                            &options.target_repo_dir,
-                            sha,
-                        )
-                        .get(path)
-                        .cloned()
-                    });
-                    let oldest_blob = oldest_tree.get(path).cloned();
-                    if newest_blob != oldest_blob {
-                        gap_paths.push(path.clone());
-                        for s in smuggling {
-                            if !gap_shas.contains(s) {
-                                gap_shas.push(s.clone());
-                            }
-                        }
-                    }
-                }
-                gap_paths.sort();
-                gap_shas.sort();
-                if !gap_paths.is_empty() {
-                    let sha_list = gap_shas
-                        .iter()
-                        .map(|s| {
-                            let subj = subject_by_sha.get(s).cloned().unwrap_or_default();
-                            format!("{} {subj}", short(s))
-                        })
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    report.blockers.push(Blocker::new(
-                        "NON_CONTIGUOUS_PATH_OVERLAP",
-                        format!(
-                            "Non-contiguous selection skips {} commit(s) touching the same path(s): {} affects {}. The skipped edits are already inside the selected tip's blobs, so promoting would silently ship them. Remedies: select the skipped commit(s) too; exclude the affected path(s) via excludedPaths and re-promote; or re-run with allowGaps:true (records Promotion-Gaps + Promotion-Override trailers).",
-                            gap_shas.len(),
-                            sha_list,
-                            gap_paths.join(", ")
-                        ),
-                    ));
-                    return Err(Bail);
-                }
-            }
-        }
-    }
-    // When allowGaps is used, remember the overlapping skipped SHAs for the
-    // trailers (Promotion-Gaps). Recompute cheaply: same range, same touch map.
-    let mut gap_override_shas: Vec<String> = Vec::new();
-    if request.allow_gaps && request.mode == PromotionMode::Individual && verified_plan.len() > 1 {
-        if let (Some(oldest_b), Some(newest_sha)) = (
-            oldest_base.as_deref(),
-            ordered_selection.last().map(|(s, _)| s.as_str()),
-        ) {
-            let range = format!("{oldest_b}..{newest_sha}");
-            let selected_set: std::collections::HashSet<&str> =
-                ordered_selection.iter().map(|(s, _)| s.as_str()).collect();
-            if let Ok(out) = git::run(
-                &options.target_repo_dir,
-                &["rev-list", "--topo-order", "--reverse", &range],
-            ) {
-                if out.status == 0 {
-                    for line in out.stdout_str().lines() {
-                        let sha = line.trim().to_string();
-                        if sha.is_empty() || selected_set.contains(sha.as_str()) {
-                            continue;
-                        }
-                        // Only keep skipped SHAs that touch an apply path with a
-                        // material (non-undone) effect AND ancestry — same
-                        // corrected rule (shared predicate).
-                        let touched: Vec<String> =
-                            match git::name_status_delta(&options.target_repo_dir, &sha) {
-                                Ok((_, entries)) => {
-                                    let mut v = Vec::new();
-                                    for e in &entries {
-                                        for p in expanded_paths(e) {
-                                            if !v.contains(&p) {
-                                                v.push(p);
-                                            }
-                                        }
-                                    }
-                                    v
-                                }
-                                Err(_) => Vec::new(),
-                            };
-                        let skipped_sha = sha.clone();
-                        let mut material = false;
-                        for p in touched {
-                            if !apply_paths.contains(&p) {
-                                continue;
-                            }
-                            let Some(newest_sha) = newest_toucher.get(&p) else {
-                                continue;
-                            };
-                            if !crate::services::engine::blobset::skipped_ships_through(
-                                &options.target_repo_dir,
-                                &skipped_sha,
-                                newest_sha,
-                            ) {
-                                continue;
-                            }
-                            let newest_blob = newest_toucher.get(&p).and_then(|s| {
-                                crate::services::engine::blobset::tree_blob_map(
-                                    &options.target_repo_dir,
-                                    s,
-                                )
-                                .get(&p)
-                                .cloned()
-                            });
-                            let oldest_blob = oldest_tree.get(&p).cloned();
-                            if newest_blob != oldest_blob {
-                                material = true;
-                                break;
-                            }
-                        }
-                        if material {
-                            gap_override_shas.push(skipped_sha);
-                        }
-                    }
-                }
-            }
-            gap_override_shas.sort();
-            gap_override_shas.dedup();
-        }
-    }
 
     // --- globalFiles guard (§6) -------------------------------------------
     // Matched paths are protected app-shell files: if the target copy is NOT
@@ -1151,7 +885,7 @@ fn run_inner(
     // trailers, so the operator sees what was rewritten. This REPLACES any
     // timestamps / `ours != base` logic: dates determine display order only,
     // never correctness — blob membership decides (addendum E3). Every other
-    // guard (unsafe, secret, main-owned, global, dependency, lockfile, gaps)
+    // guard (unsafe, secret, main-owned, global, dependency, lockfile)
     // stays hard: those are not "main vs subsystem" choices.
     {
         for path in &apply_paths {
@@ -1602,14 +1336,10 @@ fn run_inner(
         mode: request.mode.as_str(),
         target: &request.target_branch,
         subject: &subject,
-        gap_shas: &gap_override_shas,
-        gap_override: request.allow_gaps,
     });
     // Overwrite record: which diverged paths the subsystem's copy replaced,
     // appended inside the trailing trailer block so the audit survives a
-    // squash. A single honest key (`Promotion-Replaced`): overwriting is the
-    // only behaviour, not an override, so no `Promotion-Override` flag is
-    // written for it (that flag is reserved for `allowGaps`).
+    // squash. A single honest key (`Promotion-Replaced`).
     if !conflict_takeover.is_empty() {
         message.push_str(&format!(
             "Promotion-Replaced: {}\n",
@@ -2553,30 +2283,6 @@ fn build_pr_body(
         lines.push(format!("Source-Commit: {sha}"));
     }
     lines.push(format!("Promotion-Target: {}", request.target_branch));
-    // Override record mirrored in the body AND the trailers (addendum F).
-    // Nothing may depend on reading it back after a squash-merge — the body
-    // is destroyed by squash and by `local_direct`; the trailers are the
-    // record, and trust in them is what squash destroys.
-    if request.allow_gaps {
-        let gaps: Vec<String> = report
-            .provenance_message
-            .as_deref()
-            .and_then(|msg| {
-                crate::services::engine::provenance::parse_trailers(msg)
-                    .first("Promotion-Gaps")
-                    .map(|s| s.to_string())
-            })
-            .map(|s| vec![s])
-            .unwrap_or_default();
-        if gaps.is_empty() {
-            lines.push("Promotion-Override: true".to_string());
-        } else {
-            for g in gaps {
-                lines.push(format!("Promotion-Gaps: {g}"));
-            }
-            lines.push("Promotion-Override: true".to_string());
-        }
-    }
     lines.push(String::new());
 
     // Reporting §5: replaced / deleted / unchanged / flagged / excluded.
@@ -2655,7 +2361,7 @@ fn build_pr_body(
     }
     let _ = (report, branch_name);
     lines.push(
-        "> This PR only integrates the explicitly selected source commits. Unselected earlier/later commits are never imported automatically."
+        "> This PR integrates the selected source commits' changes. A skipped commit's edits to files no selected commit touches are not written; files copied whole may still carry a skipped commit's edits to those same files."
             .to_string(),
     );
     lines.join("\n")

@@ -90,8 +90,6 @@ export interface PromotionState {
   delivery: PromotionDelivery;
   /** The promotion commit's own message; required before a dispatch. */
   message: string;
-  /** Override the non-contiguous-selection refusal: a skipped commit's changes are included. */
-  allowGaps: boolean;
   /** Paths to leave out of the promotion. */
   excludedPaths: string[];
   dispatching: boolean;
@@ -154,7 +152,6 @@ export interface AppContextValue {
   setPromotionBaseSha: (sha: string) => void;
   setPromotionDelivery: (delivery: PromotionDelivery) => void;
   setPromotionMessage: (message: string) => void;
-  setPromotionAllowGaps: (allowGaps: boolean) => void;
   setPromotionExcludedPaths: (paths: string[]) => void;
   addPromotionExcludedPath: (path: string) => void;
   removePromotionExcludedPath: (path: string) => void;

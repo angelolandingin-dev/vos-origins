@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::git;
 
-pub const TRAILER_KEYS: [&str; 10] = [
+pub const TRAILER_KEYS: [&str; 8] = [
     "Subsystem-ID",
     "Source-Repo",
     "Source-Commit",
@@ -14,8 +14,6 @@ pub const TRAILER_KEYS: [&str; 10] = [
     "Promotion-Target",
     "Reverts-Integration",
     "Restores-Integration",
-    "Promotion-Gaps",
-    "Promotion-Override",
     "Promotion-Replaced",
 ];
 
@@ -42,13 +40,6 @@ pub struct ProvenanceInput<'a> {
     pub mode: &'a str,
     pub target: &'a str,
     pub subject: &'a str,
-    /// Skipped SHAs overridden via `allowGaps` (full SHAs, comma-separated in
-    /// one `Promotion-Gaps` trailer). Empty when no override was used.
-    /// Written to the commit trailers (which `local_direct` keeps and
-    /// squash-merge destroys) AND mirrored in the PR body (addendum F), but
-    /// nothing may depend on reading it back after a merge.
-    pub gap_shas: &'a [String],
-    pub gap_override: bool,
 }
 
 pub fn build_provenance_message(input: &ProvenanceInput<'_>) -> String {
@@ -66,12 +57,6 @@ pub fn build_provenance_message(input: &ProvenanceInput<'_>) -> String {
     }
     trailer_lines.push(format!("Promotion-Mode: {}", input.mode));
     trailer_lines.push(format!("Promotion-Target: {}", input.target));
-    if !input.gap_shas.is_empty() {
-        trailer_lines.push(format!("Promotion-Gaps: {}", input.gap_shas.join(", ")));
-    }
-    if input.gap_override {
-        trailer_lines.push("Promotion-Override: true".to_string());
-    }
     format!("{header}\n\n{}\n", trailer_lines.join("\n"))
 }
 
@@ -204,35 +189,11 @@ mod tests {
             mode: "individual",
             target: "staging",
             subject: "employee export",
-            gap_shas: &[],
-            gap_override: false,
         });
         let parsed = parse_trailers(&msg);
         assert_eq!(parsed.get("Source-Commit"), &[a, b]);
         assert_eq!(parsed.first("Subsystem-ID"), Some("hr-management"));
         assert_eq!(parsed.first("Promotion-Target"), Some("staging"));
-    }
-
-    #[test]
-    fn gap_override_trailers_survive_and_body_mirrors_them() {
-        let a = "a".repeat(40);
-        let skipped = "b".repeat(40);
-        let msg = build_provenance_message(&ProvenanceInput {
-            subsystem_id: "hr-management",
-            source_repo: "ORG/hr-management",
-            source_commits: std::slice::from_ref(&a),
-            mode: "individual",
-            target: "staging",
-            subject: "gap override",
-            gap_shas: std::slice::from_ref(&skipped),
-            gap_override: true,
-        });
-        let parsed = parse_trailers(&msg);
-        assert_eq!(parsed.first("Promotion-Gaps"), Some(skipped.as_str()));
-        assert_eq!(parsed.first("Promotion-Override"), Some("true"));
-        // Nothing may depend on reading gaps back after a squash-merge:
-        // the trailers are the record, trust in them is what squash destroys.
-        // This test only asserts they are written, never that status reads them.
     }
 
     #[test]

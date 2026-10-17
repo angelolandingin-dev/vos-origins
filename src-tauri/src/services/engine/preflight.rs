@@ -27,7 +27,7 @@ use crate::services::registry::IntegrationPolicy;
 ///   copy and the subsystem's copy always wins);
 /// - `merged`: retained for wire compat, never emitted (copy never merges);
 /// - `conflict`: the engine would still refuse the path outright
-///   (`NON_CONTIGUOUS_PATH_OVERLAP`, `GLOBAL_FILE_PROTECTED`, unsafe paths);
+///   (`GLOBAL_FILE_PROTECTED`, unsafe paths);
 /// - `skipped`: dependency manifest/lockfile paths, which the engine merges or
 ///   regenerates rather than writes (plus main-owned/secret paths, which the
 ///   engine never imports, plus `excludedPaths`).
@@ -76,7 +76,7 @@ pub struct PreflightReport {
     pub skipped: usize,
     pub conflicts: Vec<String>,
     /// Contract pin (dialog depends on it): `conflicts` names only paths the
-    /// engine would still refuse (gap overlap, global-file protection, unsafe
+    /// engine would still refuse (global-file protection, unsafe
     /// paths) — a diverged target copy is NOT a conflict: the subsystem's
     /// copy overwrites it, so it reports `clean` and is listed in `replaced`
     /// instead. `replaced` names every diverged path the promotion will
@@ -90,7 +90,7 @@ pub struct PreflightReport {
 
 /// Read-only inputs for [`compute_preflight`] (mirrors `EngineRequest`).
 /// The registry snapshot is pinned once per call (addendum C): `policy`,
-/// `global_files`, `allow_gaps` and `excluded_paths` come from the same
+/// `global_files` and `excluded_paths` come from the same
 /// snapshot the apply would use, so the two cannot disagree because the file
 /// changed mid-run.
 pub struct PreflightRequest<'a> {
@@ -105,8 +105,6 @@ pub struct PreflightRequest<'a> {
     /// Never bypasses unsafe paths, secret/main-owned files, global-file
     /// protection, dependency or lockfile guards.
     pub on_conflict: PromotionOnConflict,
-    /// Wire `allowGaps` (default false).
-    pub allow_gaps: bool,
     /// Wire `excludedPaths` (default empty). Excluded paths report `Skipped`.
     pub excluded_paths: &'a [String],
     /// Snapshot of `globalFiles` (exact paths or directory prefixes).
@@ -151,8 +149,8 @@ impl PreflightError {
 /// sites on this path by construction. Outcomes use the same vocabulary the
 /// apply reports: `Clean` = will write/delete/leave-unchanged/overwrite
 /// without refusal (maps to apply `Written`/`Deleted`/`Unchanged`/replaced);
-/// `Conflict` = the apply would refuse (`NON_CONTIGUOUS_PATH_OVERLAP`,
-/// `GLOBAL_FILE_PROTECTED`, unsafe paths); `Skipped` = dependency/
+/// `Conflict` = the apply would refuse (`GLOBAL_FILE_PROTECTED`, unsafe
+/// paths); `Skipped` = dependency/
 /// main-owned/secret or `excludedPaths`. `Merged` is retained for wire compat
 /// but never emitted.
 pub fn compute_preflight(
@@ -174,7 +172,6 @@ pub fn compute_preflight(
         request.policy,
         &plan,
         &target_tip,
-        request.allow_gaps,
         request.excluded_paths,
         request.global_files,
         request.source_tip,
@@ -247,7 +244,6 @@ fn evaluate_plan(
     policy: &IntegrationPolicy,
     plan: &[PlannedDelta],
     target_tip: &str,
-    allow_gaps: bool,
     excluded_paths: &[String],
     global_files: &[String],
     source_tip: Option<&str>,
@@ -289,55 +285,12 @@ fn evaluate_plan(
         &candidate_paths,
         &history_tips,
     );
-    let oldest_tree: HashMap<String, String> = match ordered.first().and_then(|(_, b)| b.as_deref())
-    {
-        Some(base) => blobset::tree_blob_map(source_dir, base),
-        None => HashMap::new(),
-    };
-    // Newest selected toucher per path (for gap content-awareness).
+    // Newest selected toucher per path (for the reverts-newer warning).
     let mut newest_toucher: HashMap<String, String> = HashMap::new();
     for delta in plan {
         for entry in &delta.entries {
             for p in expanded_paths(entry) {
                 newest_toucher.insert(p, delta.sha.clone());
-            }
-        }
-    }
-    // Skipped SHAs between oldest base and newest tip (same range rule as the
-    // engine). Computed once; per-path touch map below.
-    let mut skipped_touch: HashMap<String, Vec<String>> = HashMap::new();
-    // Whether the request mode even has gaps (cumulative never does).
-    let has_range = plan.len() > 1 && ordered.first().and_then(|(_, b)| b.as_deref()).is_some();
-    if has_range {
-        if let (Some(oldest_b), Some(newest_sha)) = (
-            ordered.first().and_then(|(_, b)| b.as_deref()),
-            ordered.last().map(|(s, _)| s.as_str()),
-        ) {
-            let selected: HashSet<&str> = ordered.iter().map(|(s, _)| s.as_str()).collect();
-            if let Ok(out) = git::run(
-                source_dir,
-                &[
-                    "rev-list",
-                    "--topo-order",
-                    "--reverse",
-                    &format!("{oldest_b}..{newest_sha}"),
-                ],
-            ) {
-                if out.status == 0 {
-                    for line in out.stdout_str().lines() {
-                        let sha = line.trim().to_string();
-                        if sha.is_empty() || selected.contains(sha.as_str()) {
-                            continue;
-                        }
-                        if let Ok((_, entries)) = git::name_status_delta(source_dir, &sha) {
-                            for e in &entries {
-                                for p in expanded_paths(e) {
-                                    skipped_touch.entry(p).or_default().push(sha.clone());
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -375,10 +328,6 @@ fn evaluate_plan(
                     entry,
                     &rel_path,
                     target_tip,
-                    &oldest_tree,
-                    &newest_toucher,
-                    &skipped_touch,
-                    allow_gaps,
                     &excluded,
                     global_files,
                     allowed,
@@ -497,10 +446,6 @@ fn evaluate_path_copy(
     entry: &git::DeltaEntry,
     rel_path: &str,
     target_tip: &str,
-    oldest_tree: &HashMap<String, String>,
-    newest_toucher: &HashMap<String, String>,
-    skipped_touch: &HashMap<String, Vec<String>>,
-    allow_gaps: bool,
     excluded: &HashSet<String>,
     global_files: &[String],
     overwrite_ok: bool,
@@ -566,34 +511,6 @@ fn evaluate_path_copy(
     let theirs_norm_opt = theirs_opt.as_ref().map(|b| normalised(b));
     let base_norm_opt = base_opt.as_ref().map(|b| normalised(b));
     let ours_norm_opt = ours_opt.as_ref().map(|b| normalised(b));
-
-    // Gap refusal (content-aware, same corrected rule as the engine): a
-    // skipped SHA touching this path conflicts only when the newest selected
-    // toucher of this path is a proper DESCENDANT of that skipped SHA
-    // (shared `blobset::skipped_ships_through` — smuggling needs ancestry)
-    // with a material (non-undone) effect, unless allowGaps. Undone effects
-    // (newest == oldest base) skip harmlessly.
-    if !allow_gaps {
-        if let Some(touchers) = skipped_touch.get(rel_path) {
-            if !touchers.is_empty() {
-                let Some(newest_sha) = newest_toucher.get(rel_path) else {
-                    return PreflightOutcome::Conflict;
-                };
-                let smuggles = touchers
-                    .iter()
-                    .any(|s| blobset::skipped_ships_through(source_dir, s, newest_sha));
-                if smuggles {
-                    let newest_blob = newest_toucher
-                        .get(rel_path)
-                        .and_then(|s| blobset::tree_blob_map(source_dir, s).get(rel_path).cloned());
-                    let oldest_blob = oldest_tree.get(rel_path).cloned();
-                    if newest_blob != oldest_blob {
-                        return PreflightOutcome::Conflict;
-                    }
-                }
-            }
-        }
-    }
 
     // globalFiles guard (same shared allowance as the engine). Protected
     // app-shell files stay refused regardless of policy: `take_subsystem`
@@ -794,7 +711,6 @@ mod tests {
             base_sha: None,
             target_branch: "target",
             on_conflict: PromotionOnConflict::Fail,
-            allow_gaps: false,
             excluded_paths: &empty,
             global_files: &empty,
             source_tip: None,
@@ -1008,7 +924,6 @@ mod tests {
             base_sha: None,
             target_branch: "target",
             on_conflict: PromotionOnConflict::Fail,
-            allow_gaps: false,
             excluded_paths: &empty,
             global_files: &empty,
             source_tip: None,
@@ -1094,7 +1009,6 @@ mod tests {
             base_sha: None,
             target_branch: "target",
             on_conflict: PromotionOnConflict::Fail,
-            allow_gaps: false,
             excluded_paths: &empty,
             global_files: &empty,
             source_tip: None,
@@ -1242,7 +1156,7 @@ mod tests {
     /// The subsystem's copy always wins, so a diverged path reports `clean`
     /// and is recorded in `replaced` whether `on_conflict` is `fail` or
     /// `take_subsystem`. `conflicts` stays empty in both cases — only true
-    /// refusals (gaps, global protection, unsafe paths) land there.
+    /// refusals (global protection, unsafe paths) land there.
     #[test]
     fn divergence_is_clean_and_replaced_under_both_policies_never_a_conflict() {
         let repo = diverging_repo();
@@ -1267,7 +1181,6 @@ mod tests {
                 base_sha: None,
                 target_branch: "target",
                 on_conflict,
-                allow_gaps: false,
                 excluded_paths: &empty,
                 global_files: &empty,
                 source_tip: None,
@@ -1319,7 +1232,6 @@ mod tests {
             base_sha: None,
             target_branch: "target",
             on_conflict: PromotionOnConflict::Fail,
-            allow_gaps: false,
             excluded_paths: &empty,
             global_files: &empty,
             source_tip: Some(tip.as_str()),
@@ -1387,7 +1299,6 @@ mod tests {
             base_sha: None,
             target_branch: "target",
             on_conflict: PromotionOnConflict::Fail,
-            allow_gaps: false,
             excluded_paths: &empty,
             global_files: &empty,
             source_tip: Some(tip.as_str()),

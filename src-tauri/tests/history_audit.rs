@@ -514,8 +514,6 @@ fn reverted_event_names_what_it_undid_via_reverts_event_id() {
         mode: "individual",
         target: "staging",
         subject: "Feature work",
-        gap_shas: &[],
-        gap_override: false,
     });
     let i = commit_all(&main, &integrate_msg);
     // Revert through the existing builder: the `Reverts-Integration` trailer
