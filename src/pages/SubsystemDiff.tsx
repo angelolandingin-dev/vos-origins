@@ -15,7 +15,7 @@ import { RevertsNewerLine } from '../components/RevertsNewer';
 import { revertsNewerText } from '../components/revertsNewerText';
 import { CommitStatusBadge } from '../components/StatusBadge';
 import { cx } from '../components/ui/cx';
-import { formatDateTime } from '../components/ui/format';
+import { formatDate, formatDateTime } from '../components/ui/format';
 import {
   Button,
   Checkbox,
@@ -360,7 +360,7 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                         {entry.change}
                       </span>
                       <span
-                        className="flex w-[190px] min-w-0 shrink-0 items-center gap-1.5"
+                        className="flex w-[160px] min-w-0 shrink-0 items-center gap-1.5"
                         title={
                           latest
                             ? `${latest.subject} — ${latest.authorName} · ${formatDateTime(latest.committedAt)}`
@@ -372,12 +372,12 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                             <span className="mono shrink-0 text-[11px] text-accent-ink">
                               {latest.shortSha}
                             </span>
-                            <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
-                              {latest.subject}
+                            <span className="mono shrink-0 text-[11px] text-muted tabular-nums">
+                              {formatDate(latest.committedAt)}
                             </span>
                           </>
                         ) : (
-                          <span className="truncate text-[11px] text-muted">no history</span>
+                          <span className="text-[11px] text-muted">—</span>
                         )}
                       </span>
                     </li>
