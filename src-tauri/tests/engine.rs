@@ -10,23 +10,21 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use subsystem_integration_manager_lib::github::models::PromotionDelivery;
-use subsystem_integration_manager_lib::github::models::PromotionMode;
-use subsystem_integration_manager_lib::github::models::PromotionOnConflict;
-use subsystem_integration_manager_lib::services::engine::apply::{
-    apply_file_delta, ApplyConflict, ApplyOptions,
-};
-use subsystem_integration_manager_lib::services::engine::git::DeltaEntry;
-use subsystem_integration_manager_lib::services::engine::github_ops::{
+use vos_origins_lib::github::models::PromotionDelivery;
+use vos_origins_lib::github::models::PromotionMode;
+use vos_origins_lib::github::models::PromotionOnConflict;
+use vos_origins_lib::services::engine::apply::{apply_file_delta, ApplyConflict, ApplyOptions};
+use vos_origins_lib::services::engine::git::DeltaEntry;
+use vos_origins_lib::services::engine::github_ops::{
     CreatePrRequest, GitHubMode, GitHubOps, PullRequestInfo, PushOutcome, StubGitHubOps,
 };
-use subsystem_integration_manager_lib::services::engine::lockfile::{
+use vos_origins_lib::services::engine::lockfile::{
     LockfileGenerator, RealLockfileGenerator, StubLockfileGenerator,
 };
-use subsystem_integration_manager_lib::services::engine::{
+use vos_origins_lib::services::engine::{
     run_promotion, EngineDeps, EngineOptions, EngineRequest, PromotionReport,
 };
-use subsystem_integration_manager_lib::services::registry::Registry;
+use vos_origins_lib::services::registry::Registry;
 
 // ===========================================================================
 // Sandbox
@@ -587,7 +585,7 @@ fn promote(
 
     let source_url = {
         let source = source.to_path_buf();
-        move |_entry: &subsystem_integration_manager_lib::services::registry::SubsystemEntry| {
+        move |_entry: &vos_origins_lib::services::registry::SubsystemEntry| {
             Some(source.to_string_lossy().replace('\\', "/"))
         }
     };
@@ -817,8 +815,7 @@ fn case4_multi_select_applies_in_order_and_records_all_shas() {
     assert!(try_branch_has(&main.dir, &branch, "src/modules/hr/c.txt"));
 
     let message = git_out(&main.dir, &["log", "-1", "--format=%B", &branch]);
-    let parsed =
-        subsystem_integration_manager_lib::services::engine::provenance::parse_trailers(&message);
+    let parsed = vos_origins_lib::services::engine::provenance::parse_trailers(&message);
     assert_eq!(parsed.get("Source-Commit"), &[src.b.clone(), src.c.clone()]);
     assert_eq!(parsed.first("Promotion-Mode"), Some("individual"));
     assert_eq!(parsed.first("Promotion-Target"), Some("staging"));
@@ -1379,7 +1376,7 @@ fn case12_diverged_target_refuses_and_scratch_files_are_never_committed() {
 
 #[test]
 fn case13_phantom_source_commit_in_body_is_ignored() {
-    use subsystem_integration_manager_lib::services::engine::history;
+    use vos_origins_lib::services::engine::history;
 
     let src_dir = make_temp_dir("src");
     let main_dir = make_temp_dir("main");
@@ -1481,10 +1478,8 @@ fn case14_shared_config_blocks_by_default_and_applies_under_approval() {
 
 #[test]
 fn case15_duplicate_and_open_pr_are_blocked() {
-    use subsystem_integration_manager_lib::services::engine::github_ops::PullRequestInfo;
-    use subsystem_integration_manager_lib::services::engine::{
-        integration_branch_prefix, run_promotion,
-    };
+    use vos_origins_lib::services::engine::github_ops::PullRequestInfo;
+    use vos_origins_lib::services::engine::{integration_branch_prefix, run_promotion};
 
     let src_dir = make_temp_dir("src");
     let main_dir = make_temp_dir("main");
@@ -1579,10 +1574,9 @@ fn case15_duplicate_and_open_pr_are_blocked() {
         create_pr: true,
     };
     let source_dir = src_dir.clone();
-    let source_url =
-        move |_e: &subsystem_integration_manager_lib::services::registry::SubsystemEntry| {
-            Some(source_dir.to_string_lossy().replace('\\', "/"))
-        };
+    let source_url = move |_e: &vos_origins_lib::services::registry::SubsystemEntry| {
+        Some(source_dir.to_string_lossy().replace('\\', "/"))
+    };
     let stub_lock = StubLockfileGenerator;
     let deps = EngineDeps {
         github: &open_pr_github,
@@ -1632,8 +1626,8 @@ fn case16_unsupported_lockfile_manager_fails_closed() {
 
 #[test]
 fn case17_revert_then_repromotion_is_allowed() {
-    use subsystem_integration_manager_lib::services::engine::history;
-    use subsystem_integration_manager_lib::services::engine::provenance::build_revert_message;
+    use vos_origins_lib::services::engine::history;
+    use vos_origins_lib::services::engine::provenance::build_revert_message;
 
     let src_dir = make_temp_dir("src");
     let main_dir = make_temp_dir("main");
@@ -1729,8 +1723,7 @@ fn case18_cumulative_mode_applies_the_verified_range() {
     assert!(try_branch_has(&main.dir, &branch, "src/modules/hr/c.txt"));
 
     let message = git_out(&main.dir, &["log", "-1", "--format=%B", &branch]);
-    let parsed =
-        subsystem_integration_manager_lib::services::engine::provenance::parse_trailers(&message);
+    let parsed = vos_origins_lib::services::engine::provenance::parse_trailers(&message);
     assert_eq!(parsed.get("Source-Commit"), std::slice::from_ref(&src.c));
     assert_eq!(parsed.first("Promotion-Mode"), Some("cumulative"));
 }
@@ -1916,10 +1909,7 @@ impl GitHubOps for FailingPrOps {
     fn list_branches(
         &self,
         _repo_slug: &str,
-    ) -> Result<
-        Vec<subsystem_integration_manager_lib::services::engine::github_ops::BranchInfo>,
-        String,
-    > {
+    ) -> Result<Vec<vos_origins_lib::services::engine::github_ops::BranchInfo>, String> {
         Ok(Vec::new())
     }
     fn repo_default_branch(&self, _repo_slug: &str) -> Result<Option<String>, String> {
@@ -1959,10 +1949,9 @@ fn oracle_finding9_pr_lookup_failure_is_distinct_from_already_open() {
         create_pr: true,
     };
     let source_dir = src_dir.clone();
-    let source_url =
-        move |_e: &subsystem_integration_manager_lib::services::registry::SubsystemEntry| {
-            Some(source_dir.to_string_lossy().replace('\\', "/"))
-        };
+    let source_url = move |_e: &vos_origins_lib::services::registry::SubsystemEntry| {
+        Some(source_dir.to_string_lossy().replace('\\', "/"))
+    };
     let github = FailingPrOps;
     let lockfile = StubLockfileGenerator;
     let deps = EngineDeps {
@@ -1981,7 +1970,7 @@ fn oracle_finding9_pr_lookup_failure_is_distinct_from_already_open() {
 
 #[test]
 fn oracle_p0_open_pr_on_different_head_still_blocks_duplicate_sha() {
-    use subsystem_integration_manager_lib::services::engine::history;
+    use vos_origins_lib::services::engine::history;
 
     let src_dir = make_temp_dir("src-prhead");
     let main_dir = make_temp_dir("main");
@@ -2134,7 +2123,7 @@ fn oracle_p1_copy_applies_new_path_only() {
 
 #[test]
 fn local_mode_creates_branch_in_clone_without_push_or_pr_and_leaves_worktree_clean() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
 
     let src_dir = make_temp_dir("src-local");
     let main_dir = make_temp_dir("main-local");
@@ -2216,7 +2205,7 @@ fn local_mode_creates_branch_in_clone_without_push_or_pr_and_leaves_worktree_cle
 
 #[test]
 fn push_pr_mode_still_pushes_and_creates_pr() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
 
     let src_dir = make_temp_dir("src-pushpr");
     let main_dir = make_temp_dir("main-pushpr");
@@ -2262,7 +2251,7 @@ fn push_pr_mode_still_pushes_and_creates_pr() {
 
 #[test]
 fn delivery_omitted_on_the_wire_defaults_to_local_direct() {
-    use subsystem_integration_manager_lib::github::models::{PromotionDelivery, PromotionRequest};
+    use vos_origins_lib::github::models::{PromotionDelivery, PromotionRequest};
 
     let without: PromotionRequest = serde_json::from_str(
         r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true}"#,
@@ -2291,7 +2280,7 @@ fn delivery_omitted_on_the_wire_defaults_to_local_direct() {
 
 #[test]
 fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
 
     // Not a git repository.
     let src_dir = make_temp_dir("src-local-err");
@@ -2369,10 +2358,9 @@ fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
             create_pr: false,
         };
         let source_dir = src_dir.clone();
-        let source_url =
-            move |_e: &subsystem_integration_manager_lib::services::registry::SubsystemEntry| {
-                Some(source_dir.to_string_lossy().replace('\\', "/"))
-            };
+        let source_url = move |_e: &vos_origins_lib::services::registry::SubsystemEntry| {
+            Some(source_dir.to_string_lossy().replace('\\', "/"))
+        };
         let lockfile = StubLockfileGenerator;
         let deps = EngineDeps {
             github: &github,
@@ -2403,7 +2391,7 @@ fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
 
 #[test]
 fn local_direct_checked_out_target_advances_branch_and_worktree() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
 
     let src_dir = make_temp_dir("src-direct-clean");
     let main_dir = make_temp_dir("main-direct-clean");
@@ -2491,7 +2479,7 @@ fn local_direct_checked_out_target_advances_branch_and_worktree() {
 
 #[test]
 fn local_direct_other_branch_checked_out_moves_ref_only() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
 
     let src_dir = make_temp_dir("src-direct-detached");
     let main_dir = make_temp_dir("main-direct-detached");
@@ -2565,7 +2553,7 @@ fn local_direct_other_branch_checked_out_moves_ref_only() {
 
 #[test]
 fn local_direct_dirty_worktree_fails_closed() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
 
     let src_dir = make_temp_dir("src-direct-dirty");
     let main_dir = make_temp_dir("main-direct-dirty");
@@ -2621,10 +2609,8 @@ fn local_direct_dirty_worktree_fails_closed() {
 
 #[test]
 fn local_direct_target_tip_moved_fails_closed() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
-    use subsystem_integration_manager_lib::services::engine::lockfile::{
-        LockfileGenerator, LockfileOutcome,
-    };
+    use vos_origins_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::services::engine::lockfile::{LockfileGenerator, LockfileOutcome};
 
     /// Simulates a concurrent advance of the target branch between compute
     /// and apply: a fresh empty commit parented on the tip, made with
@@ -2711,10 +2697,9 @@ fn local_direct_target_tip_moved_fails_closed() {
         create_pr: false,
     };
     let source_dir = src_dir.clone();
-    let source_url =
-        move |_e: &subsystem_integration_manager_lib::services::registry::SubsystemEntry| {
-            Some(source_dir.to_string_lossy().replace('\\', "/"))
-        };
+    let source_url = move |_e: &vos_origins_lib::services::registry::SubsystemEntry| {
+        Some(source_dir.to_string_lossy().replace('\\', "/"))
+    };
     let lockfile = MoveTipLockfile {
         repo: main.dir.clone(),
         branch: "staging".to_string(),
@@ -2756,7 +2741,7 @@ fn local_direct_target_tip_moved_fails_closed() {
 
 #[test]
 fn local_direct_next_commands_carry_cd_and_push() {
-    use subsystem_integration_manager_lib::commands::promotion::build_direct_next_commands;
+    use vos_origins_lib::commands::promotion::build_direct_next_commands;
 
     let dir = if cfg!(windows) {
         PathBuf::from(r"C:\repos\main-system")
@@ -2776,9 +2761,7 @@ fn local_direct_next_commands_carry_cd_and_push() {
     assert_eq!(commands[1], "git push origin staging", "{commands:?}");
 
     // Result shape: local_direct carries commands and no PR.
-    use subsystem_integration_manager_lib::github::models::{
-        PromotionDelivery, PromotionDispatchResult,
-    };
+    use vos_origins_lib::github::models::{PromotionDelivery, PromotionDispatchResult};
     let direct_json = serde_json::json!({
         "accepted": true, "prUrl": null, "prNumber": null,
         "branch": "staging", "commitSha": "a".repeat(40),
@@ -2826,7 +2809,7 @@ fn registry_round_trip_with_local_main_repository_path_set_and_unset() {
 
 #[test]
 fn local_next_commands_carry_cd_push_and_pr_create() {
-    use subsystem_integration_manager_lib::commands::promotion::build_next_commands;
+    use vos_origins_lib::commands::promotion::build_next_commands;
 
     let dir = if cfg!(windows) {
         PathBuf::from(r"C:\repos\main-system")
@@ -2862,9 +2845,7 @@ fn local_next_commands_carry_cd_push_and_pr_create() {
     );
 
     // Result shape: local carries commands and no PR; push_pr carries none.
-    use subsystem_integration_manager_lib::github::models::{
-        PromotionDelivery, PromotionDispatchResult,
-    };
+    use vos_origins_lib::github::models::{PromotionDelivery, PromotionDispatchResult};
     let local_json = serde_json::json!({
         "accepted": true, "prUrl": null, "prNumber": null,
         "branch": "integration/hr-abc-staging-n1", "commitSha": "a".repeat(40),
@@ -3133,7 +3114,7 @@ fn plain_modify_diverged_target_refuses() {
 
 #[test]
 fn conflict_source_unchanged_binary_keeps_target() {
-    use subsystem_integration_manager_lib::services::engine::apply::ApplyOutcome;
+    use vos_origins_lib::services::engine::apply::ApplyOutcome;
 
     // Recorded defect: a binary the source did not touch (theirs == base)
     // faked a merge conflict when the target had modified it, because the
@@ -3237,9 +3218,7 @@ fn conflict_take_does_not_bypass_guards() {
 
 #[test]
 fn conflict_on_conflict_wire_defaults_to_fail() {
-    use subsystem_integration_manager_lib::github::models::{
-        PromotionOnConflict, PromotionRequest,
-    };
+    use vos_origins_lib::github::models::{PromotionOnConflict, PromotionRequest};
 
     let without: PromotionRequest = serde_json::from_str(
         r#"{"subsystemId":"hr-management","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true}"#,
@@ -3274,7 +3253,7 @@ fn crlf(bytes: &[u8]) -> Vec<u8> {
 
 #[test]
 fn crlf_worktree_already_matching_source_is_unchanged() {
-    use subsystem_integration_manager_lib::services::engine::apply::ApplyOutcome;
+    use vos_origins_lib::services::engine::apply::ApplyOutcome;
 
     let src_dir = make_temp_dir("src-crlf-unchanged");
     init_repo(&src_dir, "master");
@@ -3333,7 +3312,7 @@ fn crlf_worktree_already_matching_source_is_unchanged() {
 
 #[test]
 fn crlf_worktree_matching_base_writes_clean() {
-    use subsystem_integration_manager_lib::services::engine::apply::ApplyOutcome;
+    use vos_origins_lib::services::engine::apply::ApplyOutcome;
 
     let src_dir = make_temp_dir("src-crlf-written");
     init_repo(&src_dir, "master");
@@ -3384,7 +3363,7 @@ fn crlf_worktree_matching_base_writes_clean() {
 
 #[test]
 fn crlf_worktree_genuine_divergence_copies_source_bytes() {
-    use subsystem_integration_manager_lib::services::engine::apply::ApplyOutcome;
+    use vos_origins_lib::services::engine::apply::ApplyOutcome;
 
     let src_dir = make_temp_dir("src-crlf-conflict");
     init_repo(&src_dir, "master");
@@ -3440,7 +3419,7 @@ fn crlf_worktree_genuine_divergence_copies_source_bytes() {
 
 #[test]
 fn binary_with_crlf_bytes_written_byte_exact() {
-    use subsystem_integration_manager_lib::services::engine::apply::ApplyOutcome;
+    use vos_origins_lib::services::engine::apply::ApplyOutcome;
 
     let src_dir = make_temp_dir("src-crlf-binary");
     init_repo(&src_dir, "master");
@@ -3505,7 +3484,7 @@ fn staged_names(dir: &Path) -> Vec<String> {
 
 #[test]
 fn worktree_promotion_stages_without_commit_or_branch() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
 
     let src_dir = make_temp_dir("src-worktree");
     let main_dir = make_temp_dir("main-worktree");
@@ -3609,7 +3588,7 @@ fn worktree_promotion_stages_without_commit_or_branch() {
 
 #[test]
 fn worktree_dirty_tree_is_refused_with_tree_untouched() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
 
     let src_dir = make_temp_dir("src-worktree-dirty");
     let main_dir = make_temp_dir("main-worktree-dirty");
@@ -3667,7 +3646,7 @@ fn worktree_dirty_tree_is_refused_with_tree_untouched() {
 
 #[test]
 fn worktree_target_not_checked_out_is_refused() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
 
     let src_dir = make_temp_dir("src-worktree-branch");
     let main_dir = make_temp_dir("main-worktree-branch");
@@ -3724,8 +3703,8 @@ fn worktree_target_not_checked_out_is_refused() {
 
 #[test]
 fn worktree_leaves_no_integrated_status_behind() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
-    use subsystem_integration_manager_lib::services::engine::history;
+    use vos_origins_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::services::engine::history;
 
     let src_dir = make_temp_dir("src-worktree-status");
     let main_dir = make_temp_dir("main-worktree-status");
@@ -3771,7 +3750,7 @@ fn worktree_leaves_no_integrated_status_behind() {
 
 #[test]
 fn local_direct_still_commits_onto_the_target() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
 
     let src_dir = make_temp_dir("src-still-direct");
     let main_dir = make_temp_dir("main-still-direct");
@@ -3805,8 +3784,8 @@ fn local_direct_still_commits_onto_the_target() {
 
 #[test]
 fn worktree_wire_value_parses_and_next_commands_carry_diff_and_commit() {
-    use subsystem_integration_manager_lib::commands::promotion::build_worktree_next_commands;
-    use subsystem_integration_manager_lib::github::models::{
+    use vos_origins_lib::commands::promotion::build_worktree_next_commands;
+    use vos_origins_lib::github::models::{
         PromotionDelivery, PromotionDispatchResult, PromotionRequest,
     };
 
@@ -4337,7 +4316,7 @@ fn housekeeping_cleans_vos_sources_and_refuses_repromote() {
 /// Housekeeping: linked worktree checkout refuses update-ref.
 #[test]
 fn linked_worktree_checkout_refuses_update_ref() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
     let src_dir = make_temp_dir("link-src");
     let main_dir = make_temp_dir("link-main");
     let src = create_source_chain(&src_dir);
@@ -4383,7 +4362,7 @@ fn linked_worktree_checkout_refuses_update_ref() {
 /// CRLF passes the staged check; extra staged file names extra/missing.
 #[test]
 fn worktree_ignored_is_named_skip_crlf_passes_extra_names_paths() {
-    use subsystem_integration_manager_lib::github::models::PromotionDelivery;
+    use vos_origins_lib::github::models::PromotionDelivery;
     let src_dir = make_temp_dir("wt-ignore-src");
     init_repo(&src_dir, "master");
     commit_files(&src_dir, "A base", &[("keep.txt", b"base\n")], &[]);

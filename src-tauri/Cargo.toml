@@ -1,5 +1,5 @@
 [package]
-name = "subsystem-integration-manager"
+name = "vos-origins"
 version = "0.1.0"
 description = "Promotes approved subsystem commits into a main-system branch."
 authors = ["VOS Integration"]
@@ -8,7 +8,7 @@ rust-version = "1.77.2"
 license = "UNLICENSED"
 
 [lib]
-name = "subsystem_integration_manager_lib"
+name = "vos_origins_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

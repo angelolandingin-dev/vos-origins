@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    subsystem_integration_manager_lib::run();
+    vos_origins_lib::run();
 }

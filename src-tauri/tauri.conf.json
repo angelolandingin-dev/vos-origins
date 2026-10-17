@@ -3,6 +3,7 @@
   "productName": "VOS Origins",
   "version": "0.1.0",
   "identifier": "com.vos.origins",
+  "mainBinaryName": "vos-origins",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
