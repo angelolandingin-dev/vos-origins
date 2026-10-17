@@ -196,6 +196,10 @@ function CommitWorkspacePanel({
   );
 
   const listing = useMemo(() => commitPage.data?.commits ?? [], [commitPage.data]);
+  const { rememberSelectedCommits } = app;
+  useEffect(() => {
+    rememberSelectedCommits(listing);
+  }, [listing, rememberSelectedCommits]);
   const focusedSha = useMemo(() => {
     if (app.focusedSha && listing.some((commit) => commit.sha === app.focusedSha))
       return app.focusedSha;
@@ -240,8 +244,7 @@ function CommitWorkspacePanel({
   };
 
   const promoteSelection = () => {
-    const selected = listing.filter((commit) => app.selectedShas.includes(commit.sha));
-    app.openPromotionDialog(app.selectedShas, selected);
+    app.openPromotionDialog(app.selectedShas, app.selectedCommits);
   };
 
   if (!subsystem) {

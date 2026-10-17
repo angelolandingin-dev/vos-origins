@@ -32,6 +32,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [targetBranchSetting, setTargetBranch] = useState(DEFAULT_TARGET_BRANCH);
   const [selectedShas, setSelectedShasState] = useState<string[]>([]);
   const [focusedSha, setFocusedSha] = useState<string | null>(null);
+  /** Summaries for selected SHAs, accumulated across pages/filters so a selection once seen is never forgotten. */
+  const [selectedSummaries, setSelectedSummaries] = useState<Map<string, CommitSummary>>(
+    () => new Map(),
+  );
   const [notice, setNotice] = useState<Notice | null>(null);
   const [promotion, setPromotion] = useState<PromotionInternal>({
     open: false,
@@ -129,14 +133,75 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const selectSubsystem = useCallback((id: string) => {
     setSelectedSubsystemId(id);
     setSelectedShasState([]);
+    setSelectedSummaries(new Map());
     setFocusedSha(null);
   }, []);
 
-  const toggleSha = useCallback((sha: string) => {
-    setSelectedShasState((current) =>
-      current.includes(sha) ? current.filter((value) => value !== sha) : [...current, sha],
-    );
+  const toggleSha = useCallback(
+    (sha: string) => {
+      const removing = selectedShas.includes(sha);
+      setSelectedShasState((current) =>
+        current.includes(sha) ? current.filter((value) => value !== sha) : [...current, sha],
+      );
+      if (removing) {
+        setSelectedSummaries((prev) => {
+          if (!prev.has(sha)) return prev;
+          const next = new Map(prev);
+          next.delete(sha);
+          return next;
+        });
+      }
+    },
+    [selectedShas],
+  );
+
+  const setSelectedShas = useCallback((shas: string[]) => {
+    setSelectedShasState(shas);
+    setSelectedSummaries((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Map(prev);
+      for (const sha of Array.from(next.keys())) {
+        if (!shas.includes(sha)) {
+          next.delete(sha);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
   }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedShasState([]);
+    setSelectedSummaries(new Map());
+  }, []);
+
+  const selectedCommits = useMemo(() => {
+    const commits: CommitSummary[] = [];
+    for (const sha of selectedShas) {
+      const summary = selectedSummaries.get(sha);
+      if (summary) commits.push(summary);
+    }
+    return commits;
+  }, [selectedShas, selectedSummaries]);
+
+  const rememberSelectedCommits = useCallback(
+    (listing: CommitSummary[]) => {
+      if (listing.length === 0) return;
+      setSelectedSummaries((prev) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const commit of listing) {
+          if (selectedShas.includes(commit.sha) && next.get(commit.sha) !== commit) {
+            next.set(commit.sha, commit);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    },
+    [selectedShas],
+  );
 
   const openExternal = useCallback(
     (url: string) => {
@@ -315,8 +380,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setTargetBranch,
       selectedShas,
       toggleSha,
-      setSelectedShas: setSelectedShasState,
-      clearSelection: () => setSelectedShasState([]),
+      setSelectedShas,
+      clearSelection,
+      selectedCommits,
+      rememberSelectedCommits,
       focusedSha,
       setFocusedSha,
       notice,
@@ -358,6 +425,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       targetBranch,
       selectedShas,
       toggleSha,
+      setSelectedShas,
+      clearSelection,
+      selectedCommits,
+      rememberSelectedCommits,
       focusedSha,
       notice,
       pushNotice,

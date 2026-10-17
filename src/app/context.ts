@@ -130,6 +130,10 @@ export interface AppContextValue {
   toggleSha: (sha: string) => void;
   setSelectedShas: (shas: string[]) => void;
   clearSelection: () => void;
+  /** Accumulated summaries for selected SHAs, in `selectedShas` order. Survives paging and filtering. */
+  selectedCommits: CommitSummary[];
+  /** Merge the listing's summaries for currently-selected SHAs into the accumulated map. */
+  rememberSelectedCommits: (listing: CommitSummary[]) => void;
 
   focusedSha: string | null;
   setFocusedSha: (sha: string | null) => void;

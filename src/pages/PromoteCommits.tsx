@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { GitPullRequestArrow, Package, TriangleAlert } from 'lucide-react';
 
 import { api } from '../api/invoke';
@@ -146,8 +146,12 @@ function PromoteCommitsPanel({
     ],
   );
 
-  const listing = commitPage.data?.commits ?? [];
-  const selectedCommits = listing.filter((commit) => app.selectedShas.includes(commit.sha));
+  const listing = useMemo(() => commitPage.data?.commits ?? [], [commitPage.data]);
+  const { rememberSelectedCommits } = app;
+  useEffect(() => {
+    rememberSelectedCommits(listing);
+  }, [listing, rememberSelectedCommits]);
+  const selectedCommits = app.selectedCommits;
 
   const dependencies = useAsyncData(async () => {
     if (app.selectedShas.length === 0) return [] as DependencyChange[];
@@ -266,14 +270,19 @@ function PromoteCommitsPanel({
               ) : (
                 <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
                   {app.selectedShas.map((sha) => {
-                    const commit = listing.find((candidate) => candidate.sha === sha);
+                    // The selection carries its own summaries, so a selected commit
+                    // keeps its subject and status whatever page or filter is shown.
+                    const commit =
+                      selectedCommits.find((candidate) => candidate.sha === sha) ??
+                      app.promotion.commits.find((candidate) => candidate.sha === sha) ??
+                      listing.find((candidate) => candidate.sha === sha);
                     return (
                       <li key={sha} className="flex h-[29px] items-center gap-2 px-2.5">
                         <span className="mono shrink-0 text-[11px] text-accent-ink" title={sha}>
                           {sha.slice(0, 7)}
                         </span>
                         <span className="min-w-0 flex-1 truncate text-[11px] text-fg">
-                          {commit?.subject ?? 'Not on this page'}
+                          {commit?.subject ?? ''}
                         </span>
                         {commit ? <CommitStatusBadge status={commit.status} /> : null}
                       </li>
