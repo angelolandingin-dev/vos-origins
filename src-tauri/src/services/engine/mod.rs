@@ -874,7 +874,6 @@ fn run_inner(
     report.integration_branch = Some(branch_name.clone());
 
     let mut mode_ops: Vec<apply::ModeOp> = Vec::new();
-    let mut lockfile_touched: Vec<String> = Vec::new();
     let mut pkg_pairs: Vec<(String, Option<String>)> = Vec::new();
 
     for planned in &classified_plan {
@@ -943,17 +942,9 @@ fn run_inner(
                 PathStatus::DependencyMerge => {
                     pkg_pairs.push((planned.sha.clone(), planned.base_sha.clone()))
                 }
-                PathStatus::Regenerate => {
-                    let name = entry
-                        .path
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(&entry.path)
-                        .to_string();
-                    if !lockfile_touched.contains(&name) {
-                        lockfile_touched.push(name);
-                    }
-                }
+                // Lockfiles never reach the commit: the deployment regenerates
+                // the target lockfile, so the engine skips them here.
+                PathStatus::Regenerate | PathStatus::LockfileDeferred => {}
                 PathStatus::MainOwned => report.changes.main_owned_skipped.push(entry.path.clone()),
                 PathStatus::SecretExcluded => {
                     report.changes.secret_excluded.push(entry.path.clone())
@@ -1117,58 +1108,13 @@ fn run_inner(
         }
     }
 
-    let should_regenerate = deps_changed || !lockfile_touched.is_empty();
-    if should_regenerate {
-        let outcome = deps.lockfile.generate(&worktree_dir);
-        if !outcome.ok && !outcome.skipped {
-            report.blockers.push(Blocker::new(
-                "LOCKFILE_REGENERATION_FAILED",
-                format!(
-                    "Lockfile regeneration failed ({}): {}",
-                    outcome
-                        .manager
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    outcome.output.clone().unwrap_or_default()
-                ),
-            ));
-            report.lockfile = Some(outcome);
-            return Err(Bail);
-        }
-        if outcome.skipped {
-            report.blockers.push(Blocker::new(
-                "LOCKFILE_MANAGER_UNSUPPORTED",
-                format!(
-                    "The selected delta changes dependencies but the target lockfile could not be regenerated ({}): {}.",
-                    outcome.manager.clone().unwrap_or_else(|| "unknown manager".to_string()),
-                    outcome.reason.clone().unwrap_or_else(|| "unsupported or absent target lockfile".to_string())
-                ),
-            ));
-            report.lockfile = Some(outcome);
-            return Err(Bail);
-        }
-        report.changes.regenerated.push(
-            outcome
-                .manager
-                .clone()
-                .unwrap_or_else(|| "none".to_string()),
-        );
-        report.lockfile = Some(outcome);
-    }
-
-    let regenerated_really = report
-        .lockfile
-        .as_ref()
-        .map(|l| should_regenerate && !l.skipped && !l.stubbed)
-        .unwrap_or(false);
     let any_change = !(report.changes.applied.is_empty()
         && report.changes.updated.is_empty()
         && report.changes.merged.is_empty()
         && report.changes.deleted.is_empty()
         && report.changes.conflict_taken.is_empty()
         && report.changes.replaced.is_empty())
-        || deps_changed
-        || regenerated_really;
+        || deps_changed;
     if !any_change {
         report.blockers.push(Blocker::new(
             "NOOP_PROMOTION",
@@ -1620,18 +1566,13 @@ fn resolve_local_ref(repo_dir: &Path, branch: &str) -> Option<String> {
         .and_then(|reference| git::rev_parse(repo_dir, &reference))
 }
 
-/// Manifest/lockfile paths the engine may rewrite outside the copied delta
-/// (dependency-delta merge, lockfile regeneration). Compared byte-for-byte
-/// between the built worktree and the pinned target tip so a `worktree`
-/// promotion stages a regenerated lockfile or rewritten manifest exactly
-/// when it changed — a half-applied manifest would be worse than no
-/// promotion at all.
-const WORKTREE_DRIFT_PATHS: [&str; 4] = [
-    "package.json",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-];
+/// Manifest path the engine may rewrite outside the copied delta
+/// (dependency-delta merge). Compared byte-for-byte between the built
+/// worktree and the pinned target tip so a `worktree` promotion stages a
+/// rewritten manifest exactly when it changed — a half-applied manifest
+/// would be worse than no promotion at all. Lockfiles are deliberately
+/// absent: the deployment regenerates them, so they never stage.
+const WORKTREE_DRIFT_PATHS: [&str; 1] = ["package.json"];
 
 /// Copy the built delta from the temporary worktree into the user's own
 /// checkout of the target branch and stage exactly the written/deleted paths

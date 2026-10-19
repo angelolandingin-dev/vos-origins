@@ -22,7 +22,7 @@ export type CommitStatusKind =
 
 export type FileChangeKind = 'added' | 'modified' | 'deleted' | 'renamed';
 
-/** Per-path integration semantics (spec §6.4): apply in place; manifests merge; lockfiles regenerate; main-owned/secret files never import. */
+/** Per-path integration semantics (spec §6.4): apply in place; manifests merge; lockfiles defer to the deployment; main-owned/secret files never import. */
 export type FileIntegrationPolicy =
   'apply' | 'regenerate_in_target' | 'review_required' | 'never_import' | 'main_owned';
 

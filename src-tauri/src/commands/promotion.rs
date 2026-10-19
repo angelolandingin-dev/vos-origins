@@ -838,7 +838,7 @@ fn append_shared_findings(report: &PromotionReport, findings: &mut Vec<Validatio
         findings.push(ValidationFinding::info(
             "dependencies",
             format!(
-                "Dependency delta applied: {} added, {} updated. The target lockfile was regenerated.",
+                "Dependency delta applied: {} added, {} updated. The deployment regenerates the target lockfile.",
                 report.dependencies.added.len(),
                 report.dependencies.updated.len()
             ),
@@ -916,10 +916,6 @@ fn map_blocker(report: &PromotionReport) -> AppError {
         "MISSING_DEPENDENCY_PREREQUISITE" => (
             ErrorCode::DependencyConflict,
             "Include the commit that introduced the dependency in the selection, then re-promote.",
-        ),
-        "LOCKFILE_REGENERATION_FAILED" | "LOCKFILE_MANAGER_UNSUPPORTED" => (
-            ErrorCode::DependencyConflict,
-            "Regenerate the lockfile with the project's package manager (npm/pnpm/yarn) and re-promote; bun lockfiles are unsupported.",
         ),
         "NOOP_PROMOTION" => (
             ErrorCode::InvalidRequest,

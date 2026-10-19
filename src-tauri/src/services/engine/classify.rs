@@ -2,12 +2,15 @@
 //! so unsafe/main-owned paths fail in pre-flight, never half-applied.
 
 use crate::services::registry::{IntegrationPolicy, PackageJsonPolicy};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PathStatus {
     Apply,
     DependencyMerge,
     Regenerate,
+    LockfileDeferred,
     MainOwned,
     SecretExcluded,
     ExplicitReview,
@@ -18,11 +21,12 @@ impl PathStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             PathStatus::Apply => "apply",
-            PathStatus::DependencyMerge => "dependency-merge",
+            PathStatus::DependencyMerge => "dependencyMerge",
             PathStatus::Regenerate => "regenerate",
-            PathStatus::MainOwned => "main-owned",
-            PathStatus::SecretExcluded => "secret-excluded",
-            PathStatus::ExplicitReview => "explicit-review",
+            PathStatus::LockfileDeferred => "lockfileDeferred",
+            PathStatus::MainOwned => "mainOwned",
+            PathStatus::SecretExcluded => "secretExcluded",
+            PathStatus::ExplicitReview => "explicitReview",
             PathStatus::Rejected => "rejected",
         }
     }
@@ -107,8 +111,9 @@ pub fn classify_path(
     if is_lockfile(&lower) {
         return Classification {
             path: file_path,
-            status: PathStatus::Regenerate,
-            reason: "lockfile is regenerated for the target, never copied".to_string(),
+            status: PathStatus::LockfileDeferred,
+            reason: "lockfile is deferred to the deployment, which regenerates it; never copied"
+                .to_string(),
         };
     }
     if file_path == "package.json" {
@@ -336,8 +341,8 @@ mod tests {
         assert_eq!(status("src/modules/hr/index.ts"), PathStatus::Apply);
         assert_eq!(status("public/logo.png"), PathStatus::Apply);
         assert_eq!(status("package.json"), PathStatus::DependencyMerge);
-        assert_eq!(status("package-lock.json"), PathStatus::Regenerate);
-        assert_eq!(status("pnpm-lock.yaml"), PathStatus::Regenerate);
+        assert_eq!(status("package-lock.json"), PathStatus::LockfileDeferred);
+        assert_eq!(status("pnpm-lock.yaml"), PathStatus::LockfileDeferred);
         assert_eq!(status(".github/workflows/ci.yml"), PathStatus::MainOwned);
         assert_eq!(status(".github/CODEOWNERS"), PathStatus::MainOwned);
         assert_eq!(status(".env.local"), PathStatus::SecretExcluded);
@@ -372,5 +377,17 @@ mod tests {
             inspect_path_safety("src\\modules\\hr\\a.ts").unwrap(),
             "src/modules/hr/a.ts"
         );
+    }
+
+    #[test]
+    fn lockfile_deferred_serializes_camel_case() {
+        assert_eq!(PathStatus::LockfileDeferred.as_str(), "lockfileDeferred");
+        assert_eq!(
+            serde_json::to_value(PathStatus::LockfileDeferred).unwrap(),
+            serde_json::json!("lockfileDeferred")
+        );
+        let round: PathStatus =
+            serde_json::from_value(serde_json::json!("lockfileDeferred")).unwrap();
+        assert_eq!(round, PathStatus::LockfileDeferred);
     }
 }

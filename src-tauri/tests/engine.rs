@@ -1108,13 +1108,14 @@ fn case7_add_modify_delete_rename_binary_exec_and_exclusions() {
 }
 
 #[test]
-fn case8_new_dependency_merges_delta_and_regenerates_lockfile() {
+fn case8_new_dependency_merges_delta_and_leaves_lock_untouched() {
     let src_dir = make_temp_dir("src");
     let main_dir = make_temp_dir("main");
     let src = create_source_chain(&src_dir);
     let main = create_main_repo(&main_dir, &[], &[]);
     let github = StubGitHubOps::new();
     let registry = test_registry();
+    let lock_before = branch_file_text(&main.dir, "master", "package-lock.json");
 
     let report = promote(
         &src_dir,
@@ -1129,8 +1130,113 @@ fn case8_new_dependency_merges_delta_and_regenerates_lockfile() {
     assert!(report.ok, "{:?}", report.blockers);
     assert_eq!(report.dependencies.added.len(), 1);
     assert_eq!(report.dependencies.added[0].name, "exceljs");
-    assert_eq!(report.changes.regenerated, vec!["npm".to_string()]);
-    assert!(report.lockfile.as_ref().map(|l| l.stubbed).unwrap_or(false));
+    assert!(report.changes.regenerated.is_empty());
+    assert!(report.lockfile.is_none());
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "package-lock.json"),
+        lock_before
+    );
+}
+
+#[test]
+fn lockfile_touched_selection_promotes_without_lockfile_in_commit() {
+    let src_dir = make_temp_dir("src-lockonly");
+    let main_dir = make_temp_dir("main-lockonly");
+    init_repo(&src_dir, "master");
+    commit_files(
+        &src_dir,
+        "A: base",
+        &[
+            (
+                "package.json",
+                format!(
+                    "{}\n",
+                    serde_json::json!({"name":"hr-management","dependencies":{"next":"^16.2.1"}})
+                )
+                .as_bytes(),
+            ),
+            ("src/modules/hr/c.txt", b"base\n"),
+            ("package-lock.json", b"{\"lock\":\"base\"}\n"),
+        ],
+        &[],
+    );
+    let touched = commit_files(
+        &src_dir,
+        "B: code plus lockfile bump, no manifest delta",
+        &[
+            ("src/modules/hr/c.txt", b"feature\n"),
+            ("package-lock.json", b"{\"lock\":\"bumped\"}\n"),
+        ],
+        &[],
+    );
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let lock_before = branch_file_text(&main.dir, "master", "package-lock.json");
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![touched],
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    assert!(report.changes.regenerated.is_empty());
+    assert!(report.lockfile.is_none());
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "src/modules/hr/c.txt"),
+        "feature\n"
+    );
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "package-lock.json"),
+        lock_before
+    );
+}
+
+#[test]
+fn dependency_delta_leaves_lock_untouched_in_worktree_stage() {
+    use vos_origins_lib::github::models::PromotionDelivery;
+    let src_dir = make_temp_dir("src-worklock");
+    let main_dir = make_temp_dir("main-worklock");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let lock_before = branch_file_text(&main.dir, "master", "package-lock.json");
+    git_out(&main.dir, &["checkout", "-q", "staging"]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::Worktree,
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    assert!(report.changes.regenerated.is_empty());
+    assert!(report.lockfile.is_none());
+    assert!(
+        !report
+            .staged_paths
+            .iter()
+            .any(|p| p == "package-lock.json" || p == "pnpm-lock.yaml" || p == "yarn.lock"),
+        "lockfile must never stage: {:?}",
+        report.staged_paths
+    );
+    assert_eq!(
+        std::fs::read_to_string(main.dir.join("package-lock.json")).unwrap(),
+        lock_before
+    );
 }
 
 #[test]
@@ -1607,7 +1713,7 @@ fn case15_duplicate_and_open_pr_are_blocked() {
 }
 
 #[test]
-fn case16_unsupported_lockfile_manager_fails_closed() {
+fn case16_unsupported_lockfile_manager_is_deferred_not_failed() {
     let src_dir = make_temp_dir("src");
     let main_dir = make_temp_dir("main");
     let src = create_source_chain(&src_dir);
@@ -1631,11 +1737,13 @@ fn case16_unsupported_lockfile_manager_fails_closed() {
             ..Default::default()
         },
     );
-    assert!(!report.ok);
-    assert!(
-        codes(&report).contains(&"LOCKFILE_MANAGER_UNSUPPORTED".to_string()),
-        "{:?}",
-        codes(&report)
+    assert!(report.ok, "{:?}", report.blockers);
+    assert!(report.changes.regenerated.is_empty());
+    assert!(report.lockfile.is_none());
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file(&main_dir, &branch, "bun.lockb"),
+        b"bun-binary-lockfile\n"
     );
 }
 
@@ -2604,51 +2712,89 @@ fn local_direct_dirty_worktree_fails_closed() {
 #[test]
 fn local_direct_target_tip_moved_fails_closed() {
     use vos_origins_lib::github::models::PromotionDelivery;
-    use vos_origins_lib::services::engine::lockfile::{LockfileGenerator, LockfileOutcome};
+    use vos_origins_lib::services::engine::github_ops::{
+        BranchInfo, CreatePrRequest, GitHubMode, GitHubOps, PullRequestInfo, PushOutcome,
+    };
+    use vos_origins_lib::services::engine::lockfile::StubLockfileGenerator;
 
-    /// Simulates a concurrent advance of the target branch between compute
-    /// and apply: a fresh empty commit parented on the tip, made with
-    /// plumbing only (no checkout is touched).
-    struct MoveTipLockfile {
+    /// Simulates a concurrent advance of the target branch between commit
+    /// and ref move: a fresh empty commit parented on the tip, made with
+    /// plumbing only (no checkout is touched). Hooks the post-commit
+    /// duplicate re-check (`list_open_pull_requests`), which still runs for
+    /// `local_direct` — the lockfile hook is gone (the deployment
+    /// regenerates the lockfile, so the engine never calls it).
+    struct MoveTipGithub {
         repo: PathBuf,
         branch: String,
     }
 
-    impl LockfileGenerator for MoveTipLockfile {
-        fn generate(&self, _worktree_dir: &Path) -> LockfileOutcome {
-            let tip = git_out(&self.repo, &["rev-parse", &self.branch]);
-            let tree = git_out(&self.repo, &["rev-parse", &format!("{tip}^{{tree}}")]);
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&self.repo)
-                .args(["commit-tree", &tree, "-p", &tip, "-m", "concurrent advance"])
-                .output()
-                .expect("spawn git commit-tree");
-            assert!(
-                output.status.success(),
-                "commit-tree failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let moved = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            git_out(
-                &self.repo,
-                &[
-                    "update-ref",
-                    &format!("refs/heads/{}", self.branch),
-                    &moved,
-                    &tip,
-                ],
-            );
-            LockfileOutcome {
-                manager: Some("npm".to_string()),
-                command: None,
-                ok: true,
-                skipped: false,
-                supported: true,
-                stubbed: true,
-                reason: None,
-                output: None,
-            }
+    fn move_tip(repo: &Path, branch: &str) {
+        let tip = git_out(repo, &["rev-parse", branch]);
+        let tree = git_out(repo, &["rev-parse", &format!("{tip}^{{tree}}")]);
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["commit-tree", &tree, "-p", &tip, "-m", "concurrent advance"])
+            .output()
+            .expect("spawn git commit-tree");
+        assert!(
+            output.status.success(),
+            "commit-tree failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let moved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        git_out(
+            repo,
+            &["update-ref", &format!("refs/heads/{branch}"), &moved, &tip],
+        );
+    }
+
+    impl GitHubOps for MoveTipGithub {
+        fn mode(&self) -> GitHubMode {
+            GitHubMode::Stub
+        }
+        fn push_target(&self) -> Option<String> {
+            None
+        }
+        fn push_branch(
+            &self,
+            _repo_dir: &Path,
+            _branch: &str,
+            _remote_url: Option<&str>,
+        ) -> Result<PushOutcome, String> {
+            Ok(PushOutcome {
+                pushed: false,
+                remote: None,
+                source: "no-push-target".to_string(),
+            })
+        }
+        fn list_open_pull_requests(
+            &self,
+            _repo_slug: &str,
+            _base: &str,
+        ) -> Result<Vec<PullRequestInfo>, String> {
+            move_tip(&self.repo, &self.branch);
+            Ok(Vec::new())
+        }
+        fn create_pull_request(
+            &self,
+            _repo_slug: &str,
+            _request: &CreatePrRequest,
+        ) -> Result<PullRequestInfo, String> {
+            Err("should not be called".to_string())
+        }
+        fn resolve_target_tip(
+            &self,
+            _repo_slug: &str,
+            _branch: &str,
+        ) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn list_branches(&self, _repo_slug: &str) -> Result<Vec<BranchInfo>, String> {
+            Ok(Vec::new())
+        }
+        fn repo_default_branch(&self, _repo_slug: &str) -> Result<Option<String>, String> {
+            Ok(None)
         }
     }
 
@@ -2656,7 +2802,6 @@ fn local_direct_target_tip_moved_fails_closed() {
     let main_dir = make_temp_dir("main-direct-moved");
     let src = create_source_chain(&src_dir);
     let main = create_main_repo(&main_dir, &[], &[]);
-    let github = StubGitHubOps::new();
     let registry = test_registry();
     let staging_before = sha(&main.dir, "staging");
 
@@ -2693,10 +2838,11 @@ fn local_direct_target_tip_moved_fails_closed() {
     let source_url = move |_e: &vos_origins_lib::services::registry::SubsystemEntry| {
         Some(source_dir.to_string_lossy().replace('\\', "/"))
     };
-    let lockfile = MoveTipLockfile {
+    let github = MoveTipGithub {
         repo: main.dir.clone(),
         branch: "staging".to_string(),
     };
+    let lockfile = StubLockfileGenerator;
     let deps = EngineDeps {
         github: &github,
         lockfile: &lockfile,
@@ -4611,8 +4757,9 @@ fn subsystem_overwrites_diverged_path_reports_replaced_and_trailer() {
     );
 }
 
-/// `take_subsystem` does NOT bypass the hard guards: global-file protection,
-/// lockfile failure, and secret/main-owned skips all stand.
+/// `take_subsystem` does NOT bypass the hard guards: global-file protection
+/// and secret/main-owned skips all stand. Lockfiles are deferred to the
+/// deployment, so they never block even under `take_subsystem`.
 #[test]
 fn take_subsystem_does_not_bypass_global_secret_or_lockfile_guards() {
     let src_dir = make_temp_dir("src-takeglobal");
@@ -4663,11 +4810,16 @@ fn take_subsystem_does_not_bypass_global_secret_or_lockfile_guards() {
             ..Default::default()
         },
     );
-    assert!(!locked.ok);
-    assert!(
-        codes(&locked).contains(&"LOCKFILE_MANAGER_UNSUPPORTED".to_string()),
-        "{:?}",
-        codes(&locked)
+    assert!(locked.ok, "{:?}", locked.blockers);
+    assert!(locked.changes.regenerated.is_empty());
+    assert!(locked.lockfile.is_none());
+    assert_eq!(
+        branch_file(
+            &main2_dir,
+            locked.integration_branch.as_deref().unwrap(),
+            "bun.lockb"
+        ),
+        b"bun-binary-lockfile\n"
     );
 
     // (c) Secret + main-owned files: still skipped, never imported.

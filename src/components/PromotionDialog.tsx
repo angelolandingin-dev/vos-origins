@@ -450,8 +450,8 @@ function PromotionDialogContent({
           <section className="space-y-2 rounded-md border border-line bg-surface p-3">
             <p className="text-[11px] leading-relaxed text-muted">
               Promotion is a copy: the subsystem&apos;s version of every selected file always wins.
-              Unsafe paths, secrets, main-owned files, and dependency or lockfile failures still
-              block the promotion.
+              Unsafe paths, secrets, main-owned files, and dependency failures still block the
+              promotion.
             </p>
             <CommitFileList
               preflight={preflight}

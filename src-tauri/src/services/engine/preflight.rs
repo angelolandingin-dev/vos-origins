@@ -29,8 +29,9 @@ use crate::services::registry::IntegrationPolicy;
 /// - `conflict`: the engine would still refuse the path outright
 ///   (`GLOBAL_FILE_PROTECTED`, unsafe paths);
 /// - `skipped`: dependency manifest/lockfile paths, which the engine merges or
-///   regenerates rather than writes (plus main-owned/secret paths, which the
-///   engine never imports, plus `excludedPaths`).
+///   defers (the deployment regenerates the lockfile) rather than writes
+///   (plus main-owned/secret paths, which the engine never imports, plus
+///   `excludedPaths`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreflightOutcome {
     Clean,
@@ -442,6 +443,7 @@ fn evaluate_path_copy(
         }
         PathStatus::DependencyMerge
         | PathStatus::Regenerate
+        | PathStatus::LockfileDeferred
         | PathStatus::MainOwned
         | PathStatus::SecretExcluded => return PreflightOutcome::Skipped,
         PathStatus::ExplicitReview | PathStatus::Rejected => {

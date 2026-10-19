@@ -10,6 +10,18 @@ export interface CommitFileListProps {
   onRemoveExcludedPath: (path: string) => void;
 }
 
+function isLockfile(path: string): boolean {
+  const lower = path.split('/').pop()?.toLowerCase() ?? '';
+  return (
+    lower === 'package-lock.json' ||
+    lower === 'npm-shrinkwrap.json' ||
+    lower === 'yarn.lock' ||
+    lower === 'pnpm-lock.yaml' ||
+    lower === 'bun.lockb' ||
+    lower === 'bun.lock'
+  );
+}
+
 function changeKind(
   path: string,
   outcome: string,
@@ -19,7 +31,7 @@ function changeKind(
 ): string {
   if (deleted.has(path)) return 'deleted';
   if (unchanged.has(path)) return 'unchanged';
-  if (outcome === 'skipped') return 'not copied';
+  if (outcome === 'skipped') return isLockfile(path) ? 'deployment regenerates' : 'not copied';
   if (outcome === 'conflict') return 'conflict';
   if (replaced.has(path)) return 'overwritten';
   if (outcome === 'merged') return 'merged';
@@ -89,7 +101,9 @@ export function CommitFileList({
                     }
                     label={
                       skipped
-                        ? `${file.path} is not copied by the promotion - the engine handles this path in the target`
+                        ? isLockfile(file.path)
+                          ? `${file.path} is not copied by the promotion - the deployment regenerates it`
+                          : `${file.path} is not copied by the promotion - the engine handles this path in the target`
                         : included
                           ? `Exclude ${file.path} from this promotion`
                           : `Include ${file.path} in this promotion`

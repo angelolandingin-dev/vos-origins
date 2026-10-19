@@ -76,7 +76,7 @@ const APPEARANCE: Record<CommitStatusKind, Appearance> = {
     className: 'bg-status-divergent',
     icon: TriangleAlert,
     meaning:
-      "The main system's copies of every source file this commit changes were themselves changed more recently; promoting would revert newer work. Dependency manifest and lockfile paths are exempt — they are merged or regenerated.",
+      "The main system's copies of every source file this commit changes were themselves changed more recently; promoting would revert newer work. Dependency manifest and lockfile paths are exempt — they are merged or deferred to the deployment.",
   },
   superseded: {
     label: 'Superseded',

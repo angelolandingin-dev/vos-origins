@@ -1699,8 +1699,8 @@ fn latest_toucher_index(commits: &[SourceCommit]) -> HashMap<String, usize> {
 }
 
 /// Paths the engine never writes wholesale: the manifest is merged as a
-/// dependency delta and lockfiles are regenerated, so recency must not treat
-/// them as "the target is newer". The engine does not support `bun` lockfiles.
+/// dependency delta and lockfiles are deferred to the deployment (which
+/// regenerates them), so recency must not treat them as "the target is newer".
 fn is_dependency_path(path: &str) -> bool {
     matches!(
         path.rsplit('/').next().unwrap_or(path),
@@ -1889,8 +1889,9 @@ pub fn commit_page_live(
                 .map(|(path, _, _)| path)
                 .filter(|path| source_tree.get(*path) != target_blobs.get(*path))
                 .collect();
-            // Manifest and lockfile paths are delta-merged or regenerated, never
-            // written wholesale (spec §6.4/§7), so a newer copy on the target does
+            // Manifest and lockfile paths are delta-merged or deferred to the
+            // deployment (which regenerates the lockfile), never written
+            // wholesale (spec §6.4/§7), so a newer copy on the target does
             // not invalidate this commit — reconciliation decides those.
             let recency_paths: Vec<&String> = out_of_sync
                 .iter()
@@ -2069,7 +2070,9 @@ fn file_policy_for(
     let policy = match classification.status {
         classify::PathStatus::Apply => FileIntegrationPolicy::Apply,
         classify::PathStatus::DependencyMerge => FileIntegrationPolicy::ReviewRequired,
-        classify::PathStatus::Regenerate => FileIntegrationPolicy::RegenerateInTarget,
+        classify::PathStatus::Regenerate | classify::PathStatus::LockfileDeferred => {
+            FileIntegrationPolicy::RegenerateInTarget
+        }
         classify::PathStatus::MainOwned => FileIntegrationPolicy::MainOwned,
         classify::PathStatus::SecretExcluded | classify::PathStatus::Rejected => {
             FileIntegrationPolicy::NeverImport

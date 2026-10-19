@@ -276,7 +276,7 @@ const HR_SEEDS: &[CommitSeed] = &[
                 additions: 1,
                 deletions: 0,
                 policy: FileIntegrationPolicy::ReviewRequired,
-                note: Some("Manifest delta is merged into the target manifest; the target lockfile is regenerated, never copied."),
+                note: Some("Manifest delta is merged into the target manifest; the deployment regenerates the target lockfile, never copied."),
             },
         ],
         deps: &[DepSeed {
@@ -1082,7 +1082,7 @@ pub fn hand_written_diffs() -> Vec<CommitDiff> {
         binary: false,
         truncated: false,
         source_url: format!("https://github.com/{NAMESPACE}/hr-management/commit/{sha}#diff-package.json"),
-        note: Some("Manifest delta only: the main-system manifest is updated with the added dependency and the target lockfile is regenerated. The subsystem lockfile is never copied.".into()),
+        note: Some("Manifest delta only: the main-system manifest is updated with the added dependency and the deployment regenerates the target lockfile. The subsystem lockfile is never copied.".into()),
     };
 
     let fix_bug = CommitDiff {

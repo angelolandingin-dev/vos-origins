@@ -339,7 +339,7 @@ function PromoteCommitsPanel({
                 <InlineAlert tone="warning" title="This selection changes package.json">
                   <span className="flex items-center gap-1.5">
                     <Package className="h-3.5 w-3.5" aria-hidden="true" />
-                    The target lockfile is regenerated.
+                    The deployment regenerates the target lockfile.
                   </span>
                 </InlineAlert>
               ) : null}
