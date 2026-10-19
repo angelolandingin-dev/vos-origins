@@ -654,14 +654,10 @@ pub fn reconcile_dependencies(
 }
 
 pub fn extract_import_specifiers(content: &str) -> Vec<String> {
-    // Strip `//` comments line-wise first so commented-out `from`/`require`
-    // tokens never produce false-positive specifiers. The strip is
-    // quote-aware, so `//` inside a string literal (e.g. a URL) survives.
-    let stripped: String = content
-        .split('\n')
-        .map(strip_line_comment)
-        .collect::<Vec<_>>()
-        .join("\n");
+    // Strip comments first so commented-out `from`/`require` tokens and
+    // prose inside JSDoc never produce false-positive specifiers. The strip
+    // is quote-aware, so markers inside a string literal (e.g. a URL) survive.
+    let stripped = strip_comments(content);
     let chars: Vec<char> = stripped.chars().collect();
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -724,35 +720,61 @@ pub fn extract_import_specifiers(content: &str) -> Vec<String> {
     out
 }
 
-fn strip_line_comment(line: &str) -> String {
-    let chars: Vec<char> = line.chars().collect();
-    let mut quote: Option<char> = None;
+/// Removes `//` and `/* */` comments in one pass. A `/*` inside a `//`
+/// comment never opens a block (the line comment eats its line first), and
+/// markers inside string literals are copied through. Newlines inside
+/// blocks are kept so line shape is unchanged.
+fn strip_comments(content: &str) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let mut out = String::with_capacity(content.len());
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        if let Some(q) = quote {
-            if c == '\\' {
-                i += 2;
-                continue;
-            }
-            if c == q {
-                quote = None;
-            }
+        if c == '\'' || c == '"' || c == '`' {
+            out.push(c);
             i += 1;
-        } else if c == '\'' || c == '"' || c == '`' {
-            quote = Some(c);
-            i += 1;
+            while i < chars.len() {
+                let d = chars[i];
+                out.push(d);
+                i += 1;
+                if d == '\\' {
+                    if i < chars.len() {
+                        out.push(chars[i]);
+                        i += 1;
+                    }
+                } else if d == c {
+                    break;
+                }
+            }
         } else if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
-            return chars[..i].iter().collect();
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            i += 2;
+            while i < chars.len()
+                && !(chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '/')
+            {
+                if chars[i] == '\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+            i += 2;
         } else {
+            out.push(c);
             i += 1;
         }
     }
-    line.to_string()
+    out
 }
 
 pub fn to_package_name(specifier: &str) -> Option<String> {
     if specifier.is_empty() {
+        return None;
+    }
+    // Prose is not a package: npm names never contain whitespace.
+    if specifier.chars().any(char::is_whitespace) {
         return None;
     }
     if specifier.starts_with('.')
@@ -823,6 +845,7 @@ pub fn check_import_prerequisites(
 
     let mut missing: HashMap<String, Vec<ImportRef>> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
+    let mut seen_refs: HashSet<(String, String)> = HashSet::new();
     for file in files {
         let ext = file
             .path
@@ -845,6 +868,9 @@ pub fn check_import_prerequisites(
             }
             if !missing.contains_key(&name) {
                 order.push(name.clone());
+            }
+            if !seen_refs.insert((file.path.clone(), spec.clone())) {
+                continue;
             }
             missing.entry(name.clone()).or_default().push(ImportRef {
                 path: file.path.clone(),
@@ -1023,5 +1049,84 @@ mod tests {
             extract_import_specifiers("import u from 'https://cdn.example/x';\n"),
             vec!["https://cdn.example/x".to_string()]
         );
+    }
+
+    #[test]
+    fn import_scan_ignores_block_comments_and_prose() {
+        // JSDoc prose that once blocked promotions.
+        assert_eq!(
+            extract_import_specifiers(
+                "/**\n * Reads one eagerly loaded boundary file from `public/geojson`.\n */\n"
+            ),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            extract_import_specifiers(
+                "/**\n * Decode JWT payload (NO VERIFY) and extract numeric userId from `sub`.\n */\n"
+            ),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            extract_import_specifiers("/* import ghost from 'ghost-pkg'; */\n"),
+            Vec::<String>::new()
+        );
+        // A `//` inside a block comment stays inside it.
+        assert_eq!(
+            extract_import_specifiers(
+                "/*\n// import ghost from 'ghost-pkg';\n*/\nimport real from 'real-pkg';\n"
+            ),
+            vec!["real-pkg".to_string()]
+        );
+        // A `/*` inside a line comment never opens a block.
+        assert_eq!(
+            extract_import_specifiers("// /* still a line comment\nimport real from 'real-pkg';\n"),
+            vec!["real-pkg".to_string()]
+        );
+        // Markers inside string literals survive untouched.
+        assert_eq!(
+            extract_import_specifiers("import u from 'pkg/*not-a-comment*/sub';\n"),
+            vec!["pkg/*not-a-comment*/sub".to_string()]
+        );
+    }
+
+    #[test]
+    fn package_name_rejects_prose_but_keeps_valid_shapes() {
+        assert_eq!(to_package_name("my filter excluded everything"), None);
+        assert_eq!(to_package_name("final_approved extra"), None);
+        assert_eq!(to_package_name("name").as_deref(), Some("name"));
+        assert_eq!(
+            to_package_name("@scope/name").as_deref(),
+            Some("@scope/name")
+        );
+        assert_eq!(to_package_name("name/sub").as_deref(), Some("name"));
+        assert_eq!(to_package_name("name.js").as_deref(), Some("name.js"));
+        assert_eq!(
+            to_package_name("name-with-dashes").as_deref(),
+            Some("name-with-dashes")
+        );
+    }
+
+    #[test]
+    fn import_refs_dedupe_same_path_and_specifier() {
+        let files = vec![
+            CodeFile {
+                path: "src/a.ts".to_string(),
+                content: "import x from 'missing-pkg';\n".to_string(),
+            },
+            CodeFile {
+                path: "src/a.ts".to_string(),
+                content: "import x from 'missing-pkg';\n".to_string(),
+            },
+            CodeFile {
+                path: "src/b.ts".to_string(),
+                content: "import x from 'missing-pkg';\n".to_string(),
+            },
+        ];
+        let missing = check_import_prerequisites(&files, &json!({ "dependencies": {} }), &[]);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].name, "missing-pkg");
+        let mut paths: Vec<&str> = missing[0].refs.iter().map(|r| r.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(paths, vec!["src/a.ts", "src/b.ts"]);
     }
 }
