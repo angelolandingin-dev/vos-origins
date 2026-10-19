@@ -6,6 +6,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::github::gh_cli;
 use crate::github::models::CacheStats;
+use crate::services::checkouts::RefreshOutcome;
 use crate::AppState;
 
 #[tauri::command]
@@ -65,6 +66,9 @@ fn no_token_for_refresh() -> AppError {
     )
 }
 
+/// Suffix marking skipped entries that were fetched and found current.
+const UP_TO_DATE_SUFFIX: &str = " (already up to date)";
+
 /// Token-less managed checkouts are skipped, not an error.
 fn refresh_one(key: &str, repository: &str, token: Option<&str>, out: &mut CheckoutRefresh) {
     let Some(token) = token else {
@@ -73,8 +77,15 @@ fn refresh_one(key: &str, repository: &str, token: Option<&str>, out: &mut Check
     };
     let url = crate::services::engine::github_ops::authenticated_remote_url(repository, token);
     match crate::services::checkouts::refresh_cached_checkout(key, &url, Some(token)) {
-        Ok(true) => out.refreshed.push(repository.to_string()),
-        Ok(false) => out.skipped.push(repository.to_string()),
+        Ok(RefreshOutcome::Advanced(entries)) => {
+            out.refreshed
+                .push(format!("{} @ {}", repository, entries.join(", ")))
+        }
+        Ok(RefreshOutcome::UpToDate) => {
+            out.skipped.push(format!("{repository}{UP_TO_DATE_SUFFIX}"))
+        }
+        Ok(RefreshOutcome::HeldBack(reason)) => out.failed.push(format!("{repository}: {reason}")),
+        Ok(RefreshOutcome::Missing) => out.skipped.push(repository.to_string()),
         Err(err) => out.failed.push(format!("{repository}: {}", err.message)),
     }
 }
@@ -139,7 +150,17 @@ pub async fn refresh_checkouts(
     );
     if let Some(local) = local_clone {
         match crate::services::checkouts::refresh_local_clone(&local, token.as_deref()) {
-            Ok(()) => out.refreshed.push(local.display().to_string()),
+            Ok(RefreshOutcome::Advanced(entries)) => {
+                out.refreshed
+                    .push(format!("{} @ {}", local.display(), entries.join(", ")))
+            }
+            Ok(RefreshOutcome::UpToDate) => out
+                .skipped
+                .push(format!("{}{UP_TO_DATE_SUFFIX}", local.display())),
+            Ok(RefreshOutcome::HeldBack(reason)) => {
+                out.failed.push(format!("{}: {reason}", local.display()))
+            }
+            Ok(RefreshOutcome::Missing) => out.skipped.push(local.display().to_string()),
             Err(err) => out
                 .failed
                 .push(format!("{}: {}", local.display(), err.message)),
@@ -159,10 +180,16 @@ pub async fn refresh_checkouts(
     }
 
     state.cache.clear();
+    let up_to_date = out
+        .skipped
+        .iter()
+        .filter(|s| s.ends_with(UP_TO_DATE_SUFFIX))
+        .count();
     out.message = format!(
-        "Refreshed {} checkout(s); {} not cached yet; {} failed.",
+        "Advanced {} checkout(s) to new tips; {} already up to date; {} skipped (not cached or no token); {} failed.",
         out.refreshed.len(),
-        out.skipped.len(),
+        up_to_date,
+        out.skipped.len() - up_to_date,
         out.failed.len()
     );
     Ok(out)

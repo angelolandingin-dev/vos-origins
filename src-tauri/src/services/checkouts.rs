@@ -242,7 +242,69 @@ pub fn fetch_local_clone_if_stale(dir: &Path, token: Option<&str>) -> bool {
     true
 }
 
-pub fn refresh_local_clone(dir: &Path, token: Option<&str>) -> AppResult<()> {
+/// What a post-fetch fast-forward accomplished, so "Pull latest" can tell
+/// *advanced to a new tip*, *already up to date*, and *fetched but could
+/// not advance* apart instead of reporting all three as refreshed.
+pub enum RefreshOutcome {
+    Advanced(Vec<String>),
+    UpToDate,
+    HeldBack(String),
+    /// Nothing cached under the key, so there was nothing to fetch.
+    Missing,
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
+/// Why a branch that differs from its upstream without being strictly
+/// behind it must be left alone. Callers already know the tips differ.
+fn hold_reason(dir: &Path, branch: &str, local: &str, remote: &str) -> String {
+    if git::is_ancestor(dir, remote, local) {
+        format!("branch '{branch}' has local commits not on its upstream; leaving it alone")
+    } else {
+        format!("branch '{branch}' has diverged from its upstream; leaving it alone (never force-moves a rewind)")
+    }
+}
+
+/// Fast-forward every local branch strictly behind its remote-tracking
+/// upstream. App-owned scratch clones only: no user state lives here, so
+/// every stale branch moves. Branches ahead of or diverged from their
+/// upstream are left alone, never force-moved.
+fn fast_forward_behind_branches(dir: &Path) -> RefreshOutcome {
+    let mut advanced = Vec::new();
+    let mut held: Vec<String> = Vec::new();
+    for branch in git::list_branches(dir) {
+        let Some(upstream) = git::remote_tracking_ref(dir, &branch) else {
+            continue;
+        };
+        let (Some(local), Some(remote)) = (
+            git::rev_parse(dir, &format!("refs/heads/{branch}")),
+            git::rev_parse(dir, &upstream),
+        ) else {
+            continue;
+        };
+        if local == remote {
+            continue;
+        }
+        if !git::is_ancestor(dir, &local, &remote) {
+            held.push(hold_reason(dir, &branch, &local, &remote));
+            continue;
+        }
+        if git::update_ref(dir, &format!("refs/heads/{branch}"), &remote, &local).is_ok() {
+            advanced.push(format!("{}@{}", branch, short_sha(&remote)));
+        }
+    }
+    if !advanced.is_empty() {
+        RefreshOutcome::Advanced(advanced)
+    } else if !held.is_empty() {
+        RefreshOutcome::HeldBack(held.join("; "))
+    } else {
+        RefreshOutcome::UpToDate
+    }
+}
+
+pub fn refresh_local_clone(dir: &Path, token: Option<&str>) -> AppResult<RefreshOutcome> {
     git::fetch_local_clone(dir, token).map_err(|err| {
         AppError::new(
             ErrorCode::RepositoryInaccessible,
@@ -253,23 +315,71 @@ pub fn refresh_local_clone(dir: &Path, token: Option<&str>) -> AppResult<()> {
         )
         .with_remedy("Check the network connection and that the clone's remote is reachable.")
         .with_details(git::sanitize(&err.to_string()))
-    })
+    })?;
+    let Some(branch) = git::current_branch(dir) else {
+        return Ok(RefreshOutcome::HeldBack(
+            "not on any branch (detached HEAD); leaving it alone".to_string(),
+        ));
+    };
+    let Some(upstream) = git::remote_tracking_ref(dir, &branch) else {
+        return Ok(RefreshOutcome::HeldBack(format!(
+            "branch '{branch}' has no upstream tracking branch; nothing to advance from"
+        )));
+    };
+    let (Some(local), Some(remote)) = (
+        git::rev_parse(dir, &format!("refs/heads/{branch}")),
+        git::rev_parse(dir, &upstream),
+    ) else {
+        return Ok(RefreshOutcome::HeldBack(format!(
+            "could not resolve branch '{branch}' or its upstream"
+        )));
+    };
+    if local == remote {
+        return Ok(RefreshOutcome::UpToDate);
+    }
+    if !git::is_ancestor(dir, &local, &remote) {
+        return Ok(RefreshOutcome::HeldBack(hold_reason(
+            dir, &branch, &local, &remote,
+        )));
+    }
+    if let Err(err) = git::merge_ff_only(dir, &remote) {
+        return Ok(RefreshOutcome::HeldBack(format!(
+            "could not fast-forward '{branch}': {}",
+            git::sanitize(&err.to_string())
+        )));
+    }
+    Ok(RefreshOutcome::Advanced(vec![format!(
+        "{}@{}",
+        branch,
+        short_sha(&remote)
+    )]))
 }
 
 /// Force a fetch of an **already-cloned** checkout, ignoring the freshness window.
-/// Returns `Ok(false)` when nothing is cached for `key` (callers must not clone
+/// Afterwards fast-forwards every local branch strictly behind its upstream
+/// (app-owned scratch: no user state to protect). Returns what moved so the
+/// caller can report *advanced* apart from *already up to date*.
+/// `Missing` when nothing is cached for `key` (callers must not clone
 /// implicitly — new repos are cloned on demand when they are actually opened).
-pub fn refresh_cached_checkout(key: &str, remote: &str, token: Option<&str>) -> AppResult<bool> {
+pub fn refresh_cached_checkout(
+    key: &str,
+    remote: &str,
+    token: Option<&str>,
+) -> AppResult<RefreshOutcome> {
     let dir = checkouts_root().join(key);
     if !dir.join(".git").is_dir() {
-        return Ok(false);
+        return Ok(RefreshOutcome::Missing);
     }
     let slot = lock_for(key);
     let _guard = slot.lock().unwrap_or_else(|err| err.into_inner());
     if !is_usable_checkout(&dir) {
         let _ = std::fs::remove_dir_all(&dir);
         clone_fresh(&dir, remote)?;
-        return Ok(true);
+        let tip = git::rev_parse(&dir, "HEAD").map(|sha| short_sha(&sha));
+        return Ok(RefreshOutcome::Advanced(vec![format!(
+            "re-cloned@{}",
+            tip.unwrap_or_default()
+        )]));
     }
     git::fetch_cached(&dir, token).map_err(|err| {
         AppError::new(
@@ -279,7 +389,7 @@ pub fn refresh_cached_checkout(key: &str, remote: &str, token: Option<&str>) -> 
         .with_remedy("Check the network connection and that `gh` can read the repository.")
         .with_details(git::sanitize(&err.to_string()))
     })?;
-    Ok(true)
+    Ok(fast_forward_behind_branches(&dir))
 }
 
 pub fn ensure_remote_checkout(key: &str, remote: &str, token: Option<&str>) -> AppResult<PathBuf> {
@@ -665,5 +775,168 @@ mod tests {
                 .unwrap_or(true),
             "passthrough must not populate the cache"
         );
+    }
+
+    #[test]
+    fn refresh_cached_checkout_advances_a_behind_local_branch() {
+        let _env = env_lock();
+        let root = unique_dir("ff-root");
+        let _root_env = EnvRestore::set("VOS_CHECKOUTS_DIR", &root.to_string_lossy());
+        let _refresh_env = EnvRestore::remove("VOS_CHECKOUT_FORCE_REFRESH");
+        reset_clone_count_for_tests();
+
+        let origin = unique_dir("ff-origin");
+        init_repo(&origin, "master");
+        std::fs::write(origin.join("a.txt"), "a\n").expect("write");
+        let first = commit_all(&origin, "first");
+
+        let key = "t-ff-behind";
+        let cached = ensure_remote_checkout(key, &origin.to_string_lossy(), None).expect("clone");
+        assert_eq!(git(&cached, &["rev-parse", "master"]), first);
+
+        std::fs::write(origin.join("b.txt"), "b\n").expect("write");
+        let second = commit_all(&origin, "second");
+
+        match refresh_cached_checkout(key, &origin.to_string_lossy(), None).expect("refresh") {
+            RefreshOutcome::Advanced(entries) => assert!(
+                entries.iter().any(|e| e.starts_with("master@")),
+                "must name the advanced branch: {entries:?}"
+            ),
+            _ => panic!("a behind cache must report Advanced"),
+        }
+        assert_eq!(git(&cached, &["rev-parse", "master"]), second);
+        assert_eq!(git(&cached, &["rev-parse", "origin/master"]), second);
+        assert_eq!(
+            git::resolve_branch_ref(&cached, "master").as_deref(),
+            Some("refs/heads/master"),
+            "reads keep resolving the local ref, which must now be the new tip"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&origin);
+    }
+
+    #[test]
+    fn refresh_cached_checkout_leaves_an_ahead_branch_alone() {
+        let _env = env_lock();
+        let root = unique_dir("ff-ahead-root");
+        let _root_env = EnvRestore::set("VOS_CHECKOUTS_DIR", &root.to_string_lossy());
+        let _refresh_env = EnvRestore::remove("VOS_CHECKOUT_FORCE_REFRESH");
+        reset_clone_count_for_tests();
+
+        let origin = unique_dir("ff-ahead-origin");
+        init_repo(&origin, "master");
+        std::fs::write(origin.join("a.txt"), "a\n").expect("write");
+        commit_all(&origin, "first");
+
+        let key = "t-ff-ahead";
+        let cached = ensure_remote_checkout(key, &origin.to_string_lossy(), None).expect("clone");
+        git(&cached, &["config", "user.email", "t@example.com"]);
+        git(&cached, &["config", "user.name", "T"]);
+        std::fs::write(cached.join("local.txt"), "local\n").expect("write");
+        let local_tip = commit_all(&cached, "local work");
+
+        let outcome =
+            refresh_cached_checkout(key, &origin.to_string_lossy(), None).expect("refresh");
+        match outcome {
+            RefreshOutcome::HeldBack(reason) => assert!(
+                reason.contains("local commits"),
+                "an ahead branch is held with its reason: {reason}"
+            ),
+            _ => panic!("an ahead branch must be held back, never force-moved"),
+        }
+        assert_eq!(
+            git(&cached, &["rev-parse", "master"]),
+            local_tip,
+            "a branch ahead of its upstream must never be force-moved"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&origin);
+    }
+
+    #[test]
+    fn refresh_local_clone_fast_forwards_the_checked_out_branch() {
+        let _env = env_lock();
+        let root = unique_dir("user-ff");
+        let origin = unique_dir("user-ff-origin");
+        init_repo(&origin, "master");
+        std::fs::write(origin.join("a.txt"), "a\n").expect("write");
+        commit_all(&origin, "first");
+        let clone = root.join("clone");
+        git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().expect("utf8"),
+                clone.to_str().expect("utf8"),
+            ],
+        );
+        std::fs::write(origin.join("b.txt"), "b\n").expect("write");
+        let second = commit_all(&origin, "second");
+
+        match refresh_local_clone(&clone, None).expect("refresh") {
+            RefreshOutcome::Advanced(entries) => assert!(
+                entries.iter().any(|e| e.starts_with("master@")),
+                "must name the advanced branch and tip: {entries:?}"
+            ),
+            _ => panic!("a clean behind clone must report Advanced"),
+        }
+        assert_eq!(git(&clone, &["rev-parse", "master"]), second);
+        assert!(
+            clone.join("b.txt").is_file(),
+            "the working tree advances with the checked-out branch"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&origin);
+    }
+
+    #[test]
+    fn refresh_local_clone_leaves_a_divergent_branch_alone_and_reports_it() {
+        let _env = env_lock();
+        let root = unique_dir("user-diverged");
+        let origin = unique_dir("user-diverged-origin");
+        init_repo(&origin, "master");
+        std::fs::write(origin.join("a.txt"), "a\n").expect("write");
+        commit_all(&origin, "first");
+        let clone = root.join("clone");
+        git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().expect("utf8"),
+                clone.to_str().expect("utf8"),
+            ],
+        );
+        std::fs::write(origin.join("b.txt"), "b\n").expect("write");
+        let second = commit_all(&origin, "second");
+        git(&clone, &["config", "user.email", "t@example.com"]);
+        git(&clone, &["config", "user.name", "T"]);
+        std::fs::write(clone.join("c.txt"), "local\n").expect("write");
+        let local_tip = commit_all(&clone, "local work");
+
+        match refresh_local_clone(&clone, None).expect("report, not error") {
+            RefreshOutcome::HeldBack(reason) => assert!(
+                reason.contains("diverged"),
+                "the reason must name the hazard: {reason}"
+            ),
+            _ => panic!("a divergent branch must be held back, never force-moved"),
+        }
+        assert_eq!(
+            git(&clone, &["rev-parse", "master"]),
+            local_tip,
+            "a divergent branch must never be force-moved"
+        );
+        assert_eq!(
+            git(&clone, &["rev-parse", "origin/master"]),
+            second,
+            "the fetch still updates the remote-tracking ref"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&origin);
     }
 }
