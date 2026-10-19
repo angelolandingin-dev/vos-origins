@@ -342,10 +342,6 @@ pub fn probe() -> GhProbe {
             "git was not found on PATH (required to build the integration branch)".to_string(),
         );
     }
-    if package_manager.is_none() {
-        warnings.push("no package manager (npm/pnpm/yarn) was found on PATH (required to regenerate a lockfile)".to_string());
-    }
-
     let message = match warnings.is_empty() {
         true => format!(
             "Authenticated with GitHub CLI{}.",
@@ -407,13 +403,6 @@ pub fn require_prerequisites(probe: &GhProbe) -> AppResult<()> {
         .with_remedy(
             "Install Git (https://git-scm.com) and make sure `git --version` works in a terminal.",
         ));
-    }
-    if probe.package_manager.is_none() {
-        return Err(AppError::new(
-            ErrorCode::MissingPrerequisite,
-            "No package manager (npm/pnpm/yarn) was found; the engine regenerates the target lockfile with it.",
-        )
-        .with_remedy("Install Node.js (which includes npm) and make sure `npm --version` works in a terminal."));
     }
     if !probe.scopes.is_empty() && !probe.scopes.iter().any(|scope| scope == "repo") {
         return Err(AppError::new(
