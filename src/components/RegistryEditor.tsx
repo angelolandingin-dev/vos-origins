@@ -188,6 +188,28 @@ function RegistryForm({ snapshot, onSaved }: { snapshot: RegistrySnapshot; onSav
           <p className="text-xs font-semibold text-fg">Promotion: local-first</p>
           <p className="mt-1 text-[11px] text-muted">Push + PR is opt-in per promotion.</p>
         </div>
+        <label className="flex items-start gap-2 rounded-md border border-line bg-raised px-3 py-2">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-4 w-4 rounded border-line-strong bg-surface accent-accent"
+            checked={config.promotion.attributeToAccount}
+            onChange={(event) =>
+              setConfig((current) => ({
+                ...current,
+                promotion: { ...current.promotion, attributeToAccount: event.target.checked },
+              }))
+            }
+          />
+          <span>
+            <span className="text-xs font-semibold text-fg">
+              Attribute promotions to my GitHub account
+            </span>
+            <span className="mt-0.5 block text-[11px] text-muted">
+              Authors promotion commits as your signed-in GitHub account (via a GitHub noreply
+              address). Unchecked authors them as the tool&apos;s bot identity.
+            </span>
+          </span>
+        </label>
         <label className="block">
           <span className="muted">
             Local main repository clone (absolute path for local promotion)

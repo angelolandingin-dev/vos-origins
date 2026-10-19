@@ -148,10 +148,12 @@ pub async fn dispatch_promotion(
             push: is_push_pr,
             create_pr: is_push_pr,
         };
+        // Cached in `gh_cli`, so this costs at most one `gh api user` per burst.
         let deps = EngineDeps {
             github: &github as &dyn GitHubOps,
             lockfile: &lockfile,
             source_url: &source_url,
+            account: gh_cli::authenticated_account,
         };
         engine::run_promotion(&engine_registry, &engine_request, &options, &deps)
     })

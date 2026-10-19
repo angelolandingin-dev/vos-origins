@@ -3,7 +3,8 @@
   "promotion": {
     "allowedTargetBranches": ["development", "staging", "master"],
     "allowedTargetBranchPatterns": ["release/*"],
-    "requirePullRequest": true
+    "requirePullRequest": true,
+    "attributeToAccount": true
   },
   "subsystems": [
     {

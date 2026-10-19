@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use vos_origins_lib::github::gh_cli::GitHubAccount;
 use vos_origins_lib::github::models::PromotionDelivery;
 use vos_origins_lib::github::models::PromotionMode;
 use vos_origins_lib::github::models::PromotionOnConflict;
@@ -520,6 +521,16 @@ struct PromoteOptions {
     delivery: PromotionDelivery,
     on_conflict: PromotionOnConflict,
     excluded_paths: Vec<String>,
+    account_mode: AccountMode,
+}
+
+/// Which account the injected `gh` seam reports; `Unresolved` mimics an
+/// unauthenticated or offline `gh api user`.
+#[derive(Clone, Copy, Default)]
+enum AccountMode {
+    #[default]
+    Unresolved,
+    Octocat,
 }
 
 impl Default for PromoteOptions {
@@ -538,6 +549,7 @@ impl Default for PromoteOptions {
             delivery: PromotionDelivery::PushPr,
             on_conflict: PromotionOnConflict::Fail,
             excluded_paths: Vec::new(),
+            account_mode: AccountMode::Unresolved,
         }
     }
 }
@@ -594,10 +606,20 @@ fn promote(
         &stub_lock
     };
 
+    let account: fn() -> Option<GitHubAccount> = match options.account_mode {
+        AccountMode::Unresolved => || None,
+        AccountMode::Octocat => || {
+            Some(GitHubAccount {
+                login: "octocat".to_string(),
+                id: 1,
+            })
+        },
+    };
     let deps = EngineDeps {
         github,
         lockfile,
         source_url: &source_url,
+        account,
     };
     run_promotion(registry, &request, &engine_options, &deps)
 }
@@ -1607,6 +1629,7 @@ fn case15_duplicate_and_open_pr_are_blocked() {
         github: &open_pr_github,
         lockfile: &stub_lock,
         source_url: &source_url,
+        account: || None,
     };
     let blocked = run_promotion(&registry, &request, &engine_options, &deps);
     assert!(
@@ -1982,6 +2005,7 @@ fn oracle_finding9_pr_lookup_failure_is_distinct_from_already_open() {
         github: &github,
         lockfile: &lockfile,
         source_url: &source_url,
+        account: || None,
     };
     let report = run_promotion(&registry, &request, &engine_options, &deps);
     assert!(
@@ -2389,6 +2413,7 @@ fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
             github: &github,
             lockfile: &lockfile,
             source_url: &source_url,
+            account: || None,
         };
         run_promotion(&registry, &request, &engine_options, &deps)
     };
@@ -2730,6 +2755,7 @@ fn local_direct_target_tip_moved_fails_closed() {
         github: &github,
         lockfile: &lockfile,
         source_url: &source_url,
+        account: || None,
     };
     let report = run_promotion(&registry, &request, &engine_options, &deps);
     assert!(!report.ok);
@@ -4839,4 +4865,109 @@ fn take_subsystem_does_not_bypass_global_secret_or_lockfile_guards() {
         ".github/workflows/x.yml"
     ));
     assert_eq!(branch_file_text(&main3.dir, &branch, "notes.txt"), "v2\n");
+}
+
+// ---------------------------------------------------------------------------
+// Commit attribution
+// ---------------------------------------------------------------------------
+
+fn registry_with_attribution(attribute: bool) -> Registry {
+    let json = registry_json(&subsystem_json("")).replace(
+        "\"requirePullRequest\": true",
+        &format!("\"requirePullRequest\": true, \"attributeToAccount\": {attribute}"),
+    );
+    Registry::from_json(&json, "test").expect("registry")
+}
+
+fn last_commit_author(repo: &Path, branch: &str) -> String {
+    git_out(repo, &["log", "-1", "--format=%an <%ae>", branch])
+}
+
+#[test]
+fn attribution_on_authors_the_commit_as_the_account() {
+    let src_dir = make_temp_dir("src");
+    let main_dir = make_temp_dir("main");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &test_registry(),
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            account_mode: AccountMode::Octocat,
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        last_commit_author(&main.dir, &branch),
+        "octocat <1+octocat@users.noreply.github.com>"
+    );
+}
+
+#[test]
+fn attribution_off_authors_the_commit_as_the_bot() {
+    let src_dir = make_temp_dir("src");
+    let main_dir = make_temp_dir("main");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry_with_attribution(false),
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            account_mode: AccountMode::Octocat,
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        last_commit_author(&main.dir, &branch),
+        "vos-integration-bot <vos-integration-bot@users.noreply.github.com>"
+    );
+}
+
+#[test]
+fn unresolved_account_falls_back_to_the_bot_without_failing() {
+    let src_dir = make_temp_dir("src");
+    let main_dir = make_temp_dir("main");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+
+    // Attribution is on (the default) but the account cannot be resolved.
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &test_registry(),
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let branch = report.integration_branch.clone().unwrap();
+    assert_eq!(
+        last_commit_author(&main.dir, &branch),
+        "vos-integration-bot <vos-integration-bot@users.noreply.github.com>"
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.code == "ACCOUNT_ATTRIBUTION_UNAVAILABLE"),
+        "the fallback is reported: {:?}",
+        report.warnings
+    );
 }

@@ -158,6 +158,81 @@ pub fn clear_token_cache_for_tests() {
     }
 }
 
+/// The authenticated account, as `gh api user` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubAccount {
+    pub login: String,
+    pub id: u64,
+}
+
+impl GitHubAccount {
+    /// GitHub's noreply form: links the commit to the account without
+    /// publishing the user's real address.
+    pub fn noreply_email(&self) -> String {
+        format!("{}+{}@users.noreply.github.com", self.id, self.login)
+    }
+}
+
+/// Same TTL/caching policy as the token: one `gh` spawn per burst.
+const ACCOUNT_TTL: Duration = Duration::from_secs(300);
+
+fn account_cache() -> &'static Mutex<(Option<GitHubAccount>, Option<Instant>)> {
+    static CACHE: OnceLock<Mutex<(Option<GitHubAccount>, Option<Instant>)>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new((None, None)))
+}
+
+fn probe_gh_account() -> Option<GitHubAccount> {
+    let out = crate::platform::hidden("gh")
+        .args(["api", "user"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_gh_user(&String::from_utf8_lossy(&out.stdout))
+}
+
+pub fn parse_gh_user(text: &str) -> Option<GitHubAccount> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let login = value.get("login")?.as_str()?.trim().to_string();
+    let id = value.get("id")?.as_u64()?;
+    if login.is_empty() {
+        return None;
+    }
+    Some(GitHubAccount { login, id })
+}
+
+/// Login + numeric id of the authenticated account, cached like the token.
+/// A failed probe is never cached, so a transient failure does not stick.
+pub fn authenticated_account() -> Option<GitHubAccount> {
+    authenticated_account_with_provider(&probe_gh_account)
+}
+
+/// Injectable seam so tests never spawn `gh`.
+pub fn authenticated_account_with_provider(
+    provider: &dyn Fn() -> Option<GitHubAccount>,
+) -> Option<GitHubAccount> {
+    if let Ok(cached) = account_cache().lock() {
+        if let (Some(account), Some(at)) = (cached.0.clone(), cached.1) {
+            if at.elapsed() < ACCOUNT_TTL {
+                return Some(account);
+            }
+        }
+    }
+    let fresh = provider()?;
+    if let Ok(mut cached) = account_cache().lock() {
+        *cached = (Some(fresh.clone()), Some(Instant::now()));
+    }
+    Some(fresh)
+}
+
+#[cfg(test)]
+pub fn clear_account_cache_for_tests() {
+    if let Ok(mut cached) = account_cache().lock() {
+        *cached = (None, None);
+    }
+}
+
 pub fn git_version() -> Option<String> {
     let out = crate::platform::hidden("git")
         .arg("--version")
@@ -480,5 +555,54 @@ mod tests {
             1,
             "env tokens short-circuit before the provider"
         );
+    }
+
+    #[test]
+    fn parse_gh_user_reads_login_and_numeric_id() {
+        let account = parse_gh_user(r#"{"login":"angelolandingin-dev","email":"x@y.z","id":4242}"#)
+            .expect("parses");
+        assert_eq!(account.login, "angelolandingin-dev");
+        assert_eq!(account.id, 4242);
+        assert_eq!(
+            account.noreply_email(),
+            "4242+angelolandingin-dev@users.noreply.github.com"
+        );
+
+        // Missing id, blank login, and malformed JSON are all unresolvable.
+        assert!(parse_gh_user(r#"{"login":"someone"}"#).is_none());
+        assert!(parse_gh_user(r#"{"login":"  ","id":7}"#).is_none());
+        assert!(parse_gh_user("not json").is_none());
+    }
+
+    #[test]
+    fn account_provider_runs_once_then_cache_holds() {
+        let calls = AtomicU64::new(0);
+        let provider = || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Some(GitHubAccount {
+                login: "octocat".to_string(),
+                id: 1,
+            })
+        };
+        clear_account_cache_for_tests();
+        let first = authenticated_account_with_provider(&provider).expect("resolves");
+        assert_eq!(first.login, "octocat");
+        assert!(authenticated_account_with_provider(&provider).is_some());
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "the id is resolved once, not per promotion"
+        );
+
+        // A failure is not cached: the next call retries the provider.
+        clear_account_cache_for_tests();
+        assert!(authenticated_account_with_provider(&|| None).is_none());
+        assert!(authenticated_account_with_provider(&provider).is_some());
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "an unresolvable account is retried, never cached as `None`"
+        );
+        clear_account_cache_for_tests();
     }
 }

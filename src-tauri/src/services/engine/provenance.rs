@@ -4,7 +4,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::github::gh_cli::GitHubAccount;
+
 use super::git;
+
+pub const BOT_NAME: &str = "vos-integration-bot";
+pub const BOT_EMAIL: &str = "vos-integration-bot@users.noreply.github.com";
 
 pub const TRAILER_KEYS: [&str; 8] = [
     "Subsystem-ID",
@@ -30,6 +35,27 @@ fn sanitize_subject(subject: &str, max: usize) -> String {
         truncated
     } else {
         single
+    }
+}
+
+pub struct CommitAuthor {
+    pub name: String,
+    pub email: String,
+}
+
+/// Picks the provenance commit's author. Attribution off, or an account that
+/// could not be resolved, both fall back to the bot identity so a missing
+/// login/id never fails a promotion.
+pub fn commit_author(attribute_to_account: bool, account: Option<&GitHubAccount>) -> CommitAuthor {
+    match (attribute_to_account, account) {
+        (true, Some(account)) => CommitAuthor {
+            name: account.login.clone(),
+            email: account.noreply_email(),
+        },
+        _ => CommitAuthor {
+            name: BOT_NAME.to_string(),
+            email: BOT_EMAIL.to_string(),
+        },
     }
 }
 
@@ -240,5 +266,35 @@ mod tests {
             &[valid, "c".repeat(40)],
             "only 40/64-hex survives, normalized to lowercase"
         );
+    }
+
+    #[test]
+    fn commit_author_uses_the_account_when_attribution_is_on() {
+        let account = GitHubAccount {
+            login: "angelolandingin-dev".to_string(),
+            id: 4242,
+        };
+        let author = commit_author(true, Some(&account));
+        assert_eq!(author.name, "angelolandingin-dev");
+        assert_eq!(
+            author.email,
+            "4242+angelolandingin-dev@users.noreply.github.com"
+        );
+    }
+
+    #[test]
+    fn commit_author_falls_back_to_the_bot_when_off_or_unresolved() {
+        let account = GitHubAccount {
+            login: "someone".to_string(),
+            id: 7,
+        };
+        for author in [
+            commit_author(false, Some(&account)),
+            commit_author(true, None),
+            commit_author(false, None),
+        ] {
+            assert_eq!(author.name, BOT_NAME);
+            assert_eq!(author.email, BOT_EMAIL);
+        }
     }
 }

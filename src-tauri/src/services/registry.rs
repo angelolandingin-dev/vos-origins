@@ -31,6 +31,16 @@ pub struct PromotionPolicy {
     pub allowed_target_branch_patterns: Vec<String>,
     /// Must stay `true`: the engine only ever opens a PR.
     pub require_pull_request: bool,
+    /// Wire `attributeToAccount`. When `true` (the default) the provenance
+    /// commit is authored by the authenticated GitHub account using GitHub's
+    /// noreply address; when `false` it uses the fixed bot identity. An
+    /// account that cannot be resolved falls back to the bot either way.
+    #[serde(default = "default_true")]
+    pub attribute_to_account: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -497,6 +507,23 @@ mod tests {
             err.message.contains("requirePullRequest"),
             "{}",
             err.message
+        );
+    }
+
+    #[test]
+    fn attribute_to_account_defaults_on_and_stays_camel_case() {
+        let text = r#"{"mainRepository":"ORG/x","promotion":{"allowedTargetBranches":["master"],"requirePullRequest":true},"subsystems":[]}"#;
+        let registry = Registry::from_json(text, "t").expect("parses without the new key");
+        assert!(registry.promotion.attribute_to_account, "defaults on");
+
+        let value = serde_json::to_value(&registry).expect("serializes");
+        assert_eq!(
+            value["promotion"]["attributeToAccount"],
+            serde_json::json!(true)
+        );
+        assert!(
+            value["promotion"].get("attribute_to_account").is_none(),
+            "camelCase wire key only"
         );
     }
 

@@ -658,6 +658,17 @@ pub fn update_index_chmod(worktree_dir: &Path, path: &str, executable: bool) {
     let _ = run(worktree_dir, &["update-index", mode, "--", path]);
 }
 
+/// The `-c user.name=` / `-c user.email=` pair, in the exact order `git commit`
+/// receives it. Split out so the constructed args are testable without a repo.
+pub fn commit_author_args(author_name: &str, author_email: &str) -> [String; 4] {
+    [
+        "-c".to_string(),
+        format!("user.name={author_name}"),
+        "-c".to_string(),
+        format!("user.email={author_email}"),
+    ]
+}
+
 pub fn commit_with_message(
     worktree_dir: &Path,
     message_file: &Path,
@@ -665,22 +676,16 @@ pub fn commit_with_message(
     author_email: &str,
 ) -> Result<String, GitError> {
     let file = message_file.to_string_lossy().to_string();
-    let name = format!("user.name={author_name}");
-    let email = format!("user.email={author_email}");
-    run_ok(
-        worktree_dir,
-        &[
-            "-c",
-            &name,
-            "-c",
-            &email,
-            "commit",
-            "--no-verify",
-            "--allow-empty",
-            "-F",
-            &file,
-        ],
-    )?;
+    let identity = commit_author_args(author_name, author_email);
+    let mut args: Vec<&str> = identity.iter().map(String::as_str).collect();
+    args.extend([
+        "commit",
+        "--no-verify",
+        "--allow-empty",
+        "-F",
+        file.as_str(),
+    ]);
+    run_ok(worktree_dir, &args)?;
     Ok(rev_parse(worktree_dir, "HEAD").unwrap_or_default())
 }
 
@@ -1217,5 +1222,18 @@ mod tests {
                 "token {token:?} must not produce a header in display: {display:?}"
             );
         }
+    }
+
+    #[test]
+    fn commit_author_args_are_the_dash_c_pair_in_order() {
+        assert_eq!(
+            commit_author_args("octocat", "1+octocat@users.noreply.github.com"),
+            [
+                "-c".to_string(),
+                "user.name=octocat".to_string(),
+                "-c".to_string(),
+                "user.email=1+octocat@users.noreply.github.com".to_string(),
+            ]
+        );
     }
 }

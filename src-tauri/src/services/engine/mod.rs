@@ -17,6 +17,7 @@ pub mod semver;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::github::gh_cli::GitHubAccount;
 use crate::github::models::PromotionDelivery;
 use crate::github::models::PromotionMode;
 use crate::github::models::PromotionOnConflict;
@@ -121,6 +122,9 @@ pub struct EngineDeps<'a> {
     pub github: &'a dyn GitHubOps,
     pub lockfile: &'a dyn LockfileGenerator,
     pub source_url: &'a dyn Fn(&SubsystemEntry) -> Option<String>,
+    /// Resolves the authenticated GitHub account used to author the provenance
+    /// commit. Injected so the engine (and its tests) never spawn `gh`.
+    pub account: fn() -> Option<GitHubAccount>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1350,12 +1354,27 @@ fn run_inner(
     let message_file = options
         .temp_root
         .join(format!("vos-msg-{}.txt", sanitize_nonce(&options.nonce)));
+    // Attribution is resolved here, after every guard, so an opted-out or
+    // unresolvable account costs no `gh` spawn and never fails the promotion.
+    let attribute_to_account = registry.promotion.attribute_to_account;
+    let account = if attribute_to_account {
+        (deps.account)()
+    } else {
+        None
+    };
+    if attribute_to_account && account.is_none() {
+        report.warnings.push(Blocker::new(
+            "ACCOUNT_ATTRIBUTION_UNAVAILABLE",
+            "Could not resolve the authenticated GitHub account, so the promotion commit was authored by the bot identity instead. Run `gh auth login --hostname github.com` (or uncheck \"Attribute promotions to my GitHub account\") to stop this warning.",
+        ));
+    }
+    let author = provenance::commit_author(attribute_to_account, account.as_ref());
     match provenance::write_provenance_commit(
         &worktree_dir,
         &message,
         &message_file,
-        "vos-integration-bot",
-        "vos-integration-bot@users.noreply.github.com",
+        &author.name,
+        &author.email,
         &mode_ops,
     ) {
         Ok(sha) => report.commit_sha = Some(sha),

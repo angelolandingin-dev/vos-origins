@@ -566,6 +566,8 @@ export interface RegistryPromotionPolicy {
   allowedTargetBranchPatterns: string[];
   /** True only for `push_pr`; a local delivery never opens a pull request. */
   requirePullRequest: boolean;
+  /** Author promotion commits as the signed-in GitHub account instead of the bot. */
+  attributeToAccount: boolean;
 }
 
 /** The tool-local registry (spec §4, relocated into the tool post-pivot). */
