@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   ExternalLink,
@@ -194,12 +194,31 @@ const PROMOTION_STAGES: ReadonlyArray<{ id: string; label: string }> = [
   { id: 'cleanup', label: 'Cleaning up' },
 ];
 
-function PromotionProgressView({ steps }: { steps: PromotionProgress[] }) {
+function PromotionProgressView({
+  steps,
+  outcome,
+}: {
+  steps: PromotionProgress[];
+  outcome: 'running' | 'success' | 'failed';
+}) {
   const byStage = new Map(steps.map((step) => [step.stage, step]));
+  // The engine emits `cleanup` unconditionally after the run (success or
+  // failure), so on failure the failed stage is the last event before a
+  // trailing `cleanup` — never the cleanup itself.
+  let failedId: string | null = null;
+  if (outcome === 'failed' && steps.length > 0) {
+    const last = steps[steps.length - 1]!;
+    failedId =
+      last.stage === 'cleanup' && steps.length > 1 ? steps[steps.length - 2]!.stage : last.stage;
+  }
   let currentIndex = -1;
   PROMOTION_STAGES.forEach((stage, index) => {
     if (byStage.has(stage.id)) currentIndex = index;
   });
+  if (failedId !== null) {
+    const failedIndex = PROMOTION_STAGES.findIndex((stage) => stage.id === failedId);
+    if (failedIndex >= 0) currentIndex = failedIndex;
+  }
   const current = currentIndex >= 0 ? byStage.get(PROMOTION_STAGES[currentIndex]!.id) : undefined;
   const currentFraction =
     current?.index != null && current?.total != null && current.total > 0
@@ -211,7 +230,12 @@ function PromotionProgressView({ steps }: { steps: PromotionProgress[] }) {
     current?.index != null && current?.total != null ? `${current.index} / ${current.total}` : null;
 
   return (
-    <section className="space-y-2" aria-label="Promotion progress">
+    <section
+      aria-label="Promotion progress"
+      className={`space-y-2 rounded-md border border-line p-3 ${
+        outcome === 'success' ? 'bg-status-applied-soft' : 'bg-surface'
+      }`}
+    >
       <div className="flex h-[29px] items-center justify-between gap-2">
         <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
           Promotion progress
@@ -220,28 +244,36 @@ function PromotionProgressView({ steps }: { steps: PromotionProgress[] }) {
       </div>
       <div className="h-[3px] overflow-hidden rounded-full bg-line" aria-hidden="true">
         <div
-          className="h-full rounded-full bg-accent transition-[width]"
+          className={`h-full rounded-full transition-[width] ${
+            outcome === 'failed' ? 'bg-status-blocked' : 'bg-accent'
+          }`}
           style={{ width: `${Math.round((done / PROMOTION_STAGES.length) * 100)}%` }}
         />
       </div>
       <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
         {PROMOTION_STAGES.map((stage, index) => {
           const seen = byStage.get(stage.id);
-          const state = index < currentIndex ? 'done' : index === currentIndex ? 'current' : 'todo';
+          const isFailed = stage.id === failedId;
+          const state =
+            isFailed || index === currentIndex ? 'current' : index < currentIndex ? 'done' : 'todo';
           return (
             <li key={stage.id} className="flex h-[21px] items-center gap-2 px-2.5">
               <span
                 aria-hidden="true"
                 className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                  state === 'done'
-                    ? 'bg-status-applied'
-                    : state === 'current'
-                      ? 'animate-pulse bg-accent'
-                      : 'bg-line'
+                  isFailed
+                    ? 'bg-status-blocked'
+                    : state === 'done'
+                      ? 'bg-status-applied'
+                      : state === 'current'
+                        ? 'animate-pulse bg-accent'
+                        : 'bg-line'
                 }`}
               />
               <span
-                className={`min-w-0 flex-1 truncate text-[11px] ${state === 'todo' ? 'text-muted' : 'text-fg'}`}
+                className={`min-w-0 flex-1 truncate text-[11px] ${
+                  isFailed ? 'text-status-blocked-ink' : state === 'todo' ? 'text-muted' : 'text-fg'
+                }`}
               >
                 {seen?.label ?? stage.label}
               </span>
@@ -317,6 +349,14 @@ function PromotionDialogContent({
 }: PromotionDialogProps) {
   const [acknowledged, setAcknowledged] = useState(false);
   const [copied, setCopied] = useState(false);
+  const outcomeRef = useRef<HTMLDivElement>(null);
+  const settled = result?.accepted === true || error !== null;
+  const progressOutcome =
+    result?.accepted === true ? 'success' : error !== null ? 'failed' : 'running';
+
+  useEffect(() => {
+    if (settled) outcomeRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [settled]);
 
   const branches = targetBranches?.branches ?? [];
   const selectedBranch = branches.find((branch) => branch.name === targetBranch) ?? null;
@@ -399,22 +439,24 @@ function PromotionDialogContent({
     >
       {result?.accepted ? (
         <div className="space-y-4">
-          <InlineAlert
-            tone="success"
-            title={
-              result.delivery === 'local_direct'
-                ? `Committed to ${result.targetBranch} locally — push when ready`
-                : result.delivery === 'worktree'
-                  ? `Staged into working tree on ${result.targetBranch} — no commit, no push`
-                  : result.delivery === 'local'
-                    ? 'Local branch + commit created'
-                    : result.prUrl
-                      ? `Integration PR #${result.prNumber ?? '?'} opened`
-                      : 'Promotion request accepted'
-            }
-          >
-            <p>{result.message}</p>
-          </InlineAlert>
+          <div ref={outcomeRef}>
+            <InlineAlert
+              tone="success"
+              title={
+                result.delivery === 'local_direct'
+                  ? `Committed to ${result.targetBranch} locally — push when ready`
+                  : result.delivery === 'worktree'
+                    ? `Staged into working tree on ${result.targetBranch} — no commit, no push`
+                    : result.delivery === 'local'
+                      ? 'Local branch + commit created'
+                      : result.prUrl
+                        ? `Integration PR #${result.prNumber ?? '?'} opened`
+                        : 'Promotion request accepted'
+              }
+            >
+              <p>{result.message}</p>
+            </InlineAlert>
+          </div>
 
           <dl className="divide-y divide-line border-y border-line px-1">
             <KeyValue
@@ -479,17 +521,6 @@ function PromotionDialogContent({
         </div>
       ) : (
         <div className="space-y-5">
-          {error ? (
-            <InlineAlert tone="danger" title={error.message}>
-              {error.remedy ? <p>{error.remedy}</p> : null}
-              {error.details ? (
-                <p className="mono mt-1 text-[11px] whitespace-pre-wrap text-status-blocked-ink">
-                  {error.details}
-                </p>
-              ) : null}
-            </InlineAlert>
-          ) : null}
-
           <section className="space-y-2">
             <div className="flex h-[29px] items-center justify-between gap-2">
               <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
@@ -841,10 +872,26 @@ function PromotionDialogContent({
                 Confirmation recorded for this request.
               </p>
             ) : null}
-            {dispatching ? <PromotionProgressView steps={progress} /> : null}
+            {error ? (
+              <div ref={outcomeRef}>
+                <InlineAlert tone="danger" title={error.message}>
+                  {error.remedy ? <p>{error.remedy}</p> : null}
+                  {error.details ? (
+                    <p className="mono mt-1 text-[11px] whitespace-pre-wrap text-status-blocked-ink">
+                      {error.details}
+                    </p>
+                  ) : null}
+                </InlineAlert>
+              </div>
+            ) : null}
           </section>
         </div>
       )}
+      {progress.length > 0 ? (
+        <div className="mt-4">
+          <PromotionProgressView steps={progress} outcome={progressOutcome} />
+        </div>
+      ) : null}
     </Modal>
   );
 }
