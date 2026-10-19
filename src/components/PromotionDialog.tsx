@@ -253,10 +253,10 @@ function PromotionDialogContent({
   const multiManifest = commits.filter((commit) => commit.touchesManifest).length > 1;
   const replaced = preflight?.replaced ?? [];
   const preflightExcluded = preflight?.excluded ?? [];
-  const skippedFiles = (preflight?.files ?? [])
-    .filter((file) => file.outcome === 'skipped')
-    .map((file) => file.path);
-  const refusedPaths = Array.from(new Set([...(preflight?.conflicts ?? []), ...skippedFiles]));
+  // Skipped paths are not refusals - a lockfile is regenerated and a manifest is
+  // merged by design - so they stay out of this list and are shown in the file
+  // list instead, where their row can say what happens to them.
+  const refusedPaths = Array.from(new Set([...(preflight?.conflicts ?? [])]));
   const revertsNewerFiles = (preflight?.files ?? []).filter((file) => file.revertsNewer);
   const isExcluded = (path: string) =>
     excludedPaths.includes(path) || preflightExcluded.includes(path);

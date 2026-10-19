@@ -27,7 +27,7 @@ function changeKind(
 ): string {
   if (deleted.has(path)) return 'deleted';
   if (unchanged.has(path)) return 'unchanged';
-  if (outcome === 'skipped') return 'skipped';
+  if (outcome === 'skipped') return 'not copied';
   if (outcome === 'conflict') return 'conflict';
   if (replaced.has(path)) return 'overwritten';
   if (outcome === 'merged') return 'merged';
@@ -97,7 +97,7 @@ export function CommitFileList({
                     }
                     label={
                       skipped
-                        ? `${file.path} is skipped by the promotion and cannot be included`
+                        ? `${file.path} is not copied by the promotion - the engine handles this path in the target`
                         : included
                           ? `Exclude ${file.path} from this promotion`
                           : `Include ${file.path} in this promotion`
