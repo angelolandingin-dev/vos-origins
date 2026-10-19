@@ -1310,6 +1310,72 @@ fn case9_missing_dependency_commit_blocks_but_selecting_it_succeeds() {
 }
 
 #[test]
+fn missing_dependency_blocker_names_file_and_specifier() {
+    let src_dir = make_temp_dir("src-missing-detail");
+    let main_dir = make_temp_dir("main-missing-detail");
+    init_repo(&src_dir, "master");
+    commit_files(
+        &src_dir,
+        "A: base",
+        &[
+            (
+                "package.json",
+                format!(
+                    "{}\n",
+                    serde_json::json!({"name":"hr-management","dependencies":{"next":"^16.2.1"}})
+                )
+                .as_bytes(),
+            ),
+            ("src/modules/hr/index.ts", b"export const a = 1;\n"),
+        ],
+        &[],
+    );
+    let c = commit_files(
+        &src_dir,
+        "C: use left-pad",
+        &[(
+            "src/modules/hr/use-leftpad.ts",
+            b"import leftPad from 'left-pad';\nexport const pad = () => leftPad('x', 5);\n",
+        )],
+        &[],
+    );
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    let blocked = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![c],
+            ..Default::default()
+        },
+    );
+    assert!(!blocked.ok);
+    let blocker = blocked
+        .blockers
+        .iter()
+        .find(|b| b.code == "MISSING_DEPENDENCY_PREREQUISITE")
+        .expect("missing-dependency blocker");
+    assert!(
+        blocker.message.contains("\"left-pad\""),
+        "headline names the package: {}",
+        blocker.message
+    );
+    let details = blocker.details.clone().unwrap_or_default();
+    assert!(
+        details.contains("src/modules/hr/use-leftpad.ts"),
+        "details name the importing file: {details}"
+    );
+    assert!(
+        details.contains("'left-pad'") || details.contains("\"left-pad\""),
+        "details name the specifier: {details}"
+    );
+}
+
+#[test]
 fn case10_incompatible_dependency_range_fails_closed() {
     let src_dir = make_temp_dir("src");
     let main_dir = make_temp_dir("main");

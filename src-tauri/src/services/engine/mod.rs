@@ -1095,13 +1095,32 @@ fn run_inner(
         }
         for missing in deps::check_import_prerequisites(&code_files, &target_manifest, &delta_names)
         {
-            report.blockers.push(Blocker::new(
-                "MISSING_DEPENDENCY_PREREQUISITE",
-                format!(
-                    "Selected commit(s) import \"{}\" which is neither in the target manifest nor added by the selected delta. An unselected prerequisite commit likely must be selected explicitly.",
-                    missing.name
-                ),
-            ));
+            let shown: Vec<String> = missing
+                .refs
+                .iter()
+                .take(3)
+                .map(|r| format!("{} imports \"{}\"", r.path, r.specifier))
+                .collect();
+            let mut detail = shown.join("\n");
+            if missing.refs.len() > shown.len() {
+                if !detail.is_empty() {
+                    detail.push('\n');
+                }
+                detail.push_str(&format!(
+                    "… and {} more reference(s)",
+                    missing.refs.len() - shown.len()
+                ));
+            }
+            report.blockers.push(
+                Blocker::new(
+                    "MISSING_DEPENDENCY_PREREQUISITE",
+                    format!(
+                        "Missing dependency \"{}\": imported but neither in the target manifest nor added by the selected delta.",
+                        missing.name
+                    ),
+                )
+                .with_details(detail),
+            );
         }
         if !report.blockers.is_empty() {
             return Err(Bail);
