@@ -722,8 +722,10 @@ pub fn extract_import_specifiers(content: &str) -> Vec<String> {
 
 /// Removes `//` and `/* */` comments in one pass. A `/*` inside a `//`
 /// comment never opens a block (the line comment eats its line first), and
-/// markers inside string literals are copied through. Newlines inside
-/// blocks are kept so line shape is unchanged.
+/// markers inside string literals are copied through. `'`/`"` strings end
+/// at a newline (only backticks span lines), so a quote inside a regex
+/// cannot desync the rest of the file. Newlines inside blocks are kept so
+/// line shape is unchanged.
 fn strip_comments(content: &str) -> String {
     let chars: Vec<char> = content.chars().collect();
     let mut out = String::with_capacity(content.len());
@@ -735,6 +737,12 @@ fn strip_comments(content: &str) -> String {
             i += 1;
             while i < chars.len() {
                 let d = chars[i];
+                // Only backticks span lines: an unterminated `'`/`"` string
+                // is already a syntax error, so a newline ends it before a
+                // quote inside a regex can desync the rest of the file.
+                if d == '\n' && c != '`' {
+                    break;
+                }
                 out.push(d);
                 i += 1;
                 if d == '\\' {
@@ -1086,6 +1094,34 @@ mod tests {
         assert_eq!(
             extract_import_specifiers("import u from 'pkg/*not-a-comment*/sub';\n"),
             vec!["pkg/*not-a-comment*/sub".to_string()]
+        );
+    }
+
+    #[test]
+    fn import_scan_recovers_when_a_regex_holds_a_quote() {
+        // The 1675493 shape: the regex's `'` must not swallow the JSDoc below it.
+        let content = r#"import fs from 'node:fs';
+const parts = s.replace(/[().,'"]/g, " ");
+/**
+ * Reads one eagerly loaded boundary file from `public/geojson`.
+ */
+import area from '../utils/area-match';
+"#;
+        assert_eq!(
+            extract_import_specifiers(content),
+            vec!["node:fs".to_string(), "../utils/area-match".to_string()]
+        );
+        // An escaped newline inside a quoted string is still one string.
+        assert_eq!(
+            extract_import_specifiers("import x from 'a\\nb';\n"),
+            vec!["a\\nb".to_string()]
+        );
+        // A legitimate multi-line backtick template stays one string.
+        assert_eq!(
+            extract_import_specifiers(
+                "const t = `line1\nline2 // not a comment`;\nimport r from 'real-pkg';\n"
+            ),
+            vec!["real-pkg".to_string()]
         );
     }
 
