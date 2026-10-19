@@ -61,12 +61,21 @@ where
         }
     }
     let outcome = compute();
-    state.singleflight.remove_if_unused(key);
-    let value = outcome?;
-    if let Ok(encoded) = serde_json::to_string(&value) {
-        state.cache.put(key, encoded);
+    match outcome {
+        // Store before releasing: a newcomer either waits on the still-present
+        // slot and double-check-hits, or arrives after removal to a warm cache.
+        Ok(value) => {
+            if let Ok(encoded) = serde_json::to_string(&value) {
+                state.cache.put(key, encoded);
+            }
+            state.singleflight.remove_if_unused(key);
+            Ok(value)
+        }
+        Err(err) => {
+            state.singleflight.remove_if_unused(key);
+            Err(err)
+        }
     }
-    Ok(value)
 }
 
 #[cfg(test)]
@@ -144,5 +153,27 @@ mod tests {
             assert!(failed.is_err());
         }
         assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn failed_compute_releases_slot_and_caches_nothing() {
+        let state = AppState::new();
+        let failed: AppResult<String> = cached_json(&state, "k::fails", || {
+            Err(AppError::invalid_request("nope"))
+        });
+        assert!(failed.is_err());
+        assert_eq!(
+            state.singleflight.len_for_tests(),
+            0,
+            "a failed compute releases its slot instead of leaking it"
+        );
+        let ok: String =
+            cached_json(&state, "k::fails", || Ok("fresh".to_string())).expect("compute");
+        assert_eq!(ok, "fresh", "nothing from the failure was cached");
+        assert_eq!(
+            state.singleflight.len_for_tests(),
+            0,
+            "slots are released after use"
+        );
     }
 }
