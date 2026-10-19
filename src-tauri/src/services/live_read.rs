@@ -1712,6 +1712,18 @@ fn is_dependency_path(path: &str) -> bool {
     )
 }
 
+/// Only paths the promotion could write may vote on commit status.
+/// Lockfiles, main-owned, secret and rejected paths never reach the commit,
+/// so they are excluded from the comparison.
+fn is_status_voting(status: classify::PathStatus) -> bool {
+    matches!(
+        status,
+        classify::PathStatus::Apply
+            | classify::PathStatus::ExplicitReview
+            | classify::PathStatus::DependencyMerge
+    )
+}
+
 fn all_superseded(paths: &[&String], latest: &HashMap<String, usize>, index: usize) -> bool {
     !paths.is_empty()
         && paths
@@ -1887,7 +1899,11 @@ pub fn commit_page_live(
                 .deltas
                 .iter()
                 .map(|(path, _, _)| path)
-                .filter(|path| source_tree.get(*path) != target_blobs.get(*path))
+                .filter(|path| {
+                    let voted = classify::classify_path(path, &entry.integration_policy, None);
+                    is_status_voting(voted.status)
+                        && source_tree.get(*path) != target_blobs.get(*path)
+                })
                 .collect();
             // Manifest and lockfile paths are delta-merged or deferred to the
             // deployment (which regenerates the lockfile), never written
@@ -1903,7 +1919,7 @@ pub fn commit_page_live(
                     CommitStatusKind::Applied,
                     &target_branch,
                     Some(
-                        "Everything this commit changes already matches the target branch; there is nothing to promote."
+                        "Every promotable file this commit changes already matches the target branch; deferred or never-imported paths are not counted. There is nothing to promote."
                             .to_string(),
                     ),
                     None,
@@ -1929,7 +1945,7 @@ pub fn commit_page_live(
                     CommitStatusKind::Divergent,
                     &target_branch,
                     Some(
-                        "The target branch's copies of every source file this commit changes were themselves changed more recently; promoting would revert newer work. (Dependency manifest and lockfile paths are exempt — they are merged or regenerated.)"
+                        "The target branch's copies of every promotable file this commit changes were themselves changed more recently; promoting would revert newer work. (The dependency manifest is exempt — it is merged; deferred or never-imported paths are not counted.)"
                             .to_string(),
                     ),
                     None,
@@ -4339,5 +4355,152 @@ mod tests {
         let err = main_commit_diff_live(&main, &registry, "staging", &"f".repeat(40))
             .expect_err("an unknown sha is not found, never fabricated");
         assert_eq!(err.code, ErrorCode::NotFound);
+    }
+
+    fn status_page_for(src: &Path, main: &Path, registry: &Registry, sha: &str) -> CommitStatus {
+        let github = StubGitHubOps::new();
+        let query = CommitQuery {
+            subsystem_id: "hr-management".to_string(),
+            target_branch: "staging".to_string(),
+            page: 1,
+            page_size: 50,
+            search: String::new(),
+            status_filter: None,
+            sort: crate::github::models::CommitSort::Newest,
+            shas: None,
+        };
+        let page = commit_page_live(main, src, registry, &github, &query).expect("page");
+        page.commits
+            .iter()
+            .find(|c| c.sha == sha)
+            .unwrap_or_else(|| panic!("{sha} missing from page"))
+            .status
+            .clone()
+    }
+
+    #[test]
+    fn lockfile_only_difference_reports_applied_but_keeps_delta() {
+        let main = tmp("status-lock-main");
+        init(&main, "master");
+        write(&main, "src/FiltersBar.tsx", "v1\n");
+        write(&main, "src/MultiSelectFilter.tsx", "v1\n");
+        write(&main, "package-lock.json", "lock-old\n");
+        write(&main, "package.json", "{\"name\":\"x\"}\n");
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+        git(&main, &["checkout", "-q", "staging"]);
+        write(&main, "src/FiltersBar.tsx", "v2\n");
+        write(&main, "src/MultiSelectFilter.tsx", "v2\n");
+        let _ = commit_all(&main, "target takes feature");
+
+        let src = tmp("status-lock-src");
+        init(&src, "master");
+        write(&src, "src/FiltersBar.tsx", "v1\n");
+        write(&src, "src/MultiSelectFilter.tsx", "v1\n");
+        write(&src, "package-lock.json", "lock-old\n");
+        write(&src, "package.json", "{\"name\":\"x\"}\n");
+        let _ = commit_all(&src, "base");
+        write(&src, "src/FiltersBar.tsx", "v2\n");
+        write(&src, "src/MultiSelectFilter.tsx", "v2\n");
+        write(&src, "package-lock.json", "lock-new\n");
+        let feature = commit_all(&src, "feature plus lock bump");
+
+        let registry = single_registry();
+        let status = status_page_for(&src, &main, &registry, &feature);
+        assert_eq!(status.kind, CommitStatusKind::Applied);
+        assert!(
+            status
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("deferred")),
+            "applied reason names the deferred exclusion: {:?}",
+            status.detail
+        );
+        let commits = parse_source_log(&src, "master").expect("log");
+        let logged = commits
+            .iter()
+            .find(|c| c.sha == feature)
+            .expect("feature logged");
+        assert!(
+            logged
+                .deltas
+                .iter()
+                .any(|(p, _, _)| p == "package-lock.json"),
+            "lockfile stays in the delta: {:?}",
+            logged.deltas
+        );
+    }
+
+    #[test]
+    fn main_owned_only_difference_reports_applied() {
+        let main = tmp("status-owned-main");
+        init(&main, "master");
+        write(&main, "app.txt", "v1\n");
+        write(&main, ".github/workflows/ci.yml", "old\n");
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+
+        let src = tmp("status-owned-src");
+        init(&src, "master");
+        write(&src, "app.txt", "v1\n");
+        write(&src, ".github/workflows/ci.yml", "old\n");
+        let _ = commit_all(&src, "base");
+        write(&src, ".github/workflows/ci.yml", "new\n");
+        let feature = commit_all(&src, "workflow tweak");
+
+        let status = status_page_for(&src, &main, &single_registry(), &feature);
+        assert_eq!(status.kind, CommitStatusKind::Applied);
+    }
+
+    #[test]
+    fn genuinely_out_of_sync_code_stays_eligible() {
+        let main = tmp("status-code-main");
+        init(&main, "master");
+        write(&main, "app.txt", "v1\n");
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+
+        let src = tmp("status-code-src");
+        init(&src, "master");
+        write(&src, "app.txt", "v1\n");
+        let _ = commit_all(&src, "base");
+        write(&src, "app.txt", "v2\n");
+        let feature = commit_all(&src, "real work");
+
+        let status = status_page_for(&src, &main, &single_registry(), &feature);
+        assert_eq!(status.kind, CommitStatusKind::Eligible);
+    }
+
+    #[test]
+    fn root_manifest_delta_stays_eligible() {
+        let main = tmp("status-manifest-main");
+        init(&main, "master");
+        write(&main, "app.txt", "v1\n");
+        write(
+            &main,
+            "package.json",
+            "{\"name\":\"x\",\"dependencies\":{}}\n",
+        );
+        let _ = commit_all(&main, "main base");
+        git(&main, &["branch", "staging"]);
+
+        let src = tmp("status-manifest-src");
+        init(&src, "master");
+        write(&src, "app.txt", "v1\n");
+        write(
+            &src,
+            "package.json",
+            "{\"name\":\"x\",\"dependencies\":{}}\n",
+        );
+        let _ = commit_all(&src, "base");
+        write(
+            &src,
+            "package.json",
+            "{\"name\":\"x\",\"dependencies\":{\"left-pad\":\"^1.3.0\"}}\n",
+        );
+        let feature = commit_all(&src, "add dep");
+
+        let status = status_page_for(&src, &main, &single_registry(), &feature);
+        assert_eq!(status.kind, CommitStatusKind::Eligible);
     }
 }
