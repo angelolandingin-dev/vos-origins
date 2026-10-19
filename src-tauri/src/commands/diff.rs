@@ -22,7 +22,6 @@ fn live_token() -> AppResult<String> {
     })
 }
 
-/// Mode-scoped like every other read key, so live and fixture never collide.
 pub(crate) fn diff_cache_key(mode: &str, subsystem_id: &str, target_branch: &str) -> String {
     format!("{mode}::subsystem-diff::{subsystem_id}::{target_branch}")
 }
@@ -46,7 +45,6 @@ pub async fn get_subsystem_diff(
     cached_json(&state, &key, || {
         let registry = live_read::load_live_registry()?;
         let token = live_token()?;
-        // Reusable on-disk checkouts: repeat visits reuse the same clone.
         let (target_dir, _) = live_read::resolve_target_checkout(
             &registry.main_repository,
             registry.local_main_repository_path.as_deref(),

@@ -1,7 +1,3 @@
-//! Fixture world (Phase 2): fictitious data, always labelled `Fixture`.
-//! Nothing here is authoritative; real reads come from the registry branch,
-//! source ancestry, runs, and reachable trailers.
-
 pub mod data;
 
 use std::collections::HashMap;
@@ -51,7 +47,6 @@ pub struct FixtureWorld {
     pub subsystems: Vec<SubsystemSummary>,
     pub branches: Vec<TargetBranch>,
     pub policy: TargetBranchPolicy,
-    /// `status` is recomputed per target.
     pub commits: HashMap<String, Vec<CommitSummary>>,
     pub details: HashMap<String, CommitDetails>,
     pub diffs: HashMap<String, CommitDiff>,

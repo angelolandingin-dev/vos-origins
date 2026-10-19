@@ -23,7 +23,6 @@ import type {
 } from '../api/types';
 import type { Route } from './navigation';
 
-/** App-level data/selection state. The backend owns caching and pagination (spec §3.5), so no query library. */
 /** No components in this module so Fast Refresh can replace provider and screens independently. */
 
 export interface AsyncResult<T> {
@@ -88,9 +87,7 @@ export interface PromotionState {
   mode: PromotionMode;
   baseSha: string;
   delivery: PromotionDelivery;
-  /** The promotion commit's own message; required before a dispatch. */
   message: string;
-  /** Paths to leave out of the promotion. */
   excludedPaths: string[];
   dispatching: boolean;
   error: ApiError | null;
@@ -126,9 +123,7 @@ export interface AppContextValue {
   toggleSha: (sha: string) => void;
   setSelectedShas: (shas: string[], commits?: CommitSummary[]) => void;
   clearSelection: () => void;
-  /** Accumulated summaries for selected SHAs, in `selectedShas` order. Survives paging and filtering. */
   selectedCommits: CommitSummary[];
-  /** Merge the listing's summaries for currently-selected SHAs into the accumulated map. */
   rememberSelectedCommits: (listing: CommitSummary[]) => void;
 
   focusedSha: string | null;

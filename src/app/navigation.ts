@@ -10,7 +10,6 @@ export type Route =
 export interface NavItem {
   id: Route;
   label: string;
-  /** Shown as a tooltip and used as the accessible description. */
   description: string;
 }
 

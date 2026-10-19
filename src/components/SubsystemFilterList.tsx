@@ -5,13 +5,6 @@ import type { SubsystemSummary } from '../api/types';
 import { CONNECTIVITY_DOT } from './subsystemConnectivity';
 import { cx } from './ui/cx';
 
-/**
- * Filterable subsystem list — the scale fix for the old segmented control.
- * A segmented control is ~2000px of segments in a ~300px rail at 20
- * subsystems; this stays usable at 3 and at 50: a small search input, then
- * hairline rows (status dot, name, repository slug, right-aligned count).
- * Keyboard: type to filter, up/down to move, Enter to select.
- */
 export function SubsystemFilterList({
   subsystems,
   selectedId,
@@ -25,7 +18,6 @@ export function SubsystemFilterList({
   onSelect: (id: string) => void;
   counts?: Record<string, number>;
   ariaLabel?: string;
-  /** Layout utilities for the root (e.g. `flex-1` inside a capped popover). */
   className?: string;
 }) {
   const [query, setQuery] = useState('');

@@ -1,54 +1,3 @@
-//! Subsystem-versus-main diff: the surface that shows what a promotion left
-//! behind.
-//!
-//! A subsystem's module can be promoted *partially* and nobody notices:
-//! commit `A` added files 1-5, later commit `B` edited 4,5 and added 6,7,8,
-//! and promoting `B` alone leaves main silently missing 1,2,3. This view
-//! lists every path in the subsystem's tracked tree against the target branch
-//! tip so the user can see the gap and select exactly the files that were
-//! never promoted.
-//!
-//! Scope: the subsystem's tracked tree at its source tip is the universe —
-//! subsystem checkouts carry the full `src/modules/<name>/...` prefix, so
-//! paths map 1:1 into the main checkout with no translation table. Files
-//! present in main but absent from the subsystem tree are main-owned: out of
-//! scope, never listed.
-//!
-//! Buckets (blob identity only, never timestamps):
-//! - `Missing`: in the subsystem tree, absent in main — never promoted.
-//! - `Behind`: the blobs differ and main's blob is reachable from the source
-//!   tip (a genuine ancestry claim via `rev-list --objects`, not mtime), so
-//!   syncing is safe. Reachability is deliberately path-agnostic, like the
-//!   promotion engine's own containment check: identical bytes produced by the
-//!   subsystem anywhere in its history are subsystem content, never
-//!   main-system-only content.
-//! - `MainSideChanged`: the blobs differ and main's blob is reachable from no
-//!   source tip — main was edited independently. No source commit is ever
-//!   claimed for main's version.
-//! - `Identical`: same blob on both sides (hidden by default in the UI).
-//!
-//! Performance: exactly four git spawns for any number of paths — one
-//! `ls-tree` per side, one `rev-list --objects` over the source tip, and one
-//! `log --raw` walk that yields every path's touching commits newest-first
-//! (the same single walk the commit browser uses). Per-branch promotion
-//! status for every touching commit reuses
-//! [`crate::services::live_read::integration_statuses_live`], whose branch
-//! walks are tip-keyed and memoized, so a page of N rows stays O(1) spawns
-//! after the memo warms. Never one spawn per path, never one per commit.
-//!
-//! Two refinements ride on the same batch:
-//! - The backwards-write warning ("reverts newer work", information only):
-//!   one `rev-list --objects <write>..<tip>` per distinct newest-toucher
-//!   among `Behind` rows (linear histories never warn — the target version is
-//!   always an ancestor of the write — but still pay the range probe), plus
-//!   one naming lookup per warned path (zero when nothing warns).
-//! - The on-click file detail (latest commit + newest-first history with
-//!   per-branch status) costs zero spawns: every row already carries its
-//!   touchers from the single walk, capped at [`MAX_TOUCHES_PER_PATH`]. The
-//!   walk has no rename detection, so a renamed path's history starts at its
-//!   add commit — the UI states "history since the last rename" rather than
-//!   implying a complete past.
-
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -63,33 +12,19 @@ use crate::services::engine::{blobset, git};
 use crate::services::live_read;
 use crate::services::registry::Registry;
 
-/// Touches kept per path (newest-first). The full touch list also feeds the
-/// commit-to-paths index uncapped, so exclusion prefill never loses a path.
 pub const MAX_TOUCHES_PER_PATH: usize = 30;
 
-/// Everything the diff needs, read in exactly four git spawns.
 pub struct CollectedDiff {
     pub source_tree: HashMap<String, String>,
     pub target_tree: HashMap<String, String>,
-    /// Every blob reachable from the source tip (one batched `rev-list`).
     pub history_blobs: HashSet<String>,
-    /// `path ->` newest-first `(sha, status char)` touches.
     pub touches: HashMap<String, Vec<(String, char)>>,
-    /// Paths whose touch list was capped at [`MAX_TOUCHES_PER_PATH`].
     pub touches_truncated: HashSet<String>,
-    /// `sha ->` every path that commit touched (sorted, uncapped).
     pub commit_paths: HashMap<String, Vec<String>>,
-    /// `sha -> (subject, author, committed_at)`.
     pub commit_meta: HashMap<String, (String, String, String)>,
-    /// Every touching SHA, newest-first.
     pub commit_order: Vec<String>,
 }
 
-/// Batched collection: two `ls-tree` (one per side), one `rev-list
-/// --objects` over the source tip, one `log --raw` walk for touches.
-/// Both `source_tip` and `target_tip` are resolved SHAs (or ref names the
-/// caller already resolved); resolving them costs the caller's rev-parses,
-/// never per-path work.
 pub fn collect_diff(
     source_dir: &Path,
     source_tip: &str,
@@ -200,10 +135,6 @@ pub fn change_kind_of(newest_status: Option<char>, main_present: bool) -> FileCh
     }
 }
 
-/// The resolved promotion for a path selection: the union of **unpromoted**
-/// commits touching the selected paths (newest-first), plus the exclusions
-/// prefill — every other path those same commits touch that is *not*
-/// selected, so the user never hand-maintains that list.
 pub struct SelectionResolution {
     pub commits: Vec<String>,
     pub excluded_paths: Vec<String>,
@@ -238,8 +169,6 @@ pub fn resolve_selection(
         .filter(|sha| wanted.contains(*sha))
         .cloned()
         .collect();
-    // `commit_order` covers every toucher, but stay total if a caller passes
-    // a SHA from elsewhere: append the stragglers sorted.
     let mut stragglers: Vec<String> = wanted
         .iter()
         .filter(|sha| !commits.contains(sha))
@@ -336,9 +265,6 @@ pub fn subsystem_diff_live(
         .with_remedy("Confirm the source checkout is a readable git clone, then retry."));
     }
 
-    // One batched status call for every distinct touching commit on this
-    // branch — the same reachable-trailer + open-PR machinery the commit
-    // browser and promotion guards use.
     let mut shas: Vec<String> = collected.commit_meta.keys().cloned().collect();
     shas.sort();
     let statuses = live_read::integration_statuses_live(
@@ -383,10 +309,6 @@ pub fn subsystem_diff_live(
             bucket,
             change: change_kind_of(newest.map(|(_, c)| *c), main_blob.is_some()),
             main_blob: main_blob.map(str::to_string),
-            // The write producing the current content is the newest toucher.
-            // Only `Behind` rows can warn: missing paths have no target blob,
-            // identical paths already match, and main-side blobs sit outside
-            // subsystem history (so outside every newer-set) by definition.
             write: match (&main_blob, sub_blob.map(String::as_str), newest) {
                 (Some(main), Some(sub), Some((sha, _)))
                     if *main != sub && bucket == SubsystemDiffBucket::Behind =>
@@ -397,12 +319,6 @@ pub fn subsystem_diff_live(
             },
         });
     }
-    // "Reverts newer work" (warning only, never a refusal): one
-    // `rev-list --objects <write>..<tip>` per distinct write, intersected in
-    // memory with the target blobs. A path warns when main holds content from
-    // a LATER subsystem commit than the write producing the subsystem
-    // version. Main-side blobs are outside history by definition, so they can
-    // never warn — only genuinely newer subsystem content does.
     let mut writes: Vec<String> = rows.iter().filter_map(|row| row.write.clone()).collect();
     writes.sort();
     writes.dedup();
@@ -419,9 +335,6 @@ pub fn subsystem_diff_live(
         if !newer {
             continue;
         }
-        // One naming lookup per warned path (zero when nothing warns): the
-        // warning names the newer commit so the operator can verify it.
-        // Unresolvable falls back to a nameless warning rather than a guess.
         let (sha, subject) =
             blobset::newest_commit_for_blob(source_dir, target_blob, &source_tip, &row.path)
                 .unwrap_or_default();
@@ -592,9 +505,6 @@ mod tests {
         Registry::from_json(text, "test").expect("registry")
     }
 
-    /// The headline scenario: `A` added f0..f5, `B` edited f0/f4/f5 and added
-    /// f6..f8, and main promoted `B`'s files only (plus f0's older version and
-    /// a main-only file).
     fn partial_promotion_repos() -> (std::path::PathBuf, std::path::PathBuf, String, String) {
         let src = tmp("src");
         init(&src);
@@ -612,7 +522,6 @@ mod tests {
 
         let main = tmp("main");
         init(&main);
-        // Main holds f0's OLDER version plus B's files: a partial promotion.
         write(&main, "f0.txt", "v1\n");
         write(&main, "f4.txt", "v2\n");
         write(&main, "f5.txt", "v2\n");
@@ -631,13 +540,11 @@ mod tests {
         let main_tip = git(&main, &["rev-parse", "HEAD"]);
         let collected = collect_diff(&src, &src_tip, &main, &main_tip);
 
-        // The headline case: never promoted, silently missing.
         for missing in ["f1.txt", "f2.txt", "f3.txt"] {
             assert_eq!(
                 bucket_of(&collected, missing),
                 Some(SubsystemDiffBucket::Missing)
             );
-            // Missing rows list the commits that would promote them (A).
             assert_eq!(
                 collected.touches.get(missing).map(|t| t.len()),
                 Some(1),
@@ -645,19 +552,16 @@ mod tests {
             );
             assert_eq!(collected.touches[missing][0].0, a);
         }
-        // Main's f0 is an ancestor version (v1 behind tip v2): safe to sync.
         assert_eq!(
             bucket_of(&collected, "f0.txt"),
             Some(SubsystemDiffBucket::Behind)
         );
-        // Promoted files match exactly.
         for same in ["f4.txt", "f5.txt", "f6.txt", "f7.txt", "f8.txt"] {
             assert_eq!(
                 bucket_of(&collected, same),
                 Some(SubsystemDiffBucket::Identical)
             );
         }
-        // Touches are newest-first: the detail's latest commit needs no query.
         assert_eq!(
             collected.touches["f4.txt"]
                 .iter()
@@ -672,15 +576,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![b.clone(), a.clone()]
         );
-        // Main-only files are out of scope: never listed, never Missing.
         assert!(!collected.source_tree.contains_key("extra.txt"));
         assert_eq!(bucket_of(&collected, "extra.txt"), None);
     }
 
     #[test]
     fn newer_dated_target_with_older_content_is_still_behind() {
-        // Blob identity decides, dates never do: the target commit is NEWER
-        // by committer date but holds OLDER content — still Behind.
         let src = tmp("srcdate");
         init(&src);
         write(&src, "f.txt", "v1\n");
@@ -691,7 +592,6 @@ mod tests {
         let main = tmp("maindate");
         init(&main);
         write(&main, "f.txt", "v1\n");
-        // Deliberately newer date, older content.
         let _ = commit_all_at(
             &main,
             "main newer date older content",
@@ -711,7 +611,6 @@ mod tests {
     #[test]
     fn main_side_changed_never_claims_a_source_commit() {
         let (src, main, _a, _b) = partial_promotion_repos();
-        // Main independently edits f4: its blob exists nowhere in subsystem history.
         write(&main, "f4.txt", "main-side edit\n");
         let _ = commit_all(&main, "main independent edit");
         let src_tip = git(&src, &["rev-parse", "HEAD"]);
@@ -722,9 +621,6 @@ mod tests {
             Some(SubsystemDiffBucket::MainSideChanged)
         );
 
-        // Resolution contributes f4's REAL subsystem touchers (for the
-        // overwrite the operator can choose) but flags the path, so the UI
-        // says plainly that no subsystem commit produced main's copy.
         let mut touches: HashMap<String, Vec<String>> = HashMap::new();
         for (path, list) in &collected.touches {
             touches.insert(path.clone(), list.iter().map(|(s, _)| s.clone()).collect());
@@ -756,7 +652,6 @@ mod tests {
         for (path, list) in &collected.touches {
             touches.insert(path.clone(), list.iter().map(|(s, _)| s.clone()).collect());
         }
-        // "I just select all the ones that werent promoted": every Missing file.
         let selected: HashSet<String> = ["f1.txt", "f2.txt", "f3.txt"]
             .into_iter()
             .map(str::to_string)
@@ -769,10 +664,7 @@ mod tests {
             &collected.commit_order,
             &HashSet::new(),
         );
-        // The union is exactly {A}: B touched none of the selected paths.
         assert_eq!(resolution.commits, vec![a.clone()]);
-        // ...and A also touched f0/f4/f5, which the user did not select:
-        // pre-excluded so the promotion writes only what was chosen.
         assert_eq!(
             resolution.excluded_paths,
             vec![
@@ -794,8 +686,6 @@ mod tests {
         for (path, list) in &collected.touches {
             touches.insert(path.clone(), list.iter().map(|(s, _)| s.clone()).collect());
         }
-        // A is already promoted on this branch: selecting its files resolves
-        // to nothing (nothing left to promote), not to A again.
         let promoted: HashSet<String> = [a.clone()].into_iter().collect();
         let selected: HashSet<String> = ["f1.txt".to_string()].into_iter().collect();
         let resolution = resolve_selection(
@@ -830,8 +720,6 @@ mod tests {
         let main_tip = git(&main, &["rev-parse", "HEAD"]);
         let collected = collect_diff(&src, &src_tip, &main, &main_tip);
         let list = &collected.touches["f.txt"];
-        // Bounded: the 30 most recent touches, newest first — the click
-        // detail renders these with zero extra spawns.
         assert_eq!(list.len(), MAX_TOUCHES_PER_PATH);
         assert!(collected.touches_truncated.contains("f.txt"));
         let got: Vec<String> = list.iter().map(|(s, _)| s.clone()).collect();
@@ -843,9 +731,6 @@ mod tests {
 
     #[test]
     fn rename_starts_a_new_history_window() {
-        // The walk has no rename detection: a rename reads as delete + add,
-        // so the new path's history starts at the rename commit. The UI
-        // states "history since the last rename" rather than implying more.
         let src = tmp("rename");
         init(&src);
         write(&src, "old.txt", "content\n");
@@ -908,10 +793,6 @@ mod tests {
 
     #[test]
     fn merged_sibling_content_warns_with_the_newer_commit_named() {
-        // A(f=v1); B child (f=v2, newer date); C child of A (f=v3, older
-        // date); M merges B+C keeping v2; D (other file) is the tip. Main
-        // holds v3: reachable from the tip but NOT from the write (B), so
-        // writing the tip version moves f backwards over C's content.
         let src = tmp("mergesrc");
         init(&src);
         write(&src, "f.txt", "v1\n");
@@ -923,7 +804,6 @@ mod tests {
         write(&src, "f.txt", "v3\n");
         let c = commit_all_at(&src, "C version", Some("2020-02-01T00:00:00Z"));
         git(&src, &["checkout", "-q", "master"]);
-        // Keep B's v2 across the merge: the merge itself must not touch f.
         git(&src, &["merge", "-q", "-X", "ours", "--no-edit", "side"]);
         write(&src, "other.txt", "other\n");
         let _d = commit_all(&src, "D other file");
@@ -943,8 +823,6 @@ mod tests {
             .find(|e| e.path == "f.txt")
             .expect("f.txt listed");
         assert_eq!(entry.bucket, SubsystemDiffBucket::Behind);
-        // The newest toucher is B (newer committer date): the log order the
-        // detail renders is [B, C, A], newest first.
         let order: Vec<String> = entry
             .commits
             .iter()
@@ -984,7 +862,6 @@ mod tests {
         assert!(!diff.source_tip.is_empty() && !diff.target_tip.is_empty());
         let by_path: HashMap<&str, &SubsystemDiffEntry> =
             diff.entries.iter().map(|e| (e.path.as_str(), e)).collect();
-        // The universe is the subsystem tree: main-only extra.txt is absent.
         assert!(!by_path.contains_key("extra.txt"));
         let f1 = by_path["f1.txt"];
         assert_eq!(f1.bucket, SubsystemDiffBucket::Missing);
@@ -995,7 +872,6 @@ mod tests {
             f1.commits[0].status.kind,
             crate::github::models::CommitStatusKind::Eligible
         );
-        // The exclusion prefill rides on touched_paths: A touched f0..f5.
         assert_eq!(
             f1.commits[0].touched_paths,
             vec![
@@ -1021,10 +897,7 @@ mod tests {
         assert!(f4.reverts_newer.is_none());
         let f0 = by_path["f0.txt"];
         assert_eq!(f0.bucket, SubsystemDiffBucket::Behind);
-        // An ancestor target version never warns (proven again at the entry
-        // level: v1 is reachable from the write B).
         assert!(f0.reverts_newer.is_none());
-        // Entries arrive sorted by path for a stable render.
         let mut sorted: Vec<&str> = by_path.keys().copied().collect();
         sorted.sort();
         let in_order: Vec<&str> = diff.entries.iter().map(|e| e.path.as_str()).collect();
@@ -1049,9 +922,6 @@ mod tests {
             keys
         }
 
-        // A dropped `rename_all` blanked this UI once with both gates green:
-        // `cargo test` cannot see TS and `tsc` cannot see serde, so the exact
-        // camelCase key sets are pinned here against `src/api/types.ts`.
         let diff = SubsystemDiff {
             subsystem_id: "mod".to_string(),
             source_branch: "master".to_string(),
@@ -1155,7 +1025,6 @@ mod tests {
                 .map(str::to_string)
                 .collect::<Vec<_>>(),
         );
-        // Every bucket variant pins its wire string.
         for (bucket, wire) in [
             (SubsystemDiffBucket::Missing, "missing"),
             (SubsystemDiffBucket::Behind, "behind"),

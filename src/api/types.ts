@@ -28,7 +28,6 @@ export type FileIntegrationPolicy =
 
 export type PromotionMode = 'individual' | 'cumulative';
 
-/** Local-first delivery: `local_direct` (default) commits straight onto the local target branch (no push, no PR — pushing stays manual); `worktree` stages the files into your working tree on the checked-out target branch (no commit, no push, no PR); `local` builds a branch + commit in the user's clone; `push_pr` is the explicit opt-in. */
 export type PromotionDelivery = 'local' | 'local_direct' | 'push_pr' | 'worktree';
 
 /** Conflict policy (wire `onConflict`). Retained for wire compatibility only: promotion is a copy and the subsystem's copy always wins, so a diverged target copy is overwritten (and reported as replaced) under either value. */
@@ -51,7 +50,6 @@ export interface AuthStatus {
   organization: string | null;
   scopes: string[];
   tokenSource: string | null;
-  /** True when a token is obtainable (GH_TOKEN / GITHUB_TOKEN / `gh auth token`). */
   tokenAvailable: boolean;
   gitInstalled: boolean;
   gitVersion: string | null;
@@ -188,11 +186,6 @@ export interface CommitPage {
   commits: CommitSummary[];
   fetchedAt: string;
   dataSource: DataSource;
-  /**
-   * True when the path-date scan hit its limit, so ordering may be incomplete.
-   * The backend turns this into an `Unknown` status plus a note; the UI reads the
-   * note rather than the flag, but the type must match the wire.
-   */
   pathDatesTruncated: boolean;
 }
 
@@ -202,7 +195,6 @@ export interface CommitQuery {
   page: number;
   pageSize: number;
   search: string;
-  /** `null` means "all statuses". */
   statusFilter: CommitStatusKind | null;
   sort: 'newest' | 'oldest';
   shas?: string[];
@@ -337,11 +329,8 @@ export interface PromotionRequest {
   /** Required in cumulative mode: the explicitly verified baseline SHA. */
   baseSha: string | null;
   targetBranch: string;
-  /** The user must have seen the delivery-mode confirmation. */
   confirmationAcknowledged: boolean;
-  /** Omitted ⇒ `local_direct`. */
   delivery?: PromotionDelivery | null;
-  /** Omitted ⇒ `fail`. */
   onConflict?: PromotionOnConflict | null;
   /**
    * The promotion commit's own message. Required: the engine refuses an empty
@@ -349,11 +338,9 @@ export interface PromotionRequest {
    * source commit's subject.
    */
   message: string;
-  /** Paths to leave out of the promotion (exact paths or directory prefixes). */
   excludedPaths?: string[] | null;
 }
 
-/** Per-subsystem counts for all subsystems in one call (Dashboard scale fix). */
 export interface SubsystemSummaryCounts {
   subsystemId: string;
   indexed: number;
@@ -361,17 +348,14 @@ export interface SubsystemSummaryCounts {
   tally: Record<string, number>;
 }
 
-/** Per-file mergeability from the `preflight_promotion` dry run (mirrors the Rust `PreflightOutcome`). */
 export type PreflightOutcome = 'clean' | 'merged' | 'conflict' | 'skipped';
 
 export interface PreflightFileResult {
   path: string;
   outcome: PreflightOutcome;
-  /** Set when writing this path would move it backwards (warning only, never a conflict). */
   revertsNewer: RevertsNewerWork | null;
 }
 
-/** Dry-run mergeability summary: per-file outcomes plus `conflicts` (true refusals only — a diverged target copy is overwritten, never a conflict) and `replaced` (diverged paths the promotion will overwrite). Counts sum to `files.length`. */
 export interface PromotionPreflight {
   files: PreflightFileResult[];
   clean: number;
@@ -379,19 +363,14 @@ export interface PromotionPreflight {
   conflict: number;
   skipped: number;
   conflicts: string[];
-  /** Paths overwritten with the subsystem version (a diverged target copy never refuses). */
   replaced?: string[] | null;
-  /** Paths removed by the promotion. */
   deleted?: string[] | null;
-  /** Paths already identical in the target. */
   unchanged?: string[] | null;
   /** Paths also changed in the main system by something else (warning, not an error). */
   flagged?: string[] | null;
-  /** Paths left out via `excludedPaths`. */
   excluded?: string[] | null;
 }
 
-/** In-tool promotion result (§9.2): `local_direct` commits onto the local target branch; `worktree` stages into the working tree on the checked-out target branch (no commit, no push, no PR — status unchanged); `local` stops at a branch + commit in the user's clone; `push_pr` pushes the branch + opens a PR. */
 export interface PromotionDispatchResult {
   accepted: boolean;
   prUrl: string | null;
@@ -404,17 +383,12 @@ export interface PromotionDispatchResult {
   requestedAt: string;
   findings: ValidationFinding[];
   delivery: PromotionDelivery;
-  /** Literal next steps for `local_direct` / `local` / `worktree` delivery (empty for `push_pr`). */
   nextCommands: string[];
-  /** Paths overwritten with the subsystem version. */
   replaced?: string[] | null;
-  /** Paths removed by the promotion. */
   deleted?: string[] | null;
-  /** Paths already identical in the target. */
   unchanged?: string[] | null;
   /** Paths also changed in the main system by something else (warning, not an error). */
   flagged?: string[] | null;
-  /** Paths left out via `excludedPaths`. */
   excluded?: string[] | null;
 }
 
@@ -507,7 +481,6 @@ export interface CacheStats {
   hits: number;
   misses: number;
   oldestEntryAt: string | null;
-  /** Always true: the cache can be dropped and rebuilt from Git/GitHub history. */
   rebuildable: boolean;
   dataSource: DataSource;
   note: string;
@@ -540,7 +513,6 @@ export interface ApiErrorPayload {
   retryable: boolean;
 }
 
-/** Integration semantics per subsystem (mirrors the Rust `SubsystemEntry.integrationPolicy`). */
 export interface RegistryIntegrationPolicy {
   applicationFiles: string;
   packageJson: string;
@@ -564,9 +536,7 @@ export interface RegistrySubsystem {
 export interface RegistryPromotionPolicy {
   allowedTargetBranches: string[];
   allowedTargetBranchPatterns: string[];
-  /** True only for `push_pr`; a local delivery never opens a pull request. */
   requirePullRequest: boolean;
-  /** Author promotion commits as the signed-in GitHub account instead of the bot. */
   attributeToAccount: boolean;
 }
 
@@ -575,21 +545,17 @@ export interface RegistryConfig {
   mainRepository: string;
   promotion: RegistryPromotionPolicy;
   subsystems: RegistrySubsystem[];
-  /** Absolute path to the user's local clone of the main repository (local delivery). Omitted/null ⇒ resolve via env / managed checkout. */
   localMainRepositoryPath?: string | null;
-  /** Exact paths or directory prefixes owned by the main system (never imported). */
   globalFiles?: string[] | null;
 }
 
 export interface RegistrySnapshot {
   config: RegistryConfig;
-  /** `bundled` = the shipped defaults; `override` = the %APPDATA% file is in use. */
   source: 'bundled' | 'override';
   overridePath: string;
   overrideExists: boolean;
 }
 
-/** Result of a manual "pull latest" over the already-cached checkouts. */
 export interface CheckoutRefresh {
   refreshed: string[];
   skipped: string[];
@@ -604,16 +570,13 @@ export interface CheckoutClear {
   message: string;
 }
 
-/** Bucket for one subsystem path against the target branch tip (wire `bucket`, snake_case). */
 export type SubsystemDiffBucket = 'missing' | 'behind' | 'main_side_changed' | 'identical';
 
-/** The newer subsystem commit a backwards write would revert (wire, camelCase). */
 export interface RevertsNewerWork {
   sha: string;
   subject: string;
 }
 
-/** One subsystem commit touching a diff path: newest-first, with its per-branch status and every path it touched (for the exclusions prefill). */
 export interface SubsystemDiffCommit {
   sha: string;
   shortSha: string;
@@ -624,7 +587,6 @@ export interface SubsystemDiffCommit {
   touchedPaths: string[];
 }
 
-/** One subsystem-tree path against the target tip (wire, camelCase). */
 export interface SubsystemDiffEntry {
   path: string;
   bucket: SubsystemDiffBucket;
@@ -633,11 +595,9 @@ export interface SubsystemDiffEntry {
   mainBlob: string | null;
   commits: SubsystemDiffCommit[];
   commitsTruncated: boolean;
-  /** Set when writing this path would move it backwards (warning only, never a refusal). */
   revertsNewer: RevertsNewerWork | null;
 }
 
-/** Subsystem-versus-main diff for one subsystem against one target branch (wire, camelCase). */
 export interface SubsystemDiff {
   subsystemId: string;
   sourceBranch: string;

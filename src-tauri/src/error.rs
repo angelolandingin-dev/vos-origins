@@ -4,7 +4,6 @@
 
 use serde::Serialize;
 
-/// Kept in sync with `ApiErrorCode` in `src/api/types.ts`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {

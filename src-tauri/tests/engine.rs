@@ -27,10 +27,6 @@ use vos_origins_lib::services::engine::{
 };
 use vos_origins_lib::services::registry::Registry;
 
-// ===========================================================================
-// Sandbox
-// ===========================================================================
-
 mod sandbox {
     use super::*;
 
@@ -193,11 +189,6 @@ mod sandbox {
         git_out(dir, &["rev-parse", "HEAD"])
     }
 
-    /// Re-touch files on `branch` with an explicit committer date, then
-    /// restore the previous HEAD. Used to pin the target copy as
-    /// deterministically newer (or older) than a source commit for the
-    /// add-over-existing recency guard, which compares committer dates at
-    /// second resolution.
     pub fn retouch_with_date(
         dir: &Path,
         branch: &str,
@@ -321,10 +312,6 @@ mod sandbox {
 }
 
 use sandbox::*;
-
-// ===========================================================================
-// Fixtures
-// ===========================================================================
 
 const BASE_MAIN_PKG: &str = r#"{
   "name": "main-system",
@@ -503,10 +490,6 @@ fn create_main_repo(
     }
 }
 
-// ===========================================================================
-// Promotion driver
-// ===========================================================================
-
 struct PromoteOptions {
     subsystem_id: String,
     commits: Vec<String>,
@@ -524,8 +507,6 @@ struct PromoteOptions {
     account_mode: AccountMode,
 }
 
-/// Which account the injected `gh` seam reports; `Unresolved` mimics an
-/// unauthenticated or offline `gh api user`.
 #[derive(Clone, Copy, Default)]
 enum AccountMode {
     #[default]
@@ -881,9 +862,6 @@ fn case5b_out_of_order_selection_is_sorted_not_rejected() {
     let github = StubGitHubOps::new();
     let registry = test_registry();
 
-    // The descendant is listed FIRST. Under copying the order decides nothing -
-    // each path comes from the newest selected commit that touches it - so the
-    // engine sorts ancestor-first instead of refusing the selection.
     let out_of_order = promote(
         &src_dir,
         &create_main_repo(&main_dir, &[], &[]).dir,
@@ -896,7 +874,6 @@ fn case5b_out_of_order_selection_is_sorted_not_rejected() {
     );
     assert!(out_of_order.ok, "{:?}", out_of_order.blockers);
 
-    // The same selection in ancestry order must land the same content.
     let ordered = promote(
         &src_dir,
         &create_main_repo(&main_again_dir, &[], &[]).dir,
@@ -932,7 +909,6 @@ fn case6_registry_policy_rejects_unregistered_disabled_and_bad_targets() {
     let github = StubGitHubOps::new();
     let registry = test_registry();
 
-    // Unregistered subsystem.
     let unregistered = promote(
         &src_dir,
         &main.dir,
@@ -946,7 +922,6 @@ fn case6_registry_policy_rejects_unregistered_disabled_and_bad_targets() {
     );
     assert!(codes(&unregistered).contains(&"SUBSYSTEM_NOT_REGISTERED".to_string()));
 
-    // Disabled subsystem.
     let disabled_registry =
         Registry::from_json(&registry_json(&subsystem_json_ext("", false)), "t").unwrap();
     let disabled = promote(
@@ -961,10 +936,8 @@ fn case6_registry_policy_rejects_unregistered_disabled_and_bad_targets() {
     );
     assert!(codes(&disabled).contains(&"SUBSYSTEM_DISABLED".to_string()));
 
-    // Malformed registry JSON.
     assert!(Registry::from_json("{ broken json", "t").is_err());
 
-    // Target branch not permitted by policy.
     let not_allowed = promote(
         &src_dir,
         &main.dir,
@@ -978,7 +951,6 @@ fn case6_registry_policy_rejects_unregistered_disabled_and_bad_targets() {
     );
     assert!(codes(&not_allowed).contains(&"TARGET_NOT_ALLOWED".to_string()));
 
-    // Unsafe target branch name.
     let unsafe_target = promote(
         &src_dir,
         &main.dir,
@@ -992,7 +964,6 @@ fn case6_registry_policy_rejects_unregistered_disabled_and_bad_targets() {
     );
     assert!(codes(&unsafe_target).contains(&"TARGET_INVALID".to_string()));
 
-    // Policy-allowed but nonexistent target.
     let nonexistent = promote(
         &src_dir,
         &main.dir,
@@ -1322,8 +1293,6 @@ fn case11_divergent_target_copy_is_overwritten_by_subsystem() {
         "overwrite warning is emitted: {:?}",
         report.warnings
     );
-    // A diverged target copy is the normal case: the audit is a single
-    // honest key.
     let msg = report.provenance_message.clone().unwrap_or_default();
     assert!(msg.contains("Promotion-Replaced:"), "{msg}");
     assert!(msg.contains("src/modules/hr/c.txt"), "{msg}");
@@ -1416,7 +1385,6 @@ fn case12_diverged_target_is_overwritten_and_scratch_files_are_never_committed()
         "overwritten path is reported as replaced: {:?}",
         report.changes
     );
-    // No merge scratch ever lands in the commit.
     assert!(!try_branch_has(&main.dir, &branch, "src/merge.txt.ours"));
     assert!(!try_branch_has(&main.dir, &branch, "src/merge.txt.base"));
     assert!(!try_branch_has(&main.dir, &branch, "src/merge.txt.theirs"));
@@ -1581,7 +1549,6 @@ fn case15_duplicate_and_open_pr_are_blocked() {
     );
     assert!(other.ok, "{:?}", other.blockers);
 
-    // An open PR referencing the SHA must block a fresh dispatch.
     let head = format!(
         "{}-anything",
         integration_branch_prefix("hr-management", std::slice::from_ref(&src.d))
@@ -2127,8 +2094,6 @@ fn oracle_p1_copy_applies_new_path_only() {
         &[],
     );
     let work = make_temp_dir("wt-copy");
-    // Divergent old path: rename handling would merge/rewrite it, copy
-    // handling must leave it alone.
     write(&work, "src/old.txt", b"worktree divergent content\n");
 
     let entry = DeltaEntry {
@@ -2165,10 +2130,6 @@ fn oracle_p1_copy_applies_new_path_only() {
     );
 }
 
-// ===========================================================================
-// Local-first delivery (new wire `delivery`, default `local`)
-// ===========================================================================
-
 #[test]
 fn local_mode_creates_branch_in_clone_without_push_or_pr_and_leaves_worktree_clean() {
     use vos_origins_lib::github::models::PromotionDelivery;
@@ -2203,7 +2164,6 @@ fn local_mode_creates_branch_in_clone_without_push_or_pr_and_leaves_worktree_cle
     let branch = report.integration_branch.clone().expect("branch");
     let commit = report.commit_sha.clone().expect("commit");
 
-    // Branch + provenance commit exist in the target clone.
     assert!(
         ref_in(&main.dir, &format!("refs/heads/{branch}")).is_some(),
         "integration branch must exist locally"
@@ -2230,7 +2190,6 @@ fn local_mode_creates_branch_in_clone_without_push_or_pr_and_leaves_worktree_cle
         "working tree stays clean (work done in a temp worktree)"
     );
 
-    // No push, no PR — stub records zero calls, report carries none.
     assert!(
         github.calls_named("pushBranch").is_empty(),
         "local mode must not push: {:?}",
@@ -2330,7 +2289,6 @@ fn delivery_omitted_on_the_wire_defaults_to_local_direct() {
 fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
     use vos_origins_lib::github::models::PromotionDelivery;
 
-    // Not a git repository.
     let src_dir = make_temp_dir("src-local-err");
     let src = create_source_chain(&src_dir);
     let not_git = make_temp_dir("not-git");
@@ -2355,7 +2313,6 @@ fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
         codes(&bad_repo)
     );
 
-    // Missing target ref.
     let main_dir = make_temp_dir("main-local-missing");
     let main = create_main_repo(&main_dir, &[], &[]);
     let missing = promote(
@@ -2377,7 +2334,6 @@ fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
         codes(&missing)
     );
 
-    // Existing branch (same nonce ⇒ same branch name).
     let main_dir2 = make_temp_dir("main-local-collide");
     let main2 = create_main_repo(&main_dir2, &[], &[]);
     let fixed_nonce = format!("collide-{}-{}", std::process::id(), "branch-exists");
@@ -2433,10 +2389,6 @@ fn local_mode_fails_closed_on_non_git_target_missing_ref_and_existing_branch() {
     );
 }
 
-// ===========================================================================
-// `local_direct` delivery: the commit lands on the local target branch
-// ===========================================================================
-
 #[test]
 fn local_direct_checked_out_target_advances_branch_and_worktree() {
     use vos_origins_lib::github::models::PromotionDelivery;
@@ -2469,7 +2421,6 @@ fn local_direct_checked_out_target_advances_branch_and_worktree() {
     assert!(report.ok, "{:?}", report.blockers);
     let commit = report.commit_sha.clone().expect("commit");
 
-    // The target branch advanced to the provenance commit; no temp branch.
     assert_eq!(sha(&main.dir, "staging"), commit, "staging advanced");
     assert!(
         report.integration_branch.is_none(),
@@ -2480,7 +2431,6 @@ fn local_direct_checked_out_target_advances_branch_and_worktree() {
     assert!(message.contains(&src.c), "{message}");
     assert!(is_ancestor(&main.dir, &staging_before, &commit));
 
-    // The checkout followed: still on staging, at the new commit, tree clean.
     assert_eq!(
         git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
         "staging",
@@ -2497,7 +2447,6 @@ fn local_direct_checked_out_target_advances_branch_and_worktree() {
         "promoted file present in the working tree"
     );
 
-    // No push, no PR — stub records zero calls, report carries none.
     assert!(
         github.calls_named("pushBranch").is_empty(),
         "local_direct must not push: {:?}",
@@ -2510,7 +2459,6 @@ fn local_direct_checked_out_target_advances_branch_and_worktree() {
     assert!(report.push.is_none());
     assert!(report.pull_request.is_none());
 
-    // No temp worktree and no integration branch left behind.
     let worktrees = git_out(&main.dir, &["worktree", "list"]);
     assert!(
         !worktrees.contains("vos-integration-"),
@@ -2536,7 +2484,6 @@ fn local_direct_other_branch_checked_out_moves_ref_only() {
     let github = StubGitHubOps::new();
     let registry = test_registry();
 
-    // HEAD stays on master; staging is the promotion target.
     assert_eq!(
         git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
         "master"
@@ -2560,7 +2507,6 @@ fn local_direct_other_branch_checked_out_moves_ref_only() {
     assert!(report.ok, "{:?}", report.blockers);
     let commit = report.commit_sha.clone().expect("commit");
 
-    // The target ref moved to the provenance commit.
     assert_eq!(sha(&main.dir, "staging"), commit);
     let message = git_out(&main.dir, &["log", "-1", "--format=%B", "staging"]);
     assert!(message.contains("Subsystem-ID: hr-management"), "{message}");
@@ -2808,7 +2754,6 @@ fn local_direct_next_commands_carry_cd_and_push() {
     );
     assert_eq!(commands[1], "git push origin staging", "{commands:?}");
 
-    // Result shape: local_direct carries commands and no PR.
     use vos_origins_lib::github::models::{PromotionDelivery, PromotionDispatchResult};
     let direct_json = serde_json::json!({
         "accepted": true, "prUrl": null, "prNumber": null,
@@ -2827,7 +2772,6 @@ fn local_direct_next_commands_carry_cd_and_push() {
 
 #[test]
 fn registry_round_trip_with_local_main_repository_path_set_and_unset() {
-    // Set.
     let with_path = format!(
         r#"{{"mainRepository":"ORG/main-system","localMainRepositoryPath":{},"promotion":{{"allowedTargetBranches":["staging"],"allowedTargetBranchPatterns":[],"requirePullRequest":true}},"subsystems":[]}}"#,
         serde_json::to_string(&sandbox_root().to_string_lossy().to_string()).unwrap()
@@ -2839,7 +2783,6 @@ fn registry_round_trip_with_local_main_repository_path_set_and_unset() {
     let reparsed = Registry::from_json(&encoded, "reparse").expect("round-trips");
     assert_eq!(parsed, reparsed);
 
-    // Unset (field omitted) ⇒ None.
     let without = r#"{"mainRepository":"ORG/main-system","promotion":{"allowedTargetBranches":["staging"],"allowedTargetBranchPatterns":[],"requirePullRequest":true},"subsystems":[]}"#;
     let parsed_without = Registry::from_json(without, "without").expect("parses without path");
     assert_eq!(parsed_without.local_main_repository_path, None);
@@ -2892,7 +2835,6 @@ fn local_next_commands_carry_cd_push_and_pr_create() {
         "{commands:?}"
     );
 
-    // Result shape: local carries commands and no PR; push_pr carries none.
     use vos_origins_lib::github::models::{PromotionDelivery, PromotionDispatchResult};
     let local_json = serde_json::json!({
         "accepted": true, "prUrl": null, "prNumber": null,
@@ -2909,16 +2851,11 @@ fn local_next_commands_carry_cd_push_and_pr_create() {
     assert!(local.pr_number.is_none());
 }
 
-// ===========================================================================
-// Add-over-existing recency guard (subsystem split history)
-// ===========================================================================
-
 #[test]
 fn add_over_existing_with_older_target_is_overwritten_by_membership() {
     let src_dir = make_temp_dir("src-addupdate");
     let main_dir = make_temp_dir("main-addupdate");
 
-    // The file is new in the subsystem's fresh history (an add).
     init_repo(&src_dir, "master");
     commit_files_dated(
         &src_dir,
@@ -3099,7 +3036,6 @@ fn plain_add_without_target_file_still_applies_as_add() {
         "2024-01-01T00:00:00+00:00",
     );
 
-    // The target has no copy of the path at all.
     let main = create_main_repo(&main_dir, &[], &[]);
     let github = StubGitHubOps::new();
     let registry = test_registry();
@@ -3188,17 +3124,10 @@ fn plain_modify_diverged_target_is_overwritten() {
     );
 }
 
-// ===========================================================================
-// Conflict policy (on_conflict) + whitespace-only auto-resolution
-// ===========================================================================
-
 #[test]
 fn conflict_source_unchanged_binary_keeps_target() {
     use vos_origins_lib::services::engine::apply::ApplyOutcome;
 
-    // Recorded defect: a binary the source did not touch (theirs == base)
-    // faked a merge conflict when the target had modified it, because the
-    // only fast path was ours == base and `git merge-file` refuses binaries.
     let src_dir = make_temp_dir("src-bin-untouched");
     init_repo(&src_dir, "master");
     let v1: &[u8] = &[0x00, 0x01, 0x02, 0xff];
@@ -3210,8 +3139,6 @@ fn conflict_source_unchanged_binary_keeps_target() {
         &[],
     );
     let base = sha(&src_dir, "HEAD");
-    // The source commit touches only an unrelated file: the binary blob is
-    // identical to the base blob.
     let head = commit_files(&src_dir, "B: unrelated", &[("src/other.txt", b"b\n")], &[]);
 
     let work = make_temp_dir("wt-bin-untouched");
@@ -3270,7 +3197,6 @@ fn conflict_take_does_not_bypass_guards() {
     .expect_err("traversal must fail closed even under take_subsystem");
     assert_eq!(err.kind, "path-escape");
 
-    // An incompatible dependency range still fails closed under take_subsystem.
     let src_dir = make_temp_dir("src-takedep");
     let main_dir = make_temp_dir("main-takedep");
     let src = create_source_chain(&src_dir);
@@ -3434,7 +3360,6 @@ fn crlf_worktree_matching_base_writes_clean() {
     .expect("CRLF base match must write cleanly");
     assert_eq!(set.results.len(), 1, "{:?}", set.results);
     assert_eq!(set.results[0].outcome, ApplyOutcome::Written);
-    // Written bytes are byte-identical to the source blob (LF).
     assert_eq!(
         std::fs::read(work.join("src").join("app.txt")).unwrap(),
         b"line1\nline2 changed\nline3\n"
@@ -3520,7 +3445,6 @@ fn binary_with_crlf_bytes_written_byte_exact() {
         &[],
     );
 
-    // Target equals the binary base → clean overwrite, bytes never normalised.
     let work = make_temp_dir("wt-crlf-binary");
     write(&work, "src/assets/bin.dat", base_bytes);
 
@@ -3549,10 +3473,6 @@ fn binary_with_crlf_bytes_written_byte_exact() {
         "binary must be written byte-exact, CRLF bytes preserved"
     );
 }
-
-// ===========================================================================
-// `worktree` delivery: staged into the user's own checkout, never committed
-// ===========================================================================
 
 fn staged_names(dir: &Path) -> Vec<String> {
     let out = git_out(dir, &["diff", "--cached", "--name-only"]);
@@ -3591,7 +3511,6 @@ fn worktree_promotion_stages_without_commit_or_branch() {
     );
     assert!(report.ok, "{:?}", report.blockers);
 
-    // Nothing committed anywhere: no SHA, no trailers, no branch, no push/PR.
     assert!(report.commit_sha.is_none(), "worktree never commits");
     assert!(
         report.integration_branch.is_none(),
@@ -3622,7 +3541,6 @@ fn worktree_promotion_stages_without_commit_or_branch() {
         "temp worktree must be removed: {worktrees}"
     );
 
-    // The copied paths are staged on the target branch with source content.
     let mut expected = vec![
         "package.json".to_string(),
         "src/modules/hr/c.txt".to_string(),
@@ -3650,7 +3568,6 @@ fn worktree_promotion_stages_without_commit_or_branch() {
         "unrelated packages retained"
     );
 
-    // Still on the target branch, with only the staged promotion in the tree.
     assert_eq!(
         git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
         "staging"
@@ -3735,7 +3652,6 @@ fn worktree_target_not_checked_out_is_refused() {
     let github = StubGitHubOps::new();
     let registry = test_registry();
 
-    // HEAD stays on master; staging is the promotion target.
     assert_eq!(
         git_out(&main.dir, &["rev-parse", "--abbrev-ref", "HEAD"]),
         "master"
@@ -3903,7 +3819,6 @@ fn worktree_wire_value_parses_and_next_commands_carry_diff_and_commit() {
         "{commands:?}"
     );
 
-    // Result shape: worktree carries staged commands and no commit or PR.
     let worktree_json = serde_json::json!({
         "accepted": true, "prUrl": null, "prNumber": null,
         "branch": "staging", "commitSha": null,
@@ -3926,15 +3841,10 @@ fn worktree_wire_value_parses_and_next_commands_carry_diff_and_commit() {
 // reporting / housekeeping (G1, G2, G5, G6)
 // ===========================================================================
 
-/// A non-contiguous selection (`[B, D]` skipping `C`) always promotes: there
-/// is no gap refusal. When `C`'s edit predates the newest selected toucher of
-/// the shared path, the shipped blob is the selected commit's own content and
-/// `C`'s edit is not carried.
 #[test]
 fn non_contiguous_selection_promotes_when_skip_predates_newest_toucher() {
     let src_dir = make_temp_dir("gap-src");
     init_repo(&src_dir, "master");
-    // A base, B touches P+R, C touches P only, D touches Q only.
     commit_files(
         &src_dir,
         "A base",
@@ -3969,8 +3879,6 @@ fn non_contiguous_selection_promotes_when_skip_predates_newest_toucher() {
         allowed.blockers
     );
     let branch = allowed.integration_branch.clone().unwrap();
-    // The newest selected toucher of P is B (D does not touch P), so the
-    // shipped blob is B's own `b` — C's later edit is not carried.
     assert_eq!(branch_file_text(&main.dir, &branch, "p.txt"), "b\n");
     assert_eq!(branch_file_text(&main.dir, &branch, "q.txt"), "d\n");
     assert!(try_branch_has(&main.dir, &branch, "r.txt"));
@@ -4044,9 +3952,6 @@ fn pin_non_contiguous_overlap_promotes_and_carries_skipped_edits() {
     let _ = c;
 }
 
-/// A non-contiguous selection whose net effect on the shared path is undone
-/// (`newest selected == oldest base`) still promotes; the path ships the base
-/// content.
 #[test]
 fn non_contiguous_undone_effect_promotes() {
     let src_dir = make_temp_dir("gap-undone-src");
@@ -4064,8 +3969,6 @@ fn non_contiguous_undone_effect_promotes() {
     let main = create_main_repo(&main_dir, &[], &[("p.txt", b"a\n")]);
     let github = StubGitHubOps::new();
     let registry = test_registry();
-    // E restores P to base (`a`) while keeping R (`b`, so the run is not a
-    // NOOP). Select B,E: P's newest selected blob is the base content again.
     let e = commit_files(
         &src_dir,
         "E undoes C on P keeps R",
@@ -4092,7 +3995,6 @@ fn non_contiguous_undone_effect_promotes() {
 /// Subsystem-ID when present, else unknown/direct. Wire: excludedPaths.
 #[test]
 fn overwrite_behind_or_diverged_allows_and_audits_replaced() {
-    // Behind: target matches oldest base → allow.
     let src_dir = make_temp_dir("behind-src");
     init_repo(&src_dir, "master");
     commit_files(&src_dir, "A base", &[("keep.txt", b"v1\n")], &[]);
@@ -4117,7 +4019,6 @@ fn overwrite_behind_or_diverged_allows_and_audits_replaced() {
         allowed.blockers
     );
     assert!(allowed.changes.replaced.iter().any(|p| p == "keep.txt"));
-    // Flagged? target (v1) == oldest base (v1) → not flagged.
     assert!(!allowed.changes.flagged.iter().any(|p| p == "keep.txt"));
 
     // Diverged with Subsystem-ID trailer in target's last changer.
@@ -4165,7 +4066,6 @@ fn overwrite_behind_or_diverged_allows_and_audits_replaced() {
     );
 }
 
-/// Excluded paths are skipped and reported (remedy two is real).
 #[test]
 fn excluded_paths_are_skipped_and_reported() {
     let src_dir = make_temp_dir("excl-src");
@@ -4195,7 +4095,6 @@ fn excluded_paths_are_skipped_and_reported() {
     assert!(!try_branch_has(&main.dir, &branch, "src/modules/hr/c.txt"));
 }
 
-/// globalFiles hit refuses.
 #[test]
 fn global_files_hit_refuses() {
     let src_dir = make_temp_dir("global-src");
@@ -4277,15 +4176,10 @@ fn reporting_lists_replaced_deleted_unchanged_flagged_excluded() {
         ],
         &[],
     );
-    // Delete del.txt in B as well (add then remove in same commit? simpler:
-    // B deletes del.txt via remove + add others).
     std::fs::remove_file(src_dir.join("del.txt")).ok();
-    // Recommit B with the deletion (amend the files above into one delta).
-    // Easiest: create C that deletes del.txt and asserts reporting.
     let c = commit_files(&src_dir, "C delete", &[("mod.txt", b"new\n")], &[]);
     let _ = (b, c);
     let main_dir = make_temp_dir("report-main");
-    // Target matches base for mod/same/del (behind), no file for add.
     let main = create_main_repo(
         &main_dir,
         &[],
@@ -4297,7 +4191,6 @@ fn reporting_lists_replaced_deleted_unchanged_flagged_excluded() {
     );
     let github = StubGitHubOps::new();
     let registry = test_registry();
-    // Promote the single tip that carries mod/add (use src tip).
     let tip = sha(&src_dir, "HEAD");
     let report = promote(
         &src_dir,
@@ -4323,7 +4216,6 @@ fn reporting_lists_replaced_deleted_unchanged_flagged_excluded() {
     );
 }
 
-/// Housekeeping: vos-sources refs are deleted post-run; re-promote refused.
 #[test]
 fn housekeeping_cleans_vos_sources_and_refuses_repromote() {
     let src_dir = make_temp_dir("house-src");
@@ -4343,7 +4235,6 @@ fn housekeeping_cleans_vos_sources_and_refuses_repromote() {
         },
     );
     assert!(first.ok, "{:?}", first.blockers);
-    // No flag is a no-op: refs/vos-sources/* empty post-run.
     let refs = git_out(
         &main.dir,
         &["for-each-ref", "--format=%(refname)", "refs/vos-sources/"],
@@ -4352,7 +4243,6 @@ fn housekeeping_cleans_vos_sources_and_refuses_repromote() {
         refs.trim().is_empty(),
         "vos-sources refs must be empty: {refs}"
     );
-    // Land the first promotion, then re-promoting the same SHA refuses.
     advance_ref(
         &main.dir,
         "staging",
@@ -4376,7 +4266,6 @@ fn housekeeping_cleans_vos_sources_and_refuses_repromote() {
     );
 }
 
-/// Housekeeping: linked worktree checkout refuses update-ref.
 #[test]
 fn linked_worktree_checkout_refuses_update_ref() {
     use vos_origins_lib::github::models::PromotionDelivery;
@@ -4386,7 +4275,6 @@ fn linked_worktree_checkout_refuses_update_ref() {
     let main = create_main_repo(&main_dir, &[], &[]);
     let github = StubGitHubOps::new();
     let registry = test_registry();
-    // Linked worktree holding staging, while HEAD here is master (update-ref path).
     let linked = make_temp_dir("linked-wt");
     assert!(sandbox::git_try(
         &main.dir,
@@ -4413,7 +4301,6 @@ fn linked_worktree_checkout_refuses_update_ref() {
         "{:?}",
         codes(&report)
     );
-    // Cleanup linked worktree.
     let _ = std::process::Command::new("git")
         .arg("-C")
         .arg(&main.dir)
@@ -4437,8 +4324,6 @@ fn worktree_ignored_is_named_skip_crlf_passes_extra_names_paths() {
     );
     let main_dir = make_temp_dir("wt-ignore-main");
     let main = create_main_repo(&main_dir, &[], &[("keep.txt", b"base\n")]);
-    // Target ignores *.log (commit the rule on staging, which already exists
-    // from create_main_repo).
     git_out(&main.dir, &["checkout", "-q", "staging"]);
     std::fs::write(main.dir.join(".gitignore"), "*.log\n").expect("gitignore");
     git_out(&main.dir, &["add", ".gitignore"]);
@@ -4525,7 +4410,6 @@ fn selective_repromotion_over_previously_promoted_content_is_clean() {
     let github = StubGitHubOps::new();
     let registry = test_registry();
 
-    // Promote C1 first; the target now holds C1's version of the path.
     let first = promote(
         &src_dir,
         &main.dir,
@@ -4544,8 +4428,6 @@ fn selective_repromotion_over_previously_promoted_content_is_clean() {
     );
     assert_eq!(branch_file_text(&main.dir, "staging", "shared.txt"), "c1\n");
 
-    // Preflight selecting ONLY C5: the target's C1 bytes are the subsystem's
-    // own earlier content (outside the range) → Clean, never Conflict.
     let scratch = make_temp_dir("reselect-scratch");
     let empty: Vec<String> = Vec::new();
     let source_tip = sha(&src_dir, "master");
@@ -4569,14 +4451,11 @@ fn selective_repromotion_over_previously_promoted_content_is_clean() {
         .expect("shared.txt in preflight");
     assert_eq!(file.outcome, PreflightOutcome::Clean, "{preflight:?}");
     assert!(preflight.conflicts.is_empty(), "{preflight:?}");
-    // The target holds an ANCESTOR version (C1 behind C5), not newer work: no
-    // backwards-write warning.
     assert!(
         file.reverts_newer.is_none(),
         "an ancestor target version is simply behind, never a reverts-newer warning: {preflight:?}"
     );
 
-    // And the apply writes C5's bytes.
     let second = promote(
         &src_dir,
         &main.dir,
@@ -4592,10 +4471,6 @@ fn selective_repromotion_over_previously_promoted_content_is_clean() {
     assert_eq!(branch_file_text(&main.dir, &branch, "shared.txt"), "c5\n");
 }
 
-/// A target blob that exists nowhere in the source repo is main-system-only
-/// content — and the subsystem's copy still wins: preflight reports `clean` +
-/// `replaced`, and the apply overwrites it. Promotion is a copy; there is no
-/// "who wins" refusal for a diverged target.
 #[test]
 fn target_blob_absent_from_source_repo_is_overwritten() {
     use vos_origins_lib::services::engine::preflight::{compute_preflight, PreflightRequest};
@@ -4606,7 +4481,6 @@ fn target_blob_absent_from_source_repo_is_overwritten() {
     commit_files(&src_dir, "A base", &[("notes.txt", b"v1\n")], &[]);
     let b = commit_files(&src_dir, "B edit", &[("notes.txt", b"v2\n")], &[]);
     let main = create_main_repo(&main_dir, &[], &[("notes.txt", b"v1\n")]);
-    // Main-system-only bytes: no source commit ever produced them.
     commit_message_on_branch(
         &main.dir,
         "staging",
@@ -4636,8 +4510,6 @@ fn target_blob_absent_from_source_repo_is_overwritten() {
     assert!(preflight.conflicts.is_empty(), "{preflight:?}");
     assert_eq!(preflight.conflict, 0);
     assert_eq!(preflight.replaced, vec!["notes.txt".to_string()]);
-    // Main-system-only bytes came from nowhere in subsystem history, so there
-    // is no newer subsystem commit to name: no backwards-write warning.
     let file = preflight
         .files
         .iter()
@@ -4672,9 +4544,6 @@ fn target_blob_absent_from_source_repo_is_overwritten() {
     );
 }
 
-/// The subsystem's copy overwrites the diverged path and reports it as
-/// replaced + conflict-taken. The overwrite is recorded in the commit trailers
-/// under the single honest key (`Promotion-Replaced`).
 #[test]
 fn subsystem_overwrites_diverged_path_reports_replaced_and_trailer() {
     let src_dir = make_temp_dir("src-takesub");
@@ -4746,7 +4615,6 @@ fn subsystem_overwrites_diverged_path_reports_replaced_and_trailer() {
 /// lockfile failure, and secret/main-owned skips all stand.
 #[test]
 fn take_subsystem_does_not_bypass_global_secret_or_lockfile_guards() {
-    // (a) Protected app-shell file: still GLOBAL_FILE_PROTECTED.
     let src_dir = make_temp_dir("src-takeglobal");
     init_repo(&src_dir, "master");
     commit_files(&src_dir, "A base", &[("app/shell.tsx", b"v1\n")], &[]);
@@ -4774,7 +4642,6 @@ fn take_subsystem_does_not_bypass_global_secret_or_lockfile_guards() {
         codes(&global)
     );
 
-    // (b) Lockfile failure: still LOCKFILE_MANAGER_UNSUPPORTED.
     let src2_dir = make_temp_dir("src-takelock");
     let main2_dir = make_temp_dir("main-takelock");
     let src2 = create_source_chain(&src2_dir);
@@ -4867,10 +4734,6 @@ fn take_subsystem_does_not_bypass_global_secret_or_lockfile_guards() {
     assert_eq!(branch_file_text(&main3.dir, &branch, "notes.txt"), "v2\n");
 }
 
-// ---------------------------------------------------------------------------
-// Commit attribution
-// ---------------------------------------------------------------------------
-
 fn registry_with_attribution(attribute: bool) -> Registry {
     let json = registry_json(&subsystem_json("")).replace(
         "\"requirePullRequest\": true",
@@ -4945,7 +4808,6 @@ fn unresolved_account_falls_back_to_the_bot_without_failing() {
     let main = create_main_repo(&main_dir, &[], &[]);
     let github = StubGitHubOps::new();
 
-    // Attribution is on (the default) but the account cannot be resolved.
     let report = promote(
         &src_dir,
         &main.dir,

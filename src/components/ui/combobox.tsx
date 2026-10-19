@@ -181,13 +181,6 @@ export function Combobox({
               className="h-[29px] w-full bg-transparent pr-2 pl-8 text-xs text-fg outline-none placeholder:text-disabled"
             />
           </div>
-          {/*
-            Capped viewport: `max-h` + `overflow-y-auto` so a long option set
-            scrolls inside the popup; `overscroll-contain` and a wheel
-            stop-propagation keep a wheel gesture at the end of the list from
-            scrolling the surface behind it. Arrow-key movement still scrolls
-            the highlighted option into view (see the effect above).
-          */}
           <div
             ref={listRef}
             id={listId}

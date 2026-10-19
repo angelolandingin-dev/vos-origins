@@ -19,7 +19,6 @@ import type { Route } from './navigation';
 
 const DEFAULT_TARGET_BRANCH = 'staging';
 
-/** Remembers the chosen target branch across restarts; falls back to the policy list. */
 const TARGET_BRANCH_KEY = 'vos-origins.target-branch';
 
 function readTargetBranchSetting(): string | null {
@@ -27,7 +26,6 @@ function readTargetBranchSetting(): string | null {
     const value = window.localStorage.getItem(TARGET_BRANCH_KEY);
     return value && value.length > 0 ? value : null;
   } catch {
-    /* Storage unavailable - the policy list decides instead. */
     return null;
   }
 }
@@ -54,7 +52,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   }, []);
   const [selectedShas, setSelectedShasState] = useState<string[]>([]);
   const [focusedSha, setFocusedSha] = useState<string | null>(null);
-  /** Summaries for selected SHAs, accumulated across pages/filters so a selection once seen is never forgotten. */
   const [selectedSummaries, setSelectedSummaries] = useState<Map<string, CommitSummary>>(
     () => new Map(),
   );
@@ -95,7 +92,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       .map((branch) => branch.name);
   }, [targetBranches.data]);
 
-  // Stays aligned with the policy list once it loads, derived instead of written from an effect.
   const targetBranch = useMemo(() => {
     if (!allowedTargetBranches || allowedTargetBranches.length === 0) {
       return targetBranchSetting ?? DEFAULT_TARGET_BRANCH;
@@ -183,8 +179,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     setSelectedSummaries((prev) => {
       const next = new Map(prev);
       let changed = false;
-      // A handoff from the read-only browser carries its own summary so the
-      // Promote tab shows the subject immediately, before its listing loads.
       for (const commit of commits) {
         if (shas.includes(commit.sha) && next.get(commit.sha) !== commit) {
           next.set(commit.sha, commit);
@@ -328,7 +322,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         targetBranch,
         confirmationAcknowledged: true,
         delivery: promotion.delivery,
-        // Promotion is a copy: the subsystem's copy always wins (see above).
         onConflict: 'take_subsystem',
         message: promotion.message,
         excludedPaths: promotion.excludedPaths,

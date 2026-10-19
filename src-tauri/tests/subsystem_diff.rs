@@ -109,10 +109,6 @@ fn test_registry() -> Registry {
     Registry::from_json(text, "test").expect("registry")
 }
 
-/// Commit `B` alone was promoted to staging: main has `g` at v1 and `h`,
-/// and is silently missing f1..f3. The integration commit carries real
-/// provenance trailers, so statuses come from the existing per-branch
-/// machinery — never a second opinion.
 #[test]
 fn partial_promotion_end_to_end_missing_behind_identical_with_statuses() {
     let src = tmp("src");
@@ -132,7 +128,6 @@ fn partial_promotion_end_to_end_missing_behind_identical_with_statuses() {
     let _ = commit_all(&main, "main base");
     git(&main, &["branch", "staging"]);
     git(&main, &["checkout", "-q", "staging"]);
-    // B's files only: g at v1 (older), h at B's version; f1..f3 absent.
     write(&main, "g.txt", "v1\n");
     write(&main, "h.txt", "new\n");
     let message = build_provenance_message(&ProvenanceInput {
@@ -153,7 +148,6 @@ fn partial_promotion_end_to_end_missing_behind_identical_with_statuses() {
     assert_eq!(diff.target_branch, "staging");
     let by_path: HashMap<&str, _> = diff.entries.iter().map(|e| (e.path.as_str(), e)).collect();
 
-    // The gap: never promoted, listed as Missing with A's eligible status.
     for missing in ["f1.txt", "f2.txt", "f3.txt"] {
         let entry = by_path[missing];
         assert_eq!(entry.bucket, SubsystemDiffBucket::Missing);
@@ -161,8 +155,6 @@ fn partial_promotion_end_to_end_missing_behind_identical_with_statuses() {
         assert_eq!(entry.commits[0].sha, a);
         assert_eq!(entry.commits[0].status.kind, CommitStatusKind::Eligible);
     }
-    // Behind with a mixed history: B integrated, A still eligible — the
-    // rail answers "which commits were never promoted" directly.
     let g = by_path["g.txt"];
     assert_eq!(g.bucket, SubsystemDiffBucket::Behind);
     assert_eq!(
@@ -176,9 +168,6 @@ fn partial_promotion_end_to_end_missing_behind_identical_with_statuses() {
     let h = by_path["h.txt"];
     assert_eq!(h.bucket, SubsystemDiffBucket::Identical);
 
-    // The loop closes: selecting every Missing file resolves to {A} with g
-    // pre-excluded — the same commits and exclusions a careful manual
-    // selection would produce. B is already promoted, so it never re-enters.
     let mut touches: HashMap<String, Vec<String>> = HashMap::new();
     let mut main_side: HashSet<String> = HashSet::new();
     let mut commit_paths: HashMap<String, Vec<String>> = HashMap::new();
@@ -197,7 +186,6 @@ fn partial_promotion_end_to_end_missing_behind_identical_with_statuses() {
         }
         touches.insert(entry.path.clone(), shas);
     }
-    // Newest-first global order for determinism (B before A here).
     order.reverse();
     let promoted: HashSet<String> = [b.clone()].into_iter().collect();
     let selected: HashSet<String> = ["f1.txt", "f2.txt", "f3.txt"]

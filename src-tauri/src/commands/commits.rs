@@ -53,8 +53,6 @@ pub(crate) fn commits_cache_key(mode: &str, query: &CommitQuery) -> String {
     )
 }
 
-/// Full request identity with sorted `shas`, so tab remounts and reordered
-/// callers share one cache entry (and one clone+`gh` round).
 pub(crate) fn statuses_cache_key(
     mode: &str,
     target_branch: &str,
@@ -104,7 +102,6 @@ pub async fn get_subsystem_commits(
     state: State<'_, AppState>,
     query: CommitQuery,
 ) -> AppResult<CommitPage> {
-    // Keep the cache key mode-scoped so live and fixture never collide.
     let key = commits_cache_key(mode_prefix(), &query);
     cached_json(&state, &key, || {
         if live_read::use_fixtures() {
@@ -114,7 +111,6 @@ pub async fn get_subsystem_commits(
 
         let registry = live_read::load_live_registry()?;
         let token = live_token()?;
-        // Reusable on-disk checkouts: repeat visits reuse the same clone.
         let (target_dir, _) = live_read::resolve_target_checkout(
             &registry.main_repository,
             registry.local_main_repository_path.as_deref(),
@@ -123,7 +119,6 @@ pub async fn get_subsystem_commits(
         let github = RealGitHubOps::new(token.clone());
         let source_resolver =
             |entry: &SubsystemEntry| Some(authenticated_remote_url(&entry.repository, &token));
-        // Resolve the source checkout for this subsystem.
         let entry = registry
             .find(&query.subsystem_id)
             .cloned()
@@ -150,8 +145,6 @@ pub async fn get_commit_details(
                     .commit_details(world, &subsystem_id, &sha, &target_branch)
             });
         }
-        // Cached like every other read: status + PR overlays refresh when the
-        // 90s entry expires, and promotion clears the cache on dispatch.
         let registry = live_read::load_live_registry()?;
         let token = live_token()?;
         let (target_dir, _) = live_read::resolve_target_checkout(

@@ -1,6 +1,3 @@
-//! Conservative semver compatibility: unparseable ranges are `Unknown`,
-//! and the engine fails closed on unknown/incompatible.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComparisonKind {
     Identical,

@@ -1,10 +1,6 @@
 import type { ReactNode } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 
-/**
- * Ledger-styled Radix Tooltip for truncated text and icon-only buttons.
- * Flat (hairline border, no shadow), 3px radius, 11px text — no shadcn look.
- */
 export function Tooltip({
   content,
   children,

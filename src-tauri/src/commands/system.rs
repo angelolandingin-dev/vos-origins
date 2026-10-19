@@ -101,9 +101,6 @@ fn configured_local_main_clone(
     crate::services::checkouts::local_dir_for(&registry.main_repository)
 }
 
-/// Manual "pull latest": force-fetch every **already-cached** checkout so the
-/// next read is fresh. Never clones a repo that has not been opened yet, so the
-/// action stays fast and predictable.
 #[tauri::command]
 pub async fn refresh_checkouts(
     state: State<'_, AppState>,
@@ -161,7 +158,6 @@ pub async fn refresh_checkouts(
         );
     }
 
-    // Cached responses would mask the refresh.
     state.cache.clear();
     out.message = format!(
         "Refreshed {} checkout(s); {} not cached yet; {} failed.",

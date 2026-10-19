@@ -1,5 +1,3 @@
-//! Registry commands: live (registry-backed) by default, fixtures on opt-in.
-
 use serde::Serialize;
 use tauri::State;
 
@@ -55,7 +53,6 @@ pub async fn get_subsystem_summaries(
             for sub in &subsystems {
                 let commits = world.commits_of(&sub.id);
                 let total = commits.len() as u32;
-                // Fixture statuses via the adapter on the default target.
                 let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
                 let statuses = state.adapter.integration_statuses(
                     world,
@@ -83,7 +80,6 @@ pub async fn get_subsystem_summaries(
     }
 
     let registry = live_read::load_live_registry()?;
-    // Tally target: first allowed branch (the UI's default target).
     let tally_branch = registry
         .promotion
         .allowed_target_branches
@@ -91,10 +87,7 @@ pub async fn get_subsystem_summaries(
         .cloned()
         .unwrap_or_else(|| fixtures::DEFAULT_TARGET_BRANCH.to_string());
     let ids: Vec<String> = registry.subsystems.iter().map(|s| s.id.clone()).collect();
-    // Clone what threads need (State is not Sync across scope without Arc).
     let state_ref = &state;
-    // Bounded parallelism: chunks of 4, sequential across chunks. Each worker
-    // reuses the checkout cache and `cached_json` (same keys as the reads).
     const BOUND: usize = 4;
     let mut out: Vec<SubsystemSummaryCounts> = Vec::new();
     for chunk in ids.chunks(BOUND) {
@@ -108,7 +101,6 @@ pub async fn get_subsystem_summaries(
                 let registry = registry.clone();
                 let tally_branch = tally_branch.clone();
                 handles.push(scope.spawn(move || {
-                    // Per-subsystem cache key so repeats hit the 90s cache.
                     let key = format!("live::summaries::{tally_branch}::{id}");
                     cached_json(state_ref, &key, || {
                         compute_one_summary(&registry, &tally_branch, &id)
@@ -135,10 +127,6 @@ pub async fn get_subsystem_summaries(
     Ok(out)
 }
 
-/// One subsystem's counts (blocking; runs inside the bounded pool above).
-/// Reuses the checkout cache (clone-once + TTL fetch, no per-commit network
-/// round-trip) and counts via the same `commit_page_live` the reads use, so
-/// a warm cache costs no extra clone/`gh` round.
 fn compute_one_summary(
     registry: &Registry,
     tally_branch: &str,
@@ -170,9 +158,6 @@ fn compute_one_summary(
     };
     let (source_dir, _) = live_read::resolve_source_checkout(&entry, &resolver, Some(&token))?;
     let github = RealGitHubOps::new(token);
-    // One page (50) via the same live path the Commit Browser uses; `total`
-    // is the full source count, `indexed` is the page counted, `tally` keys
-    // are the existing snake_case status keys.
     let query = CommitQuery {
         subsystem_id: subsystem_id.to_string(),
         target_branch: tally_branch.to_string(),
@@ -230,7 +215,6 @@ pub async fn list_target_branches(state: State<'_, AppState>) -> AppResult<Targe
     )
 }
 
-/// Duplicates are `duplicate_registration`; other failures are `invalid_registry`.
 #[tauri::command]
 pub async fn submit_subsystem_registration(
     state: State<'_, AppState>,
@@ -417,7 +401,6 @@ mod tests {
         assert_eq!(back.subsystem_id, "hr-management");
     }
 
-    /// Wire field names for the new promotion inputs (exact).
     #[test]
     fn promotion_wire_fields_are_exact() {
         use crate::github::models::PromotionRequest;
@@ -426,7 +409,6 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(req.excluded_paths, vec!["a.txt".to_string()]);
-        // Defaults when omitted.
         let req: PromotionRequest = serde_json::from_str(
             r#"{"subsystemId":"hr","sourceCommitShas":[],"mode":"individual","targetBranch":"staging","confirmationAcknowledged":true}"#,
         )

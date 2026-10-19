@@ -63,7 +63,6 @@ impl PreflightOutcome {
 pub struct PreflightFile {
     pub path: String,
     pub outcome: PreflightOutcome,
-    /// Set when writing this path would move it backwards (warning only).
     pub reverts_newer: Option<crate::github::models::RevertsNewerWork>,
 }
 
@@ -84,7 +83,6 @@ pub struct PreflightReport {
     /// (unsafe, secret/main-owned, global-file protected, dependency,
     /// lockfile) never enter `replaced`.
     pub replaced: Vec<String>,
-    /// Paths skipped via `excludedPaths` (subset of `skipped`).
     pub excluded: Vec<String>,
 }
 
@@ -105,15 +103,8 @@ pub struct PreflightRequest<'a> {
     /// Never bypasses unsafe paths, secret/main-owned files, global-file
     /// protection, dependency or lockfile guards.
     pub on_conflict: PromotionOnConflict,
-    /// Wire `excludedPaths` (default empty). Excluded paths report `Skipped`.
     pub excluded_paths: &'a [String],
-    /// Snapshot of `globalFiles` (exact paths or directory prefixes).
     pub global_files: &'a [String],
-    /// The source branch tip the selection is promoted from. Feeds the
-    /// "reverts newer work" warning: a write moves a path backwards when the
-    /// target blob is reachable from this tip but not from the selected commit
-    /// producing the write. `None` skips the check (no warning, never a
-    /// refusal).
     pub source_tip: Option<&'a str>,
 }
 
@@ -141,18 +132,6 @@ impl PreflightError {
     }
 }
 
-/// Per-file mergeability for the selected deltas against the target branch tip.
-/// Reads blobs from `source_dir` (base/theirs) and `target_dir` (ours); writes
-/// nothing to either and leaves no branch, commit, or worktree behind.
-/// Copy semantics (addendum §7): the apply copies unconditionally, never
-/// merges — so preflight never merges either. `three_way_merge` has zero call
-/// sites on this path by construction. Outcomes use the same vocabulary the
-/// apply reports: `Clean` = will write/delete/leave-unchanged/overwrite
-/// without refusal (maps to apply `Written`/`Deleted`/`Unchanged`/replaced);
-/// `Conflict` = the apply would refuse (`GLOBAL_FILE_PROTECTED`, unsafe
-/// paths); `Skipped` = dependency/
-/// main-owned/secret or `excludedPaths`. `Merged` is retained for wire compat
-/// but never emitted.
 pub fn compute_preflight(
     source_dir: &Path,
     target_dir: &Path,
@@ -165,7 +144,6 @@ pub fn compute_preflight(
 
     let plan = build_delta_plan(source_dir, request)?;
 
-    // No scratch dir: copy semantics needs no `merge-file` temp files.
     let report = evaluate_plan(
         source_dir,
         target_dir,
@@ -186,8 +164,6 @@ struct PlannedDelta {
     entries: Vec<git::DeltaEntry>,
 }
 
-/// First-parent deltas for the selected SHAs (or the baseline range in
-/// cumulative mode) — the same delta resolution the real apply uses.
 fn build_delta_plan(
     source_dir: &Path,
     request: &PreflightRequest<'_>,
@@ -252,13 +228,10 @@ fn evaluate_plan(
     // blob membership decides, dates never do. ONE ls-tree per revision for
     // ALL paths. A path touched by several commits reports its worst outcome.
     let excluded: HashSet<String> = excluded_paths.iter().cloned().collect();
-    // Ordered selection for blob sets (plan is already ancestry-ordered by
-    // build_delta_plan mirroring build_plan).
     let ordered: Vec<(String, Option<String>)> = plan
         .iter()
         .map(|d| (d.sha.clone(), d.base_sha.clone()))
         .collect();
-    // All apply-candidate paths (classification pre-pass for Skipped).
     let mut candidate_paths: Vec<String> = Vec::new();
     for delta in plan {
         for entry in &delta.entries {
@@ -285,7 +258,6 @@ fn evaluate_plan(
         &candidate_paths,
         &history_tips,
     );
-    // Newest selected toucher per path (for the reverts-newer warning).
     let mut newest_toucher: HashMap<String, String> = HashMap::new();
     for delta in plan {
         for entry in &delta.entries {
@@ -312,7 +284,6 @@ fn evaluate_plan(
         None => HashMap::new(),
     };
     let tip_str = source_tip.unwrap_or("");
-    // path -> target blob for Clean non-delete writes that move backwards.
     let mut warned_paths: HashMap<String, String> = HashMap::new();
     for delta in plan {
         for entry in &delta.entries {
@@ -369,9 +340,6 @@ fn evaluate_plan(
         }
     }
     let mut files: Vec<PreflightFile> = {
-        // One naming lookup per warned path (zero when nothing warns): the
-        // newer commit is part of the warning so the operator can verify it.
-        // Unresolvable falls back to a nameless warning rather than a guess.
         let mut warned: Vec<(&String, &String)> = warned_paths.iter().collect();
         warned.sort_by(|a, b| a.0.cmp(b.0));
         let mut named: HashMap<String, crate::github::models::RevertsNewerWork> = HashMap::new();
@@ -457,7 +425,6 @@ fn evaluate_path_copy(
     if excluded.contains(rel_path) {
         return PreflightOutcome::Skipped;
     }
-    // Same mode lookup as the engine's classifier.
     let mode_opt = if entry.status == 'D'
         || (entry.is_rename_or_copy() && Some(rel_path) == entry.old_path.as_deref())
     {
@@ -534,7 +501,6 @@ fn evaluate_path_copy(
     // Copy semantics below (no merge — `three_way_merge` is never called):
     // each branch mirrors `apply_one`'s equality short-circuits.
     if theirs_opt.is_none() {
-        // Source deleted: allowed above means target absent or matching base.
         return PreflightOutcome::Clean;
     }
     let theirs_norm = theirs_norm_opt.unwrap_or_default();
@@ -747,7 +713,6 @@ mod tests {
         write(&repo, "app.txt", "line1\nline2 source\n");
         write(&repo, "new-file.txt", "fresh\n");
         let sha = commit_all(&repo, "source work");
-        // The target branch never touched these paths.
 
         let report = check(&repo, &[sha]);
         assert_eq!(report.conflicts, Vec::<String>::new());
@@ -769,9 +734,6 @@ mod tests {
         write(&repo, "app.txt", "source edit\n");
         let sha = commit_all(&repo, "source work");
 
-        // Promotion is a copy: the subsystem's copy always wins. A diverged
-        // target copy reports `clean` and is recorded as replaced — never a
-        // preflight conflict.
         let report = check(&repo, &[sha]);
         assert!(report.conflicts.is_empty(), "{report:?}");
         assert_eq!(report.conflict, 0);
@@ -847,7 +809,6 @@ mod tests {
         git(&repo, &["checkout", "-q", "source"]);
         write(&repo, "doc.txt", "v2\n");
         let sha = commit_all(&repo, "source doc");
-        // The target carries byte-identical content from its own commit.
         git(&repo, &["checkout", "-q", "target"]);
         write(&repo, "doc.txt", "v2\n");
         let _ = commit_all(&repo, "target doc");
@@ -865,7 +826,6 @@ mod tests {
         let _ = commit_all(&repo, "base");
         git(&repo, &["branch", "source"]);
         git(&repo, &["branch", "target"]);
-        // The source adds both files in one older commit.
         git(&repo, &["checkout", "-q", "source"]);
         write(&repo, "newer.txt", "source\n");
         write(&repo, "older.txt", "source\n");
@@ -932,7 +892,6 @@ mod tests {
         assert_eq!(report.conflict, 0, "divergence is overwritten: {report:?}");
         assert!(report.conflicts.is_empty(), "{report:?}");
         assert_eq!(report.replaced, vec!["app.txt".to_string()]);
-        // Copy semantics writes no scratch files (no merge-file temps).
         let leftovers: Vec<_> = std::fs::read_dir(&scratch).expect("read scratch").collect();
         assert!(
             leftovers.is_empty(),
@@ -982,7 +941,6 @@ mod tests {
         let _ = commit_all(&repo, "base");
         git(&repo, &["branch", "source"]);
         git(&repo, &["branch", "target"]);
-        // Source: modify mod/div/same, delete del, add new.
         git(&repo, &["checkout", "-q", "source"]);
         write(&repo, "mod.txt", "source mod\n");
         write(&repo, "div.txt", "source div\n");
@@ -990,8 +948,6 @@ mod tests {
         std::fs::remove_file(repo.join("del.txt")).expect("remove del");
         write(&repo, "new.txt", "brand new\n");
         let sha = commit_all(&repo, "source work");
-        // Target: leave mod at base (behind), diverge div + new, keep del at
-        // base (so delete applies), match same (identical no-op).
         git(&repo, &["checkout", "-q", "target"]);
         write(&repo, "div.txt", "target divergent\n");
         write(&repo, "new.txt", "target other\n");
@@ -1017,15 +973,10 @@ mod tests {
         assert_eq!(report.merged, 0, "copy never merges: {report:?}");
         assert_eq!(report.conflict, 0, "divergence is overwritten: {report:?}");
         assert!(report.conflicts.is_empty(), "{report:?}");
-        // Modified (behind: target == base, in set) → Clean.
         assert_eq!(outcome_of(&report, "mod.txt"), PreflightOutcome::Clean);
-        // Divergent (target matches neither base nor tip) → Clean + replaced.
         assert_eq!(outcome_of(&report, "div.txt"), PreflightOutcome::Clean);
-        // Delete (target == base, in set {base, None}) → Clean.
         assert_eq!(outcome_of(&report, "del.txt"), PreflightOutcome::Clean);
-        // Add-over-existing diverged → Clean + replaced.
         assert_eq!(outcome_of(&report, "new.txt"), PreflightOutcome::Clean);
-        // Identical no-op (target == source) → Clean.
         assert_eq!(outcome_of(&report, "same.txt"), PreflightOutcome::Clean);
         assert_eq!(
             report.replaced,
@@ -1057,8 +1008,6 @@ mod tests {
         }
         let _ = ordered;
 
-        // For Clean paths, the apply writes the same bytes preflight predicts.
-        // Seed a worktree at the target tip and apply the source delta.
         let wt = tmp("agree-wt");
         let target_tip_sha = git(&repo, &["rev-parse", "target"]);
         git(
@@ -1201,9 +1150,6 @@ mod tests {
         }
     }
 
-    /// Selecting an older commit while the target already holds a later
-    /// subsystem version warns — naming the newer commit — without refusing:
-    /// the write would move the path backwards.
     #[test]
     fn selecting_older_commit_over_newer_target_warns_with_name() {
         let repo = tmp("reverts");
@@ -1215,7 +1161,6 @@ mod tests {
         git(&repo, &["checkout", "-q", "source"]);
         write(&repo, "f.txt", "v2\n");
         let b = commit_all(&repo, "B second version");
-        // The target independently holds v2 (same bytes as B).
         git(&repo, &["checkout", "-q", "target"]);
         write(&repo, "f.txt", "v2\n");
         let _ = commit_all(&repo, "target takes v2");
@@ -1249,13 +1194,10 @@ mod tests {
             .expect("writing v1 over the target's v2 warns");
         assert_eq!(warn.sha, b, "the warning names the newer commit");
         assert_eq!(warn.subject, "B second version");
-        // Warning only: never a conflict, never a refusal.
         assert!(report.conflicts.is_empty(), "{report:?}");
         assert_eq!(report.conflict, 0);
         assert_eq!(report.replaced, vec!["f.txt".to_string()]);
 
-        // Without a source tip the check is skipped — still no refusal, and
-        // no warning rather than a guessed one.
         let request = PreflightRequest {
             source_tip: None,
             ..request
@@ -1272,8 +1214,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
-    /// Selecting the newer commit while the target holds the older version is
-    /// simply behind: the write moves the path forwards, so it never warns.
     #[test]
     fn selecting_newer_commit_over_older_target_does_not_warn() {
         let repo = tmp("forward");
@@ -1285,7 +1225,6 @@ mod tests {
         git(&repo, &["checkout", "-q", "source"]);
         write(&repo, "f.txt", "v2\n");
         let b = commit_all(&repo, "B second version");
-        // The target still holds v1: an ancestor version, not newer work.
 
         let registry = test_registry();
         let scratch = tmp("forward-scratch");
@@ -1321,9 +1260,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
-    /// The preflight tip resolver must agree with the engine: a branch that
-    /// exists only as a non-`origin` remote-tracking ref resolves, so the
-    /// preview is computed against the same tip the promotion would use.
     #[test]
     fn resolve_target_tip_accepts_a_branch_only_on_a_non_origin_remote() {
         let root = tmp("non-origin-tip");
@@ -1335,8 +1271,6 @@ mod tests {
         git(&upstream, &["branch", "UAT"]);
         let uat = git(&upstream, &["rev-parse", "UAT"]);
 
-        // A fork: `origin` carries only `master`; the second remote carries
-        // `UAT`.
         git(
             &root,
             &[

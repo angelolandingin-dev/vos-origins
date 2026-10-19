@@ -16,9 +16,6 @@ pub struct Registry {
     pub main_repository: String,
     pub promotion: PromotionPolicy,
     pub subsystems: Vec<SubsystemEntry>,
-    /// Absolute path to the user's local clone of the main repository,
-    /// used for `local` delivery. `None` ⇒ resolve via `VOS_TARGET_REPO_DIR`
-    /// or the tool-managed checkout cache.
     #[serde(default)]
     pub local_main_repository_path: Option<String>,
 }
@@ -31,10 +28,6 @@ pub struct PromotionPolicy {
     pub allowed_target_branch_patterns: Vec<String>,
     /// Must stay `true`: the engine only ever opens a PR.
     pub require_pull_request: bool,
-    /// Wire `attributeToAccount`. When `true` (the default) the provenance
-    /// commit is authored by the authenticated GitHub account using GitHub's
-    /// noreply address; when `false` it uses the fixed bot identity. An
-    /// account that cannot be resolved falls back to the bot either way.
     #[serde(default = "default_true")]
     pub attribute_to_account: bool,
 }
@@ -54,9 +47,6 @@ pub struct SubsystemEntry {
     pub path_strategy: PathStrategy,
     pub dependency_strategy: DependencyStrategy,
     pub integration_policy: IntegrationPolicy,
-    /// Wire `globalFiles`: protected app-shell files (exact paths or
-    /// directory prefixes, no glob engine). A matched path whose target copy
-    /// is NOT in the source blob set refuses with `GLOBAL_FILE_PROTECTED`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global_files: Option<Vec<String>>,
 }
@@ -365,7 +355,6 @@ pub fn assert_safe_glob(pattern: &str, label: &str) -> Result<(), ValidationErro
     Ok(())
 }
 
-/// Require a full 40/64-char lowercase hex SHA.
 pub fn assert_full_sha(sha: &str, label: &str) -> Result<(), ValidationError> {
     let ok_len = sha.len() == 40 || sha.len() == 64;
     let ok_chars = sha
@@ -424,7 +413,6 @@ pub fn require_repository_slug(value: &str, label: &str) -> Result<(), Validatio
     Ok(())
 }
 
-/// Never compiled to a regex, so metacharacters match literally.
 pub fn match_glob(pattern: &str, name: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let n: Vec<char> = name.chars().collect();

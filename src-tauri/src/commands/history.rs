@@ -1,5 +1,3 @@
-//! Integration PRs and history: live by default, fixtures on opt-in.
-
 use tauri::State;
 
 use crate::error::{AppError, AppResult, ErrorCode};
@@ -122,10 +120,6 @@ pub async fn list_integration_history(
     })
 }
 
-/// One integration event re-derived from git: the main commit is the natural
-/// key and every field is resolved server-side, never trusted from the
-/// frontend. A repeated click hits the response cache; the first call shares
-/// the tip-keyed history replay with the list.
 #[tauri::command]
 pub async fn get_integration_event(
     state: State<'_, AppState>,
@@ -161,7 +155,6 @@ pub async fn get_integration_event(
             registry.local_main_repository_path.as_deref(),
             Some(&token),
         )?;
-        // Already-cached source checkout only: never clones here.
         let source_dir = live_read::cached_source_dir(&registry, &subsystem_id)?;
         live_read::integration_event_audit_live(
             &target_dir,

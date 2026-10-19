@@ -106,7 +106,6 @@ fn env_token() -> Option<String> {
     None
 }
 
-/// `GH_TOKEN` / `GITHUB_TOKEN` first, then `gh auth token` (cached).
 pub fn auth_token() -> Option<String> {
     auth_token_with_provider(&probe_gh_token)
 }
@@ -158,7 +157,6 @@ pub fn clear_token_cache_for_tests() {
     }
 }
 
-/// The authenticated account, as `gh api user` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubAccount {
     pub login: String,
@@ -208,7 +206,6 @@ pub fn authenticated_account() -> Option<GitHubAccount> {
     authenticated_account_with_provider(&probe_gh_account)
 }
 
-/// Injectable seam so tests never spawn `gh`.
 pub fn authenticated_account_with_provider(
     provider: &dyn Fn() -> Option<GitHubAccount>,
 ) -> Option<GitHubAccount> {
@@ -568,7 +565,6 @@ mod tests {
             "4242+angelolandingin-dev@users.noreply.github.com"
         );
 
-        // Missing id, blank login, and malformed JSON are all unresolvable.
         assert!(parse_gh_user(r#"{"login":"someone"}"#).is_none());
         assert!(parse_gh_user(r#"{"login":"  ","id":7}"#).is_none());
         assert!(parse_gh_user("not json").is_none());
@@ -594,7 +590,6 @@ mod tests {
             "the id is resolved once, not per promotion"
         );
 
-        // A failure is not cached: the next call retries the provider.
         clear_account_cache_for_tests();
         assert!(authenticated_account_with_provider(&|| None).is_none());
         assert!(authenticated_account_with_provider(&provider).is_some());

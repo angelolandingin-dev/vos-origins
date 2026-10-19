@@ -704,7 +704,6 @@ pub fn extract_import_specifiers(content: &str) -> Vec<String> {
                         if word == "from" {
                             accept = true;
                         } else if word == "import" {
-                            // `import 'x'` must start the line (after whitespace).
                             let mut p = w;
                             while p > 0 && (chars[p - 1] == ' ' || chars[p - 1] == '\t') {
                                 p -= 1;
@@ -725,8 +724,6 @@ pub fn extract_import_specifiers(content: &str) -> Vec<String> {
     out
 }
 
-/// Cut a `//` comment starting outside any string/template literal.
-/// Runs per line, so multi-line state is never needed.
 fn strip_line_comment(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
     let mut quote: Option<char> = None;
@@ -1006,7 +1003,6 @@ mod tests {
             "{:?}",
             res.blockers
         );
-        // The unmergeable value is never written into the target manifest.
         assert_eq!(res.manifest["dependencies"]["a"], json!("^1.0.0"));
     }
 

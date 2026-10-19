@@ -77,7 +77,6 @@ export interface PromotionDialogProps {
 }
 
 export function PromotionDialog(props: PromotionDialogProps) {
-  // Remount while closed so the acknowledgement resets without an effect.
   if (!props.open) return null;
   return (
     <PromotionDialogContent
@@ -147,11 +146,6 @@ function ResultChanges({
   );
 }
 
-/**
- * Condensed notes: warnings/errors keep their own alert boxes (they are rare
- * and deserve attention); plain infos merge into a single Notes box instead of
- * one box per fact.
- */
 function ResultNotes({ findings }: { findings: ValidationFinding[] }) {
   const alerts = findings.filter((finding) => finding.level !== 'info');
   const infos = findings.filter((finding) => finding.level === 'info');
@@ -186,10 +180,6 @@ function ResultNotes({ findings }: { findings: ValidationFinding[] }) {
   );
 }
 
-/**
- * Count + expandable reveal for a path list: the summary stays scannable and
- * the detail is one click away. Never renders a raw multi-line dump inline.
- */
 function ExpandablePathList({ title, paths }: { title: string; paths: string[] }) {
   if (paths.length === 0) return null;
   return (
@@ -253,9 +243,6 @@ function PromotionDialogContent({
   const multiManifest = commits.filter((commit) => commit.touchesManifest).length > 1;
   const replaced = preflight?.replaced ?? [];
   const preflightExcluded = preflight?.excluded ?? [];
-  // Skipped paths are not refusals - a lockfile is regenerated and a manifest is
-  // merged by design - so they stay out of this list and are shown in the file
-  // list instead, where their row can say what happens to them.
   const refusedPaths = Array.from(new Set([...(preflight?.conflicts ?? [])]));
   const revertsNewerFiles = (preflight?.files ?? []).filter((file) => file.revertsNewer);
   const isExcluded = (path: string) =>

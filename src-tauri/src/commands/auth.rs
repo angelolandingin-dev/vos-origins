@@ -1,5 +1,3 @@
-//! GitHub identity / CLI status for the connection indicator.
-
 use tauri::State;
 
 use crate::error::{AppError, AppResult, ErrorCode};
@@ -10,7 +8,6 @@ use crate::AppState;
 
 #[tauri::command]
 pub async fn get_auth_status(state: State<'_, AppState>) -> AppResult<AuthStatus> {
-    // Kick off the one-time, off-path warm so the first read is fresh.
     super::system::warm_checkouts_once();
     let adapter = state.adapter.clone();
     let probe = tauri::async_runtime::spawn_blocking(gh_cli::probe)
@@ -26,7 +23,6 @@ pub async fn get_auth_status(state: State<'_, AppState>) -> AppResult<AuthStatus
         crate::github::models::DataSource::Live
     };
 
-    // Live mode must report the tool-local registry (the real source of truth), not the fixture adapter.
     let (main_repository, registry_branch, workflow_file) = if live_read::use_fixtures() {
         (
             adapter.main_repository.clone(),

@@ -16,16 +16,11 @@ use std::path::Path;
 
 use super::git;
 
-/// Blob ID for `rev:path`, or `None` when the path is absent at `rev`.
-/// Uses `ls-tree` plumbing so paths with spaces are safe (no `rev:path`
-/// shell splitting — argv is explicit).
 pub fn blob_id(repo_dir: &Path, rev: &str, path: &str) -> Option<String> {
     let map = tree_blob_map(repo_dir, rev);
     map.get(path).cloned()
 }
 
-/// `path -> blob sha` for a revision, in ONE `ls-tree -r` call.
-/// Absent paths simply have no entry.
 pub fn tree_blob_map(repo_dir: &Path, rev: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let Ok(out) = git::run(repo_dir, &["ls-tree", "-r", rev]) else {
@@ -45,16 +40,8 @@ pub fn tree_blob_map(repo_dir: &Path, rev: &str) -> HashMap<String, String> {
     map
 }
 
-/// Ordered selection: `(commit_sha, base_sha)` in ancestry order.
-/// `base_sha` is `None` for a root commit.
 pub type OrderedSelection<'a> = &'a [(String, Option<String>)];
 
-/// Collect blob sets for ALL `paths` in ONE `ls-tree -r` per revision.
-///
-/// For each path, the set is:
-/// `{ blob(oldest base) or None } ∪ { blob(each selected commit) }`
-/// where absent is `None`. The caller passes the already ancestry-ordered
-/// selection (see `build_plan`); this helper never re-sorts.
 pub fn collect_blob_sets(
     repo_dir: &Path,
     ordered: OrderedSelection<'_>,
@@ -63,7 +50,6 @@ pub fn collect_blob_sets(
     if ordered.is_empty() || paths.is_empty() {
         return HashMap::new();
     }
-    // ONE ls-tree per distinct revision.
     let mut revs: Vec<&str> = Vec::new();
     if let Some(base) = ordered.first().and_then(|(_, b)| b.as_deref()) {
         revs.push(base);
@@ -98,7 +84,6 @@ pub fn collect_blob_sets(
     out
 }
 
-/// Single-path convenience over [`collect_blob_sets`].
 pub fn collect_blob_set(
     repo_dir: &Path,
     ordered: OrderedSelection<'_>,
@@ -225,8 +210,6 @@ pub fn newest_commit_for_blob(
     if out.status != 0 {
         return None;
     }
-    // A flapping blob could list many candidates; beyond a cap, give up and
-    // let the caller warn namelessly rather than spawning per candidate.
     let text = out.stdout_str();
     let candidates: Vec<&str> = text.lines().take(33).collect();
     if candidates.len() > 32 {
@@ -283,7 +266,6 @@ pub fn overwrite_allowed(
     history_tips: &[String],
 ) -> HashMap<String, bool> {
     let mut out: HashMap<String, bool> = HashMap::with_capacity(paths.len());
-    // Target blob -> paths waiting on the history probe.
     let mut pending: HashMap<String, Vec<String>> = HashMap::new();
     for path in paths {
         let target_blob: Option<String> = target_tree.get(path).cloned();
@@ -392,16 +374,13 @@ mod tests {
         let b = commit(&repo, "B edit");
         write(&repo, "a.txt", "v3\n");
         let c = commit(&repo, "C edit");
-        // Selection [B, C]: oldest base is A's tree (v1), then B (v2), C (v3).
         let parent_b = git(&repo, &["rev-parse", &format!("{b}^")]);
         let ordered = vec![
             (b.clone(), Some(parent_b.clone())),
             (c.clone(), Some(b.clone())),
         ];
         let set = collect_blob_set(&repo, &ordered, "a.txt");
-        // Three distinct blobs.
         assert_eq!(set.len(), 3, "{set:?}");
-        // Each revision's blob is a member.
         let blob_b = blob_id(&repo, &b, "a.txt");
         let blob_c = blob_id(&repo, &c, "a.txt");
         let blob_base = blob_id(&repo, &parent_b, "a.txt");
@@ -421,7 +400,6 @@ mod tests {
         let parent_b = git(&repo, &["rev-parse", &format!("{b}^")]);
         let ordered = vec![(b.clone(), Some(parent_b.clone()))];
         let set = collect_blob_set(&repo, &ordered, "new.txt");
-        // Oldest base absent (None) + B present.
         assert!(set.contains(&None), "{set:?}");
         assert!(set.contains(&blob_id(&repo, &b, "new.txt")));
         assert_eq!(set.len(), 2);
@@ -442,7 +420,6 @@ mod tests {
             (b.clone(), Some(parent_b.clone())),
             (c.clone(), Some(b.clone())),
         ];
-        // Newest toucher (C) equals oldest base (v1): effect fully undone.
         let newest = blob_id(&repo, &c, "a.txt");
         let oldest = blob_id(&repo, &parent_b, "a.txt");
         assert_eq!(newest, oldest);
@@ -464,9 +441,7 @@ mod tests {
         let paths = vec!["a.txt".to_string(), "b.txt".to_string()];
         let sets = collect_blob_sets(&repo, &ordered, &paths);
         assert_eq!(sets.len(), 2);
-        // b.txt unchanged across range: single blob + base (same) → 1 member.
         assert_eq!(sets["b.txt"].len(), 1, "{:?}", sets["b.txt"]);
-        // a.txt changed: 2 members.
         assert_eq!(sets["a.txt"].len(), 2, "{:?}", sets["a.txt"]);
     }
 
@@ -492,16 +467,12 @@ mod tests {
         let ordered = vec![(c5.clone(), Some(parent_c5))];
         let paths = vec!["shared.txt".to_string()];
         let sets = collect_blob_sets(&repo, &ordered, &paths);
-        // Target tree holding v1 (the subsystem's own earlier content,
-        // outside the [C5] range whose set is {v4, v5}).
         let v1_blob = blob_id(&repo, &c1, "shared.txt").expect("v1 blob");
-        // Sanity: v1 is NOT in the [C5] range set…
         assert!(
             !sets["shared.txt"].contains(&Some(v1_blob.clone())),
             "v1 must be outside the selected range: {:?}",
             sets["shared.txt"]
         );
-        // …but containment allows it: the bytes are subsystem content.
         let mut target_at_v1: HashMap<String, String> = HashMap::new();
         target_at_v1.insert("shared.txt".to_string(), v1_blob);
         let allowed = overwrite_allowed(
@@ -544,7 +515,6 @@ mod tests {
         let ordered = vec![(b.clone(), Some(parent_b))];
         let paths = vec!["app.txt".to_string()];
         let sets = collect_blob_sets(&repo, &ordered, &paths);
-        // A blob the source never produced (main-system-only content).
         let mut target_tree: HashMap<String, String> = HashMap::new();
         target_tree.insert(
             "app.txt".to_string(),
@@ -559,7 +529,6 @@ mod tests {
     fn containment_check_costs_one_batched_spawn_regardless_of_path_count() {
         let repo = tmp("spawnbound");
         init(&repo);
-        // 12 paths, each at v1.
         let mut paths: Vec<String> = Vec::new();
         for i in 0..12 {
             let name = format!("f{i}.txt");
@@ -575,9 +544,6 @@ mod tests {
             write(&repo, &format!("f{i}.txt"), "v3\n");
         }
         let c = commit(&repo, "C edit all");
-        // Select [B] only: the range set is {v1, v2} while the target holds
-        // v3 — subsystem content outside the range, so every path needs the
-        // history probe (scoped to a tip whose ancestry contains v3).
         let parent_b = git(&repo, &["rev-parse", &format!("{b}^")]);
         let ordered = vec![(b.clone(), Some(parent_b))];
         let sets = collect_blob_sets(&repo, &ordered, &paths);
@@ -607,7 +573,6 @@ mod tests {
             allowed.values().all(|v| *v),
             "every v3 blob is subsystem content: {allowed:?}"
         );
-        // No candidates at all costs zero spawns.
         let tip_tree = tree_blob_map(&repo, &b);
         let before = super::git::git_spawns_for_tests(&repo);
         let allowed = overwrite_allowed(&repo, &sets, &tip_tree, &paths, std::slice::from_ref(&b));
@@ -630,8 +595,6 @@ mod tests {
         let v2 = blob_id(&repo, &b, "f.txt").expect("v2 blob");
         let v3 = blob_id(&repo, &c, "f.txt").expect("v3 blob");
 
-        // The prescribed test: `rev-list --objects <write>..<tip>` —
-        // reachability, never timestamps.
         let after_a = blobs_after(&repo, std::slice::from_ref(&a), &c);
         let set_a = &after_a[&a];
         assert!(
@@ -643,7 +606,6 @@ mod tests {
         let set_b = &after_b[&b];
         assert!(!set_b.contains(&v1) && !set_b.contains(&v2));
         assert!(set_b.contains(&v3));
-        // `write == tip` costs zero spawns and yields the empty set.
         let before = super::git::git_spawns_for_tests(&repo);
         let after_c = blobs_after(&repo, std::slice::from_ref(&c), &c);
         let after = super::git::git_spawns_for_tests(&repo);
@@ -670,8 +632,6 @@ mod tests {
             write(&repo, &format!("f{i}.txt"), "v3\n");
         }
         let c = commit(&repo, "C edit all");
-        // Every path shares the same two writes: 12 paths, 2 distinct
-        // writes, 2 spawns — never one per path.
         let mut writes: Vec<String> = Vec::new();
         for _ in &paths {
             writes.push(a.clone());

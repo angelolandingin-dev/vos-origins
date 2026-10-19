@@ -54,7 +54,6 @@ pub struct PushOutcome {
     pub source: String,
 }
 
-/// Tests use the stub; the app uses the real transport.
 pub trait GitHubOps: Send + Sync {
     fn mode(&self) -> GitHubMode;
     fn push_target(&self) -> Option<String>;
@@ -89,8 +88,6 @@ fn open_pulls_path(repo_slug: &str, base: &str, page: u32) -> String {
     )
 }
 
-/// Percent-encode a single query value (no new deps): only unreserved
-/// characters pass through untouched.
 fn url_encode(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {

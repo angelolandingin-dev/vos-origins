@@ -1,11 +1,3 @@
-//! Live read path: registry-backed subsystems, reachable-history status,
-//! GitHub PRs/branches, and source-repo commits/details/diffs.
-//!
-//! Live is the default; fixtures only when `VOS_USE_FIXTURES=1`.
-//! Every response is wholly live or wholly fixture and says which via
-//! [`DataSource`]. All network/GitHub access goes through [`GitHubOps`]
-//! plus a source-repo/local-git seam so tests run fully offline.
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -31,7 +23,6 @@ pub const MAX_DIFF_LINES: usize = 1500;
 const MAX_SOURCE_COMMITS: usize = 2000;
 const WORKFLOW_FILE: &str = "promote-subsystem.yml";
 
-/// Live is default; fixtures only on explicit opt-in.
 pub fn use_fixtures() -> bool {
     std::env::var("VOS_USE_FIXTURES")
         .map(|v| v == "1")
@@ -157,10 +148,6 @@ fn branch_not_permitted(branch: &str, reason: &str) -> AppError {
     .with_remedy("Choose a target branch that exists and is allowed by promotion.allowedTargetBranches / allowedTargetBranchPatterns.")
 }
 
-// ---------------------------------------------------------------------------
-// Registry -> summaries
-// ---------------------------------------------------------------------------
-
 fn policy_strings(entry: &SubsystemEntry) -> SubsystemPolicy {
     use crate::services::registry::{
         ApplicationFiles, DependencyStrategy as DepStrat, GithubWorkflowPolicy, LockfilePolicy,
@@ -198,7 +185,6 @@ fn policy_strings(entry: &SubsystemEntry) -> SubsystemPolicy {
     }
 }
 
-/// Registry-backed subsystem summaries. No fixtures in live mode.
 pub fn subsystem_summaries(registry: &Registry) -> Vec<SubsystemSummary> {
     let now = now_rfc3339();
     let mut out: Vec<SubsystemSummary> = registry
@@ -267,8 +253,6 @@ pub fn find_live_subsystem<'a>(
     Ok(entry)
 }
 
-/// Reused by the subsystem diff: the target branch must exist in policy.
-/// `pub(crate)` so the diff resolves the same branch the statuses do.
 pub(crate) fn require_allowed_target(registry: &Registry, branch: &str) -> AppResult<String> {
     if branch.trim().is_empty() {
         return Err(AppError::invalid_request("No target branch was specified.")
@@ -281,15 +265,6 @@ pub(crate) fn require_allowed_target(registry: &Registry, branch: &str) -> AppRe
     Ok(branch.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Checkout resolution (reusable on-disk cache)
-// ---------------------------------------------------------------------------
-
-/// Resolve the target checkout: `VOS_TARGET_REPO_DIR` when set, a local-dir
-/// passthrough when the registry points at one, else the shared checkout
-/// cache (clone once with `--no-tags`, `git fetch` on reuse). The cleanup
-/// dir is always `None`: cached checkouts are owned by the cache and are
-/// never deleted by readers, so repeat visits reuse the same clone.
 pub fn resolve_target_checkout(
     main_repository: &str,
     local_override: Option<&str>,
@@ -312,7 +287,6 @@ pub fn resolve_target_checkout(
         });
     if let Some(path) = configured {
         if path.is_dir() {
-            // The managed path never fetches the user's clone, so merged trailers stay unreachable.
             crate::services::checkouts::fetch_local_clone_if_stale(&path, token);
             return Ok((path, None));
         }
@@ -339,9 +313,6 @@ pub fn resolve_target_checkout(
     Ok((dir, None))
 }
 
-/// Resolve a source checkout for `entry`: a local dir passes through, else
-/// the shared checkout cache keyed by subsystem+repository. The cleanup dir
-/// is always `None` (see above).
 pub fn resolve_source_checkout(
     entry: &SubsystemEntry,
     resolver: &dyn Fn(&SubsystemEntry) -> Option<String>,
@@ -362,23 +333,9 @@ pub fn resolve_source_checkout(
     Ok((dir, None))
 }
 
-// ---------------------------------------------------------------------------
-// Status: reachable trailers + open-PRs overlay (never fabricate Integrated)
-// ---------------------------------------------------------------------------
-
-/// Evidence + reachability harvested **once per branch** and shared by every
-/// row on the page. All three replays are tip-keyed through [`cached_replay`]
-/// (the `91b4dd7` memo): a hit can never be stale, a moved tip recomputes.
-/// After the memo warms, a page of N rows costs O(1) spawns instead of ~12
-/// per integrated row (`git show` x4 + `rev-parse` x2 + `merge-base` reads).
 struct StatusEnrichment {
-    /// Details + reachable set from the resolved branch ref — the same walk
-    /// [`compute_branch_status`] replays, so every claimed integration commit
-    /// is present and its memo entry is already hot (no walk here).
     primary: history::ReplayResult,
-    /// Reachable set of the remote-tracking ref, when it resolves.
     remote: Option<history::ReplayResult>,
-    /// Reachable set of the local ref, when it resolves.
     local: Option<history::ReplayResult>,
 }
 
@@ -388,10 +345,6 @@ fn status_enrichment_for(repo_dir: &Path, queried_branch: &str) -> StatusEnrichm
         .map(|reference| history::cached_replay(repo_dir, &reference))
         .unwrap_or_default();
     StatusEnrichment {
-        // The remote-tracking ref is RESOLVED (any remote), never hardcoded to
-        // `origin`: a fork clone keeps the branch on a non-`origin` remote, and
-        // a hardcoded origin ref would report a reachable integration as
-        // `Unknown (stale)` instead of `Integrated`.
         remote: git::remote_tracking_ref(repo_dir, queried_branch)
             .and_then(|reference| history::cached_replay_if_resolvable(repo_dir, &reference)),
         local: history::cached_replay_if_resolvable(repo_dir, &local_ref),
@@ -453,9 +406,6 @@ fn fetch_time_str(repo_dir: &Path) -> String {
     "unknown fetch time".to_string()
 }
 
-/// Convert a whole page of branch results with **one** enrichment (one
-/// memoized walk per ref, shared by all rows) instead of ~12 git spawns per
-/// integrated row.
 fn branch_results_to_statuses(
     repo_dir: &Path,
     queried_branch: &str,
@@ -542,7 +492,6 @@ fn branch_result_to_status_with(
                     .as_ref()
                     .is_some_and(|replay| replay.reachable.contains(commit));
                 if in_remote {
-                    // Plain Integrated — remote has seen it.
                 } else {
                     let in_local = enrichment
                         .local
@@ -554,10 +503,6 @@ fn branch_result_to_status_with(
                             "{detail} Reachable from the local '{queried_branch}' only; the remote-tracking ref does not contain it (unpushed). Push when ready."
                         );
                     } else if enrichment.remote.is_none() {
-                        // Remote ref unreadable and no local proof: stale.
-                        // Never demote a known-remote Integrated here — this
-                        // branch only runs when neither ref contains the
-                        // commit, so there is no known-remote to demote.
                         return CommitStatus {
                             kind: CommitStatusKind::Unknown,
                             label: "Unknown (stale)".to_string(),
@@ -632,10 +577,6 @@ fn open_pr_status(pr: &PullRequestInfo, queried_branch: &str) -> CommitStatus {
     )
 }
 
-/// Core status computation against an already-resolved target checkout.
-/// `Integrated` only from reachable trailers; open PRs overlay as `PrOpen`.
-/// Takes the open-PR list as a parameter so a caller that needs the same
-/// list (e.g. commit details' related-PRs section) fetches it once.
 pub fn integration_statuses_with_prs(
     target_dir: &Path,
     registry: &Registry,
@@ -660,8 +601,6 @@ pub fn integration_statuses_with_prs(
     // it — commit details — pass it in. An empty slice here means "no open
     // PRs", never "lookup failed".)
     let checked_at = now_rfc3339();
-    // One enrichment for the whole call: every subsystem loop below shares
-    // the same memoized walks instead of re-resolving per row.
     let enrichment = status_enrichment_for(target_dir, &target_branch);
     let mut out = Vec::new();
     for id in ids {
@@ -727,10 +666,6 @@ pub fn integration_statuses_live(
     )
 }
 
-// ---------------------------------------------------------------------------
-// Target branches: existing GitHub branches filtered by registry policy
-// ---------------------------------------------------------------------------
-
 fn target_policy(registry: &Registry) -> TargetBranchPolicy {
     TargetBranchPolicy {
         allowed_target_branches: registry.promotion.allowed_target_branches.clone(),
@@ -741,11 +676,6 @@ fn target_policy(registry: &Registry) -> TargetBranchPolicy {
     }
 }
 
-/// Existing branches from GitHub, filtered by registry policy. Every returned
-/// branch exists; disallowed ones carry `allowed=false` + the reason. When a
-/// target checkout is supplied, a branch that policy allows but the checkout
-/// does not contain is also reported `allowed=false` (with a checkout reason)
-/// instead of failing the whole list.
 pub fn target_branches_live(
     registry: &Registry,
     github: &dyn GitHubOps,
@@ -772,10 +702,6 @@ pub fn target_branches_live(
     let mut branches: Vec<TargetBranch> = Vec::new();
     for info in &remote {
         let decision = registry.is_target_allowed(&info.name);
-        // Policy is one gate; presence in the checkout is another. A branch
-        // the policy allows but the checkout genuinely lacks is marked
-        // not-allowed here rather than making a later read fail the whole
-        // page. With no checkout resolved the list stays policy-only.
         let missing_from_checkout =
             decision.allowed && target_dir.is_some_and(|dir| !git::branch_exists(dir, &info.name));
         let allowed = decision.allowed && !missing_from_checkout;
@@ -805,10 +731,6 @@ pub fn target_branches_live(
             active_promotions: open_count,
         });
     }
-    // Ordered by the registry's policy list first, then alphabetically. A raw
-    // name comparison is case-sensitive, so `UAT` sorted ahead of `master` and
-    // became the default the app fell back to - the operator's own ordering of
-    // allowedTargetBranches is the one that should decide.
     let policy_order: Vec<&str> = registry
         .promotion
         .allowed_target_branches
@@ -847,10 +769,6 @@ pub fn target_branches_live(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Integration PRs from GitHubOps
-// ---------------------------------------------------------------------------
-
 fn parse_pr_subsystem(body: &str, head: &str) -> Option<String> {
     for raw in body.lines() {
         let line = raw.trim();
@@ -861,10 +779,8 @@ fn parse_pr_subsystem(body: &str, head: &str) -> Option<String> {
             }
         }
     }
-    // Fallback: `integration/<id>-<short>-...` head naming.
     if let Some(rest) = head.strip_prefix("integration/") {
         let id = rest.split('-').next().unwrap_or("");
-        // Heads embed `<id>-<12hex>`; require the id shape only.
         if !id.is_empty() && crate::services::registry::assert_subsystem_id(id).is_ok() {
             return Some(id.to_string());
         }
@@ -944,7 +860,6 @@ fn integration_pr_from_info(
     })
 }
 
-/// Live integration PRs from [`GitHubOps`].
 pub fn integration_prs_live(
     registry: &Registry,
     github: &dyn GitHubOps,
@@ -967,10 +882,6 @@ pub fn integration_prs_live(
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(out)
 }
-
-// ---------------------------------------------------------------------------
-// Integration history from reachable history + open PRs
-// ---------------------------------------------------------------------------
 
 fn resolve_history_branch(
     target_dir: &Path,
@@ -1000,8 +911,6 @@ fn resolve_history_branch(
     }
 }
 
-/// Merged integrations, reverts and restores from reachable history, plus
-/// pending open PRs. Not fixtures.
 pub fn integration_history_live(
     target_dir: &Path,
     registry: &Registry,
@@ -1017,8 +926,6 @@ pub fn integration_history_live(
     let reference = git::resolve_branch_ref(target_dir, &branch).ok_or_else(|| {
         branch_not_permitted(&branch, "branch does not exist in the target checkout")
     })?;
-    // Shares the tip-keyed scan with the status reads above: same tip, same
-    // events, one `git log` per tip instead of one per command.
     let replayed = history::cached_replay(target_dir, &reference);
     let mut entries: Vec<IntegrationHistoryEntry> = replayed
         .history
@@ -1059,9 +966,6 @@ pub fn integration_history_live(
                 target_branch: event.target.clone().unwrap_or_else(|| branch.clone()),
                 main_commit_sha: Some(event.commit.clone()),
                 pull_request_number: None,
-                // Author harvested by the same branch walk (no per-entry
-                // `git show`): the walk is the source of the events, so the
-                // author is always present; blank falls back like before.
                 actor: if event.author.trim().is_empty() {
                     "unknown".to_string()
                 } else {
@@ -1077,7 +981,6 @@ pub fn integration_history_live(
             }
         })
         .collect();
-    // Pending open PRs overlay.
     let open_prs = github
         .list_open_pull_requests(&registry.main_repository, &branch)
         .map_err(gh_error_to_app)?;
@@ -1123,13 +1026,6 @@ pub fn integration_history_live(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Integration event audit: one event re-derived from git, never fabricated
-// ---------------------------------------------------------------------------
-
-/// Already-cached source checkout only: never clones. `None` means the source
-/// repo is not cached (or the cached copy is unusable) and every included
-/// commit reports `unavailable`; [`warm_checkouts_once`] warms at startup.
 pub fn cached_source_dir(registry: &Registry, subsystem_id: &str) -> AppResult<Option<PathBuf>> {
     let entry = find_live_subsystem(registry, subsystem_id)?;
     if let Some(local) = crate::services::checkouts::local_dir_for(&entry.repository) {
@@ -1188,7 +1084,6 @@ fn unavailable_commit(sha: &str) -> IntegrationEventCommit {
     IntegrationEventCommit {
         sha: sha.to_string(),
         short_sha: sha.chars().take(7).collect(),
-        // Never invent a subject and never fall back to the SHA as one.
         subject: String::new(),
         author: None,
         authored_at: None,
@@ -1208,7 +1103,6 @@ fn enrich_included_commits(
     shas: &[String],
 ) -> Vec<IntegrationEventCommit> {
     let Some(dir) = source_dir else {
-        // No clone here: reads use the already-cached checkout only.
         return shas.iter().map(|sha| unavailable_commit(sha)).collect();
     };
     if shas.is_empty() {
@@ -1284,8 +1178,6 @@ fn enrich_included_commits(
         .collect()
 }
 
-/// New-side keys for a numstat rename path (`old => new`, plus the
-/// `dir/{old => new}.txt` brace form), so the raw display path joins.
 fn rename_new_keys(path: &str) -> Vec<String> {
     if let (Some(open), Some(close)) = (path.find('{'), path.find('}')) {
         if open < close {
@@ -1369,11 +1261,8 @@ fn main_commit_changes(
     };
     let mut stats: HashMap<String, (u32, u32)> = HashMap::new();
     let mut raws: Vec<(char, String)> = Vec::new();
-    // The header line is already consumed above, so a subject containing a
-    // tab can never be mistaken for a numstat row here.
     for line in lines {
         if let Some(rest) = line.strip_prefix(':') {
-            // `:oldmode newmode oldsha newsha STATUS\tpath[\tnewpath]`.
             let Some((meta, paths)) = rest.split_once('\t') else {
                 continue;
             };
@@ -1445,10 +1334,6 @@ fn unavailable_audit(
     detail: String,
 ) -> IntegrationEventAudit {
     IntegrationEventAudit {
-        // `kind` has no truthful value without a resolved event; the contract
-        // requires one, so `Merged` is the neutral placeholder and `detail`
-        // carries the actual story. `main_commit` stays null: there is no
-        // resolved commit to describe.
         main_commit_sha: main_commit_sha.to_string(),
         main_commit: None,
         kind: IntegrationHistoryKind::Merged,
@@ -1496,8 +1381,6 @@ pub fn integration_event_audit_live(
             "branch does not exist in the target checkout",
         ));
     };
-    // Tip-keyed memo shared with the list and status reads: same tip, same
-    // events, and a repeated click reuses the scan instead of re-walking.
     let replayed = history::cached_replay(target_dir, &reference);
     let Some(full) = git::rev_parse(target_dir, wanted) else {
         return Ok(unavailable_audit(
@@ -1524,7 +1407,6 @@ pub fn integration_event_audit_live(
             ),
         ));
     };
-    // Same mapping the history list uses, so the two agree.
     let (kind, detail) = match event.kind {
         history::EventType::Integrate => (IntegrationHistoryKind::Merged, event.subject.clone()),
         history::EventType::Revert => (
@@ -1540,10 +1422,6 @@ pub fn integration_event_audit_live(
         ),
         history::EventType::Restore => (IntegrationHistoryKind::Restored, event.subject.clone()),
     };
-    // What a `Reverted` event undid is the replay's already-resolved
-    // `reverts_integration` (exact, then unique prefix, then newest subject —
-    // see `revert_resolution_prefers_exact_then_unique_prefix_then_newest_subject`).
-    // Never re-parsed from message text.
     let reverted_main_commit_sha = if matches!(event.kind, history::EventType::Revert) {
         event.reverts_integration.clone()
     } else {
@@ -1630,13 +1508,6 @@ pub fn integration_event_audit_live(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Source commits / details / diff from a source clone (or gh api fallback)
-// ---------------------------------------------------------------------------
-
-/// One source-branch commit with its raw per-path deltas, newest-first.
-/// `pub(crate)` so the subsystem diff reuses the same single batched
-/// `git log --raw` walk instead of spawning per path.
 pub(crate) struct SourceCommit {
     pub(crate) sha: String,
     pub(crate) subject: String,
@@ -1649,8 +1520,6 @@ pub(crate) struct SourceCommit {
     pub(crate) additions: u32,
     pub(crate) deletions: u32,
     pub(crate) touches_manifest: bool,
-    /// `(path, post-commit blob sha, status char)` per changed path — the blob
-    /// ids let us compare content against the target branch without a new diff.
     pub(crate) deltas: Vec<(String, String, char)>,
 }
 
@@ -1699,15 +1568,12 @@ pub(crate) fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<S
     let mut current: Option<SourceCommit> = None;
     let flush = |current: &mut Option<SourceCommit>, commits: &mut Vec<SourceCommit>| {
         if let Some(commit) = current.take() {
-            // Skip phantom rows that never parsed as a real header.
             if commit.sha.len() == 40 || commit.sha.len() == 64 {
                 commits.push(commit);
             }
         }
     };
     for raw_line in text.lines() {
-        // Strip a trailing REC marker and carriage returns; headers keep
-        // their FIELD separators.
         let line = raw_line.trim_end_matches([REC, '\r']).to_string();
         if line.contains(FIELD) {
             flush(&mut current, &mut commits);
@@ -1739,7 +1605,6 @@ pub(crate) fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<S
                 deltas: Vec::new(),
             });
         } else if let Some(commit) = current.as_mut() {
-            // `--raw` row: `:<old_mode> <new_mode> <old_sha> <new_sha> <status>\t<path>`.
             let row = line.trim();
             let Some((meta, path)) = row.split_once('\t') else {
                 continue;
@@ -1823,8 +1688,6 @@ fn tree_blobs(repo_dir: &Path, rev: &str) -> HashMap<String, String> {
     map
 }
 
-/// Newest source commit that touches each path, as an index into the
-/// newest-first commit list — used to spot commits a later one already covers.
 fn latest_toucher_index(commits: &[SourceCommit]) -> HashMap<String, usize> {
     let mut map: HashMap<String, usize> = HashMap::new();
     for (index, commit) in commits.iter().enumerate() {
@@ -1849,8 +1712,6 @@ fn is_dependency_path(path: &str) -> bool {
     )
 }
 
-/// True when every one of these paths is also changed by a newer source commit,
-/// so promoting the older commit would only re-apply stale content.
 fn all_superseded(paths: &[&String], latest: &HashMap<String, usize>, index: usize) -> bool {
     !paths.is_empty()
         && paths
@@ -1948,8 +1809,6 @@ fn numstat_totals(repo_dir: &Path, shas: &[&str]) -> HashMap<String, (u32, u32)>
     map
 }
 
-/// Live commit page from the source repo, with per-commit status for the
-/// selected target branch.
 pub fn commit_page_live(
     target_dir: &Path,
     source_dir: &Path,
@@ -1974,8 +1833,6 @@ pub fn commit_page_live(
     let (target_dates, path_dates_truncated) = target_path_dates(target_dir, &target_branch);
     let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
     let results = history::compute_branch_status(target_dir, &target_branch, &entry.id, &shas);
-    // One enrichment for every row on the page: the memoized walks are
-    // shared instead of re-read per SHA.
     let converted = branch_results_to_statuses(target_dir, &target_branch, &results);
     let mut status_by_sha: HashMap<String, CommitStatus> = HashMap::new();
     for (result, status) in results.iter().zip(converted) {
@@ -2022,10 +1879,6 @@ pub fn commit_page_live(
                 status = open_pr_status(pr, &target_branch);
             }
         }
-        // Content-level truth, computed by comparing the two trees rather than
-        // from the commit's declared add/modify status: a trailer only records
-        // what the tool integrated, and the subsystem's split history makes files
-        // that exist on both sides look like adds (which is not a conflict).
         if matches!(
             status.kind,
             CommitStatusKind::Eligible | CommitStatusKind::Unknown
@@ -2167,10 +2020,6 @@ pub fn commit_page_live(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Commit details
-// ---------------------------------------------------------------------------
-
 fn numstat_map(repo_dir: &Path, sha: &str) -> HashMap<String, (u32, u32, bool)> {
     let mut map = HashMap::new();
     let out = git::run(repo_dir, &["show", "--numstat", "--format=", sha]);
@@ -2188,7 +2037,6 @@ fn numstat_map(repo_dir: &Path, sha: &str) -> HashMap<String, (u32, u32, bool)> 
         let binary = adds == "-" || dels == "-";
         let additions = adds.parse::<u32>().unwrap_or(0);
         let deletions = dels.parse::<u32>().unwrap_or(0);
-        // Rename rows look like `old => new`; index both forms.
         map.insert(path.to_string(), (additions, deletions, binary));
         if path.contains(" => ") {
             let parts: Vec<&str> = path.split(" => ").collect();
@@ -2248,7 +2096,6 @@ fn dependency_changes_for(repo_dir: &Path, sha: &str, base: Option<&str>) -> Vec
         .and_then(|b| git::read_blob(repo_dir, b, "package.json"))
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    // No manifest delta → no dependency rows.
     if old_pkg == new_pkg {
         return Vec::new();
     }
@@ -2304,7 +2151,6 @@ fn dependency_changes_for(repo_dir: &Path, sha: &str, base: Option<&str>) -> Vec
     out
 }
 
-/// Live commit details from the source repo.
 #[allow(clippy::too_many_arguments)]
 pub fn commit_details_live(
     target_dir: &Path,
@@ -2358,7 +2204,6 @@ pub fn commit_details_live(
     let authored_at = parts.next().unwrap_or("").to_string();
     let committed_at = parts.next().unwrap_or("").to_string();
     let subject = parts.next().unwrap_or("").to_string();
-    // `%b` may itself contain the separator; recover the tail conservatively.
     let body = {
         let marker = format!("{subject}\x1f");
         show.stdout_str()
@@ -2449,7 +2294,6 @@ pub fn commit_details_live(
     // degrades to Unknown and the related section stays empty (previously the
     // status call errored into Unknown and the related call failed open).
     let open_prs = github.list_open_pull_requests(&registry.main_repository, &target_branch);
-    // Status for this SHA on the selected target.
     let status = match &open_prs {
         Ok(prs) => integration_statuses_with_prs(
             target_dir,
@@ -2469,7 +2313,6 @@ pub fn commit_details_live(
         }),
         Err(_) => CommitStatus::unknown(&target_branch, "Status unavailable for this SHA."),
     };
-    // Related open integration PRs.
     let mut related: Vec<PullRequestRef> = Vec::new();
     if let Ok(prs) = &open_prs {
         for pr in prs {
@@ -2533,12 +2376,7 @@ pub fn commit_details_live(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Commit diff (bounded)
-// ---------------------------------------------------------------------------
-
 fn parse_hunk_header(header: &str) -> (u32, u32) {
-    // `@@ -old,count +new,count @@` — counts may be omitted when 1.
     let mut old_start = 1_u32;
     let mut new_start = 1_u32;
     for token in header.split_whitespace() {
@@ -2607,7 +2445,6 @@ fn parse_unified_hunks<'a>(lines: impl Iterator<Item = &'a str>) -> (Vec<DiffHun
             continue;
         };
         if let Some(content) = raw.strip_prefix('+') {
-            // `+++` was already skipped above.
             hunk.lines.push(DiffLine {
                 kind: DiffLineKind::Added,
                 old_line: None,
@@ -2800,7 +2637,6 @@ pub fn commit_diff_live(
         .with_remedy("Choose a file listed under 'Files Changed' in the commit details panel."));
     }
     let total_lines: u32 = hunks.iter().map(|h| h.lines.len() as u32).sum();
-    // Bound the response; never embed a full editor.
     let truncated = bound_hunks(&mut hunks);
     Ok(CommitDiff {
         subsystem_id: entry.id.clone(),
@@ -2847,7 +2683,6 @@ fn diff_header_path(line: &str) -> Option<String> {
     }
 }
 
-/// One file's raw patch slice from a whole-commit `git show -p`.
 struct RawFilePatch<'a> {
     /// Resolved display path; `+++` (the new side) wins, `---` covers a
     /// deletion. `None` for a mode-only change that emits no path headers.
@@ -2885,8 +2720,6 @@ fn split_commit_patch(text: &str) -> Vec<RawFilePatch<'_>> {
                 file.path = Some(renamed.to_string());
             }
         }
-        // The `+++` side (new path) always wins; the `---` side is a fallback
-        // only for a deletion, whose `+++` is `/dev/null`.
         let is_new_side = raw.starts_with("+++ ");
         let is_old_side = raw.starts_with("--- ");
         if is_new_side || (is_old_side && file.path.is_none()) {
@@ -3052,19 +2885,15 @@ mod tests {
         let registry = test_registry_two();
         let summaries = subsystem_summaries(&registry);
         assert_eq!(summaries.len(), 2);
-        // Sorted by name.
         assert_eq!(summaries[0].name, "HR");
         assert_eq!(summaries[1].name, "Payroll");
         let hr = summaries.iter().find(|s| s.id == "hr-management").unwrap();
         assert_eq!(hr.repository, "ORG/hr-management");
         assert_eq!(hr.source_branch, "master");
         assert!(hr.enabled);
-        // No fixture-only subsystems leak into live mode.
         assert!(!summaries.iter().any(|s| s.id == "inventory-management"));
         assert!(!summaries.iter().any(|s| s.id == "document-management"));
     }
-
-    // --- local git sandbox ----------------------------------------------
 
     static SANDBOX_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -3179,8 +3008,6 @@ mod tests {
         (origin, holder, clone)
     }
 
-    /// Source with A (base) then B (feature); main with staging + a real
-    /// trailer integration commit for B only.
     fn sandbox_status() -> (PathBuf, PathBuf, String, String, Registry) {
         let src = tmp("src");
         init(&src, "master");
@@ -3198,7 +3025,6 @@ mod tests {
         let _base = commit_all(&main, "main base");
         git(&main, &["branch", "staging"]);
         git(&main, &["branch", "development"]);
-        // Real trailer integration for B on staging.
         git(&main, &["checkout", "-q", "staging"]);
         write(&main, "b.txt", "b feature\n");
         let trailer = format!(
@@ -3212,7 +3038,6 @@ mod tests {
     #[test]
     fn live_status_integrated_eligible_and_pr_open() {
         let (_src, main, a, b, registry) = sandbox_status();
-        // No PRs: B integrated via trailer, A eligible.
         let empty = StubGitHubOps::new();
         let statuses = integration_statuses_live(
             &main,
@@ -3238,7 +3063,6 @@ mod tests {
             CommitStatusKind::Eligible,
             "A has no integration"
         );
-        // Open-PR-only SHA reports PrOpen, never Integrated.
         let pr = PullRequestInfo {
             number: Some(7),
             base: "staging".to_string(),
@@ -3276,7 +3100,6 @@ mod tests {
             CommitStatusKind::Integrated,
             "a push/PR must never mint Integrated"
         );
-        // An already-integrated SHA stays Integrated even with an open PR.
         assert_eq!(
             by_sha[&b.as_str()].status.kind,
             CommitStatusKind::Integrated
@@ -3287,8 +3110,6 @@ mod tests {
     #[test]
     fn target_branch_policy_filtering_marks_allowed_and_reason() {
         let registry = single_registry();
-        // The allowed branches are present in the checkout, so only policy
-        // decides their fate here.
         let checkout = tmp("branch-list-policy");
         init(&checkout, "master");
         write(&checkout, "x.txt", "x\n");
@@ -3338,13 +3159,9 @@ mod tests {
         );
     }
 
-    /// A branch the policy allows but the checkout genuinely lacks must still
-    /// be listed — as not-allowed with a checkout reason — rather than making
-    /// the whole branch list fail.
     #[test]
     fn policy_allowed_branch_missing_from_checkout_is_listed_not_allowed() {
         let registry = single_registry();
-        // Checkout has only `master`; `staging` is policy-allowed but absent.
         let checkout = tmp("branch-list-missing");
         init(&checkout, "master");
         write(&checkout, "x.txt", "x\n");
@@ -3422,12 +3239,10 @@ mod tests {
     #[test]
     fn fixture_flag_and_target_dir_seam() {
         let _env = crate::test_support::env_lock();
-        // Fixture flag defaults off; explicit 1 opts into fixtures.
         std::env::remove_var("VOS_USE_FIXTURES");
         assert!(!use_fixtures());
         std::env::set_var("VOS_USE_FIXTURES", "1");
         assert!(use_fixtures());
-        // Fixture world stays reachable for UI dev.
         let world = crate::fixtures::FixtureWorld::build();
         assert!(
             world.subsystems.len() >= 5,
@@ -3452,7 +3267,6 @@ mod tests {
     #[test]
     fn live_history_prs_and_commits_come_from_git_and_github() {
         let (src, main, a, b, registry) = sandbox_status();
-        // History: the trailer integration for B is a Merged entry.
         let empty = StubGitHubOps::new();
         let history = integration_history_live(
             &main,
@@ -3471,7 +3285,6 @@ mod tests {
                 .any(|e| e.kind == IntegrationHistoryKind::Merged && e.source_shas.contains(&b)),
             "reachable trailer integration must appear as Merged"
         );
-        // PRs: only trailers/heads count as integration PRs.
         let good = PullRequestInfo {
             number: Some(11),
             base: "staging".to_string(),
@@ -3497,7 +3310,6 @@ mod tests {
         assert_eq!(prs[0].subsystem_id, "hr-management");
         assert!(prs[0].source_shas.contains(&b));
         assert!(prs[0].provenance_ok);
-        // Commits: source log with live statuses.
         let query = CommitQuery {
             subsystem_id: "hr-management".to_string(),
             target_branch: "staging".to_string(),
@@ -3513,8 +3325,6 @@ mod tests {
         assert_eq!(page.total, 2);
         assert!(page.commits.iter().any(|c| c.sha == a));
         assert!(page.commits.iter().any(|c| c.sha == b));
-        // Details: changed files with add flags + dependency rows when the
-        // manifest moves; diff: bounded unified hunks for a path.
         let details = commit_details_live(
             &main,
             &src,
@@ -3651,8 +3461,6 @@ mod tests {
     fn local_only_unpushed_pushed_and_stale_labels() {
         let (_src, main, _a, b, registry) = sandbox_status();
         let empty = StubGitHubOps::new();
-        // Unpushed: integration commit reachable from refs/heads/staging only
-        // (sandbox has no origin remote) → local-only label, kind Integrated.
         let statuses = integration_statuses_live(
             &main,
             &registry,
@@ -3668,8 +3476,6 @@ mod tests {
             statuses[0].status.label, "Integrated (local only, unpushed)",
             "unpushed local commit must carry the additive label"
         );
-        // After push: create the remote-tracking ref containing the commit →
-        // plain Integrated.
         git(
             &main,
             &["update-ref", "refs/remotes/origin/staging", "staging"],
@@ -3685,9 +3491,6 @@ mod tests {
         .expect("statuses after push");
         assert_eq!(statuses[0].status.kind, CommitStatusKind::Integrated);
         assert_eq!(statuses[0].status.label, "Integrated");
-        // Stale: delete both refs so neither contains the commit? Actually
-        // deleting refs makes branch unknown — instead test fetch_time_str
-        // directly (remote unreadable → stale string contains time).
         let stale = fetch_time_str(&main);
         assert!(!stale.is_empty());
     }
@@ -3768,7 +3571,6 @@ mod tests {
         let b = commit_all(&src, "B feature");
 
         let (_origin, _holder, clone) = cloned_remote_sandbox("lbl");
-        // Local-only integration on the clone's staging; the remote stays behind.
         git(&clone, &["checkout", "-q", "staging"]);
         write(&clone, "b.txt", "b feature\n");
         let trailer = format!(
@@ -3807,11 +3609,6 @@ mod tests {
         );
     }
 
-    /// The status qualification must ask "is this commit on a remote?" against
-    /// the RESOLVED remote-tracking ref, not a hardcoded `origin`: a fork clone
-    /// keeps the branch on `upstream`, so an integration reachable only from
-    /// `refs/remotes/upstream/<branch>` must report plain `Integrated`, never
-    /// `Unknown (stale)`.
     #[test]
     fn integration_on_a_non_origin_remote_reports_integrated_not_stale() {
         let (_src, main, _a, b, registry) = sandbox_status();
@@ -3853,8 +3650,6 @@ mod tests {
         );
     }
 
-    /// A: claimed Integrated without trailers → Unknown, never Eligible.
-    /// Squash-merge strips trailers on every merge, so absence proves nothing.
     #[test]
     fn squash_stripped_trailers_report_unknown_never_eligible() {
         use crate::services::engine::history::{BranchStatusKind, BranchStatusResult};
@@ -3863,8 +3658,6 @@ mod tests {
         write(&dir, "x.txt", "x\n");
         let _ = commit_all(&dir, "base");
         git(&dir, &["branch", "staging"]);
-        // Fake an Integrated claim whose commit message has NO trailers
-        // (as a squash-merge would produce).
         write(&dir, "x.txt", "squashed content\n");
         let fake = commit_all(&dir, "squashed integration without trailers");
         let result = BranchStatusResult {
@@ -3903,8 +3696,6 @@ mod tests {
         let _ = commit_all(&dir, "base");
         git(&dir, &["branch", "staging"]);
         git(&dir, &["checkout", "-q", "staging"]);
-        // 801 empty commits (fast: no file writes) pushes the
-        // `--max-count=800` scan over its limit.
         for i in 0..801 {
             git(
                 &dir,
@@ -3913,7 +3704,6 @@ mod tests {
         }
         let (_map, truncated) = target_path_dates(&dir, "staging");
         assert!(truncated, "801 commits must trip the 800 scan limit");
-        // Small repo stays untruncated.
         let small = tmp("trunc-small");
         init(&small, "master");
         write(&small, "x.txt", "x\n");
@@ -3925,7 +3715,6 @@ mod tests {
     #[test]
     fn status_scan_is_shared_across_reads_on_unchanged_tip() {
         let (src, main, a, b, registry) = sandbox_status();
-        // Scoped to this sandbox's tip key, so parallel tests cannot disturb it.
         let scans = || crate::services::engine::history::replay_scans_for_tests(&main, "staging");
         let empty = StubGitHubOps::new();
         let first = integration_statuses_live(
@@ -3938,8 +3727,6 @@ mod tests {
         )
         .expect("statuses");
         assert_eq!(scans(), 1, "the first read walks the history once");
-        // Commit details walks the same history for one SHA: same tip, no
-        // second scan.
         let details = commit_details_live(
             &main,
             &src,
@@ -3959,8 +3746,6 @@ mod tests {
         let by_sha: HashMap<&str, &IntegrationStatus> =
             first.iter().map(|s| (s.source_sha.as_str(), s)).collect();
         assert_eq!(by_sha[&b.as_str()].status.kind, details.status.kind);
-        // Moving the tip (a new ordinary commit on staging) recomputes: the
-        // new tip's scan count is 1, i.e. the old tip's replay was NOT served.
         git(&main, &["checkout", "-q", "staging"]);
         write(&main, "new.txt", "new\n");
         let _ = commit_all(&main, "ordinary newcomer");
@@ -3992,15 +3777,8 @@ mod tests {
         );
     }
 
-    /// N rows on one page cost one branch walk, not N. The old per-row
-    /// evidence path paid ~12 git spawns per integrated row (4x `git show` +
-    /// 2x `rev-parse` + 2x `is-ancestor`, each of which re-spawns); the
-    /// batched enrichment shares one tip-keyed walk for all rows. Asserts the
-    /// walk count and the spawn count, not the wall time.
     #[test]
     fn page_of_rows_costs_one_branch_walk_not_one_per_row() {
-        // 10 source SHAs, every one integrated via its own trailer commit:
-        // the worst case for per-row evidence gathering.
         let src = tmp("page-src");
         init(&src, "master");
         let mut shas = Vec::new();
@@ -4057,8 +3835,6 @@ mod tests {
             spawns <= 16,
             "10 integrated rows cost {spawns} git spawns, expected O(1) from one shared walk"
         );
-        // History authors come from the same walk: no per-entry `git show`,
-        // and the actor is still correct.
         let history = integration_history_live(
             &main,
             &registry,
@@ -4088,11 +3864,6 @@ mod tests {
         let _ = src;
     }
 
-    // --- integration event audit -----------------------------------------
-
-    /// Source with three commits; main with one staging integration commit
-    /// carrying all three `Source-Commit` trailers in a non-alphabetical
-    /// order. Returns `(source_dir, target_dir, trailer_order, main_sha)`.
     fn sandbox_audit_three() -> (PathBuf, PathBuf, Vec<String>, String, Registry) {
         let src = tmp("audit-src");
         init(&src, "master");
@@ -4156,7 +3927,6 @@ mod tests {
                 commit.sha.chars().take(7).collect::<String>()
             );
         }
-        // Verbatim trailer block, in git order — the audit artefact.
         let keys: Vec<&str> = audit.provenance.iter().map(|p| p.key.as_str()).collect();
         assert_eq!(
             keys,
@@ -4246,7 +4016,6 @@ mod tests {
         );
         let m = commit_all(&main, &trailer);
 
-        // Independent ground truth straight from git (test `Command`, uncounted).
         let numstat = git(&main, &["show", "--numstat", "--format=", &m]);
         let mut expected: HashMap<String, (u32, u32)> = HashMap::new();
         for line in numstat.lines() {
@@ -4259,7 +4028,6 @@ mod tests {
             }
         }
 
-        // No source checkout needed here: enrichment reports unavailable.
         let audit = integration_event_audit_live(
             &main,
             None,
@@ -4374,8 +4142,6 @@ mod tests {
             },
         );
         let i = commit_all(&main, &integrate_msg);
-        // Revert through the existing builder: the `Reverts-Integration`
-        // trailer carries the undone commit and the replay resolves it.
         write(&main, "f.txt", "undone\n");
         let revert_msg = crate::services::engine::provenance::build_revert_message(
             "hr-management",

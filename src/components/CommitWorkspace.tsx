@@ -34,20 +34,12 @@ import {
 } from './ui/split-pane';
 import { SplitResizer } from './ui/split-resizer';
 
-/**
- * Subsystem + commit workspace (spec §3.2). The wide layout is GitHub Desktop's
- * three columns — commit list | changed files | the selected file's diff. In
- * narrow windows the whole right region becomes a slide-over so no required
- * action or message is ever unreachable.
- */
-
 type SourceTab = 'commits' | 'changes' | 'dependencies' | 'settings';
 
 export function CommitWorkspace() {
   return <CommitWorkspaceView />;
 }
 
-/** Filter/panel state keyed by working context, so a subsystem/branch switch resets paging without effect-written state. */
 function CommitWorkspaceView() {
   const app = useApp();
   const [search, setSearch] = useState('');
@@ -140,8 +132,6 @@ function CommitWorkspacePanel({
     return () => list.removeEventListener('change', update);
   }, []);
 
-  // The columns container only exists on the Commits tab, so re-observe when it
-  // remounts rather than keeping an observer on the detached node.
   useEffect(() => {
     const element = columnsRef.current;
     if (!element) return;
@@ -213,24 +203,16 @@ function CommitWorkspacePanel({
     [subsystem?.id, focusedSha, app.targetBranch, app.dataVersion],
   );
 
-  // Row subject/SHA only moves focus; the diff region is permanent on wide
-  // screens, so the two gestures never conflict.
   const handleFocusSha = (sha: string) => {
     app.setFocusedSha(sha);
   };
 
-  // Every per-file affordance moves focus and the selected file; the diff is
-  // rendered in place in the workspace, so there is no surface to open.
   const openFile = (sha: string, filePath: string) => {
     app.setFocusedSha(sha);
     setSelectedFile({ sha, path: filePath });
     onSourceTabChange('commits');
   };
 
-  // The browser is read-only: row subject/SHA only moves focus, and the
-  // single Promote… action hands the commit to the Promote tab through the
-  // shared selection, which owns the dialog, delivery modes, exclusions and
-  // preflight. The browser never opens a promotion flow itself.
   const promoteHandoff = (sha: string, excludedPaths: string[]) => {
     const commit = listing.find((candidate) => candidate.sha === sha);
     app.setSelectedShas([sha], commit ? [commit] : []);
@@ -257,10 +239,6 @@ function CommitWorkspacePanel({
     );
   }
 
-  // The right-hand region of the workspace: the changed-files column and the
-  // selected file's diff, rendered in place. The details are the workspace's
-  // own fetch (the same read feeds the Changes/Dependencies tabs), so mounting
-  // the diff never issues a duplicate commit-details request.
   const diffPanel = (
     <CommitDiffView
       subsystemId={subsystem.id}

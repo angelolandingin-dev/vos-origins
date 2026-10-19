@@ -61,10 +61,6 @@ fn base_command() -> Command {
     command
         .arg("-c")
         .arg("credential.helper=")
-        // Windows MAX_PATH (260) counts the whole destination path. Cached
-        // checkouts sit under a deep AppData prefix and some repos have 140+
-        // character file paths, so without this a clone downloads everything and
-        // then fails the checkout ("Clone succeeded, but checkout failed").
         .arg("-c")
         .arg("core.longpaths=true")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -72,7 +68,6 @@ fn base_command() -> Command {
     command
 }
 
-/// `Err` = spawn failure; non-zero exit is `Ok` with `status != 0`.
 pub fn run(repo_dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
     #[cfg(test)]
     count_spawn_for_tests(repo_dir);
@@ -102,8 +97,6 @@ pub fn run_ok(repo_dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
     Ok(out)
 }
 
-/// Like [`run`] with bytes on stdin (for `--batch-check` style plumbing).
-/// Counts as one spawn for tests, exactly like [`run`].
 pub fn run_with_stdin(repo_dir: &Path, args: &[&str], stdin: &[u8]) -> Result<GitOutput, GitError> {
     #[cfg(test)]
     count_spawn_for_tests(repo_dir);
@@ -395,17 +388,12 @@ pub fn list_branches(repo_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// True when `dir` is inside a git work tree / repository. Used to fail
-/// closed for `local` delivery before any branch is created: a non-repo
-/// path must never be treated as the user's clone.
 pub fn is_git_repository(dir: &Path) -> bool {
     run(dir, &["rev-parse", "--git-dir"])
         .map(|out| out.status == 0)
         .unwrap_or(false)
 }
 
-/// True when `refs/heads/<branch>` already exists locally. `local` delivery
-/// refuses to overwrite it so a re-run never clobbers the user's branch.
 pub fn local_branch_exists(repo_dir: &Path, branch: &str) -> bool {
     rev_parse(repo_dir, &format!("refs/heads/{branch}")).is_some()
 }
@@ -427,15 +415,6 @@ pub fn resolve_branch_ref(repo_dir: &Path, branch: &str) -> Option<String> {
     remote_tracking_ref(repo_dir, branch)
 }
 
-/// First `refs/remotes/<remote>/<branch>` that exists, resolved in ONE
-/// `for-each-ref` call (git expands the `*` glob; refnames come back sorted,
-/// so the pick is deterministic). Remotes are never enumerated in Rust.
-///
-/// [`resolve_branch_ref`] calls this only after the cheap local checks fail.
-/// The status qualification calls it directly to ask "is this branch on a
-/// remote?" without hardcoding `origin` — a fork clone keeps the branch on a
-/// non-`origin` remote, and a hardcoded origin ref would report a reachable
-/// integration as stale.
 pub fn remote_tracking_ref(repo_dir: &Path, branch: &str) -> Option<String> {
     let pattern = format!("refs/remotes/*/{branch}");
     let out = run(
@@ -631,8 +610,6 @@ pub fn clone_no_tags(url: &str, dest: &Path) -> Result<(), GitError> {
             stderr: sanitize(&out.stderr),
         });
     }
-    // Backstop for servers/versions that ignore `clone -c`: enforce LF in the
-    // engine-owned clone only. Never touches any user repository.
     let _ = run(dest, &["config", "core.autocrlf", "false"]);
     let _ = run(dest, &["config", "core.eol", "lf"]);
     Ok(())
@@ -658,8 +635,6 @@ pub fn update_index_chmod(worktree_dir: &Path, path: &str, executable: bool) {
     let _ = run(worktree_dir, &["update-index", mode, "--", path]);
 }
 
-/// The `-c user.name=` / `-c user.email=` pair, in the exact order `git commit`
-/// receives it. Split out so the constructed args are testable without a repo.
 pub fn commit_author_args(author_name: &str, author_email: &str) -> [String; 4] {
     [
         "-c".to_string(),
@@ -1056,9 +1031,6 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A fork clone keeps the real branches on a non-`origin` remote, so the
-    /// existence test must find `refs/remotes/<remote>/<branch>`, not only
-    /// `refs/heads/` and `refs/remotes/origin/`.
     #[test]
     fn branch_exists_finds_a_branch_on_a_non_origin_remote() {
         let root = std::env::temp_dir().join(format!(
@@ -1089,8 +1061,6 @@ mod tests {
         );
         run_git(&upstream, &["branch", "UAT"]);
 
-        // A fork: `origin` carries only `master`; the second remote carries
-        // `UAT`, which lands under `refs/remotes/upstream/`.
         run_git(
             &root,
             &[

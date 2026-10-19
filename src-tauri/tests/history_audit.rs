@@ -122,8 +122,6 @@ fn single_registry() -> Registry {
     Registry::from_json(text, "test").expect("registry")
 }
 
-/// Source with three commits; main with one staging integration carrying all
-/// three `Source-Commit` trailers in non-alphabetical order.
 fn sandbox_three() -> (PathBuf, PathBuf, Vec<String>, String) {
     let src = tmp("src");
     init(&src, "master");
@@ -191,7 +189,6 @@ fn included_commits_are_exactly_source_commit_trailers_in_order() {
             "no empty subjects for reachable commits"
         );
     }
-    // Verbatim trailer block, in git order — the audit artefact.
     let keys: Vec<&str> = audit.provenance.iter().map(|p| p.key.as_str()).collect();
     assert_eq!(
         keys,
@@ -230,7 +227,6 @@ fn resolved_event_main_commit_matches_real_git_metadata() {
     )
     .expect("audit");
     assert!(!audit.main_commit_unavailable);
-    // Independent ground truth straight from git (setup `Command`, uncounted).
     let truth = git(&main, &["log", "-1", "--format=%H%x1f%s%x1f%an%x1f%aI", &m]);
     let mut parts = truth.split('\u{1f}');
     let (expected_sha, expected_subject, expected_author, expected_at) = (
@@ -268,7 +264,6 @@ fn unresolved_main_commit_is_null_without_fabrication() {
     write(&main, "work.txt", "work\n");
     let plain = commit_all(&main, "ordinary work without trailers");
 
-    // Outside the scanned range: truthful Ok, null main commit, nothing made up.
     let bogus_main = "d".repeat(40);
     let missing = integration_event_audit_live(
         &main,
@@ -285,7 +280,6 @@ fn unresolved_main_commit_is_null_without_fabrication() {
         "an unresolvable main commit carries null, never a fabricated subject"
     );
 
-    // Trailerless but reachable: same truthful shape.
     let trailerless = integration_event_audit_live(
         &main,
         None,
@@ -363,7 +357,6 @@ fn changes_and_totals_match_real_numstat_for_multi_file_commit() {
     );
     let m = commit_all(&main, &trailer);
 
-    // Independent ground truth straight from git (setup `Command`, uncounted).
     let numstat = git(&main, &["show", "--numstat", "--format=", &m]);
     let mut expected: std::collections::HashMap<String, (u32, u32)> =
         std::collections::HashMap::new();
@@ -377,7 +370,6 @@ fn changes_and_totals_match_real_numstat_for_multi_file_commit() {
         }
     }
 
-    // No source checkout needed here: enrichment reports unavailable.
     let audit = integration_event_audit_live(
         &main,
         None,
@@ -472,7 +464,6 @@ fn trailerless_commit_reports_unavailable_without_fabricated_commits() {
         audit.detail
     );
 
-    // Outside the scanned range is the same truthful shape, never an Err.
     let bogus_main = "d".repeat(40);
     let missing = integration_event_audit_live(
         &main,
@@ -516,9 +507,6 @@ fn reverted_event_names_what_it_undid_via_reverts_event_id() {
         subject: "Feature work",
     });
     let i = commit_all(&main, &integrate_msg);
-    // Revert through the existing builder: the `Reverts-Integration` trailer
-    // carries the undone commit and the replay resolves it. Never re-parsed
-    // from "This reverts commit ..." text here.
     write(&main, "f.txt", "undone\n");
     let revert_msg = build_revert_message(
         "hr-management",
@@ -567,14 +555,12 @@ fn multi_commit_event_costs_small_constant_not_one_spawn_per_commit() {
         3,
         "3 included commits arrive in one batch, not one spawn per commit"
     );
-    // One bad SHA alongside two good ones: the good ones still enrich.
     let bogus = "e".repeat(40);
     write(&main, "z.txt", "z\n");
     let mixed_trailer = format!(
         "integrate(hr-management): mixed-batch\n\nSubsystem-ID: hr-management\nSource-Repo: ORG/hr-management\nSource-Commit: {}\nSource-Commit: {}\nSource-Commit: {}\nPromotion-Mode: individual\nPromotion-Target: staging\n",
         order[0], bogus, order[1]
     );
-    // Commit on staging so it is reachable.
     git(&main, &["checkout", "-q", "staging"]);
     write(&main, "z2.txt", "z2\n");
     let mixed = commit_all(&main, &mixed_trailer);
@@ -592,7 +578,6 @@ fn multi_commit_event_costs_small_constant_not_one_spawn_per_commit() {
     assert!(mixed_audit.included_commits[1].unavailable);
     assert!(mixed_audit.included_commits[1].subject.is_empty());
     assert!(!mixed_audit.included_commits[2].unavailable);
-    // Repeated click reuses the memo: identical, truthful, no recompute.
     let again =
         integration_event_audit_live(&main, Some(&src), &registry, "staging", "hr-management", &m)
             .expect("second audit");

@@ -84,7 +84,6 @@ function normalizeError(raw: unknown): ApiError {
   }
 
   if (typeof raw === 'string') {
-    // Tauri serializes command errors as JSON strings via the plain `invoke` error channel.
     try {
       const parsed: unknown = JSON.parse(raw);
       if (isApiErrorPayload(parsed)) return normalizeError(parsed);
@@ -116,7 +115,6 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   }
 }
 
-/** Typed wrapper around every command in spec section 9.2. */
 export const api = {
   getAuthStatus: () => call<AuthStatus>('get_auth_status'),
 

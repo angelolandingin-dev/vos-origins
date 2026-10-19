@@ -5,7 +5,6 @@ function readMatches(query: string): boolean {
   return window.matchMedia(query).matches;
 }
 
-/** Subscribes to a CSS media query so panes can be collapsed in narrow windows. */
 export function useMediaQuery(query: string): boolean {
   const [snapshot, setSnapshot] = useState(() => ({ query, matches: readMatches(query) }));
 

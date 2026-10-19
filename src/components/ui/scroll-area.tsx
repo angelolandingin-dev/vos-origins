@@ -3,10 +3,6 @@ import * as ScrollAreaPrimitive from '@radix-ui/react-scroll-area';
 
 import { cx } from './cx';
 
-/**
- * Ledger-styled Radix ScrollArea: consistent thin scrollbars (10px track,
- * hairline-strong thumb) instead of OS defaults. Viewport carries the scroll.
- */
 export function ScrollArea({
   children,
   className,

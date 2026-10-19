@@ -20,13 +20,6 @@ function splitLines(value: string): string[] {
     .filter((item) => item.length > 0);
 }
 
-/**
- * A comma-separated list field that keeps the raw text while you type.
- *
- * Rendering the parsed array straight back into the box destroys the separator
- * as it is typed - split, filter out the empty entry, join - so a second value
- * can never be entered. The draft holds the text; the config gets the parse.
- */
 function ListField({
   label,
   value,

@@ -12,18 +12,6 @@ import { cx } from './ui/cx';
 import { formatDateTime } from './ui/format';
 import { InlineAlert, KeyValue } from './ui/primitives';
 
-/**
- * The selected commit's read-only context — author, integration evidence,
- * dependency changes, related PRs and the target-branch facts.
- *
- * It is rendered inside the changed-files column of `CommitDiffView` (the
- * `IntegrationEventAuditPanel` precedent: the file list carries the commit's
- * own context beneath it), so the Commit Browser reads as GitHub Desktop's
- * three columns — commits | changed files | the selected file's diff — with no
- * separate details surface. The commit's identity (SHA, subject, copy/open
- * affordances) and its single Promote… handoff live in the diff view's header,
- * which spans both columns; this block deliberately does not repeat them.
- */
 export interface CommitDetailsContextProps {
   details: CommitDetails;
   targetBranch: string;

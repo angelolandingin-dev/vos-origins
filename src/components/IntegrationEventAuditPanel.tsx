@@ -31,20 +31,6 @@ import { Button, EmptyState, ErrorState, KeyValue, LoadingState, Panel } from '.
 import { SPLIT_DEFAULT_WIDTH, splitWidthStyle } from './ui/split-pane';
 import { SplitResizer } from './ui/split-resizer';
 
-/**
- * Full-page audit for one integration event (spec §§3.3/8.3). Replaces the
- * history list within the tab while open, so the audit is read as a page, not
- * glanced at in a side rail.
- *
- * The layout follows the commit browser (GitHub Desktop History): the commit
- * is the panel header, a changed-files column sits at the left with the event's
- * own audit context below it, and beside it the selected file's diff — a file
- * header and its hunks — rendered by the shared `DiffViewer`. The whole main
- * commit's diff arrives in ONE call (`getMainCommitDiff`), keyed by path; the
- * main commit lives in the MAIN repository, so the subsystem-scoped per-file
- * diff command does not apply.
- */
-
 function changeGlyph(change: IntegrationEventChange['change']): {
   glyph: string;
   className: string;
@@ -71,13 +57,7 @@ function SectionTitle({ icon: Icon, children }: { icon: LucideIcon; children: st
 }
 
 export interface IntegrationEventAuditPageProps {
-  /** The selected table entry. Null means nothing is selected yet. */
   entry: IntegrationHistoryEntry | null;
-  /**
-   * The fetched audit, already gated on request identity by the caller: null
-   * while a fetch is pending so a mid-flight selection switch never flashes
-   * the previous event's data.
-   */
   audit: IntegrationEventAudit | null;
   loading: boolean;
   error: ApiError | null;
@@ -103,7 +83,6 @@ export function IntegrationEventAuditPage({
   const [mode, setMode] = useState<'side' | 'unified'>('unified');
   const [filesWidth, setFilesWidth] = useState(SPLIT_DEFAULT_WIDTH);
 
-  // Escape returns to the event list — the CommitDiffView idiom.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onBack();
@@ -112,10 +91,6 @@ export function IntegrationEventAuditPage({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [onBack]);
 
-  // The whole main commit's per-file diff in ONE call — never a fetch per file.
-  // The loader resolves null while the audit is absent or the main commit is
-  // not in the local clone, so no request is issued for an event with nothing
-  // to show.
   const diff = useAsyncData(
     () =>
       audit && !audit.mainCommitUnavailable
@@ -137,8 +112,6 @@ export function IntegrationEventAuditPage({
     );
   }
 
-  // Request identity: a pending fetch — or an audit that does not belong to
-  // the current selection — renders as loading, never as stale data.
   if (loading || (audit && entry.mainCommitSha && audit.mainCommitSha !== entry.mainCommitSha)) {
     return <LoadingState label="Loading event audit…" />;
   }
@@ -147,8 +120,6 @@ export function IntegrationEventAuditPage({
     return <ErrorState error={error} onRetry={onRetry} />;
   }
 
-  // The loader only resolves null for an entry with no main commit, which has
-  // no audit to fetch. Those rows are not clickable; this is a defensive path.
   if (!audit) {
     const meta = INTEGRATION_KIND_META[entry.kind];
     return (

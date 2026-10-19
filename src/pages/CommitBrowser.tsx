@@ -14,8 +14,6 @@ export function CommitBrowser() {
   const subsystems = app.subsystems.data ?? [];
   const branches = (app.targetBranches.data?.branches ?? []).filter((branch) => branch.allowed);
 
-  // The selector's right-aligned count, fetched once for every subsystem (the
-  // Dashboard's scale fix) so the moved control keeps the count it always had.
   const counts = useAsyncData(async () => {
     const summaries = await api.getSubsystemSummaries();
     const byId: Record<string, number> = {};

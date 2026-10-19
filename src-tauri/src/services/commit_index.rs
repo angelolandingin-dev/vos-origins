@@ -69,7 +69,6 @@ pub fn build_status_map(signals: &StatusSignals<'_>) -> HashMap<String, CommitSt
         }
     }
 
-    // Open PRs never count as `Integrated`.
     for pr in signals.prs {
         if pr.subsystem_id != signals.subsystem_id || pr.base_branch != *detail_target {
             continue;
@@ -318,21 +317,16 @@ mod tests {
         let map_staging = build_status_map(&staging);
         let map_dev = build_status_map(&development);
 
-        // Merged promotion with provenance is integrated on staging ...
         let fix = "f12b301d7e5a4c9382b16f0d3c7e8459a1b2c3d4";
         assert_eq!(map_staging[fix].kind, CommitStatusKind::Integrated);
-        // ... and eligible on development, which never received it.
         assert_eq!(map_dev[fix].kind, CommitStatusKind::Eligible);
 
-        // An open PR is never reported as integrated.
         let profile = "c71e392b48ac7f2e1d90b3a5c6e418d7f2a09b31";
         assert_eq!(map_staging[profile].kind, CommitStatusKind::PrOpen);
 
-        // A failed patch application blocks the SHA.
         let cleanup = "5f0a2bc3d4e5f6071829304a5b6c7d8e9f001122";
         assert_eq!(map_staging[cleanup].kind, CommitStatusKind::Blocked);
 
-        // A revert event wins over the original integration record.
         let stub = "b4e8a11f0c9d8e7f6a5b4c3d2e1f001122334455";
         assert_eq!(map_staging[stub].kind, CommitStatusKind::Reverted);
 

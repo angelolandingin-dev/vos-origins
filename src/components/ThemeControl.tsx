@@ -9,7 +9,6 @@ const OPTIONS: Array<{ value: ThemeMode; label: string; icon: typeof Monitor }> 
   { value: 'dark', label: 'Dark', icon: Moon },
 ];
 
-/** Compact theme control (System / Light / Dark). Phase B preserves this. */
 export function ThemeControl() {
   const { mode, setMode } = useTheme();
 

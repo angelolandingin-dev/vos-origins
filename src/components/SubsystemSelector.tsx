@@ -7,18 +7,6 @@ import { CONNECTIVITY_DOT } from './subsystemConnectivity';
 import { SubsystemFilterList } from './SubsystemFilterList';
 import { cx } from './ui/cx';
 
-/**
- * The subsystem picker that lives in the Commit Browser's top bar. It is the
- * same `SubsystemFilterList` — type-to-filter, Up/Down/Enter, the status dot,
- * the mono repository slug and the right-aligned count — moved into a popover
- * so the work area keeps its full width. Reusing the list (rather than a second
- * picker) is what keeps the two surfaces from drifting.
- *
- * The popup viewport is capped and scrolls on its own, with a wheel
- * stop-propagation so a wheel gesture at the end of the list never scrolls the
- * page behind it. The filter input takes focus when the popover opens, so the
- * keyboard path is unchanged.
- */
 export function SubsystemSelector({
   subsystems,
   selectedId,

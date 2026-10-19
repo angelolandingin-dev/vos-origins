@@ -118,7 +118,6 @@ impl CommitStatus {
         }
     }
 
-    /// No evidence → `Unknown`, never a fabricated `Integrated`.
     pub fn unknown(target_branch: &str, detail: impl Into<String>) -> Self {
         Self::of(
             CommitStatusKind::Unknown,
@@ -663,7 +662,6 @@ pub struct PromotionRequest {
     pub target_branch: String,
     #[serde(default)]
     pub confirmation_acknowledged: bool,
-    /// `"local" | "local_direct" | "push_pr" | "worktree"`; omitted ⇒ `local_direct`.
     #[serde(default)]
     pub delivery: PromotionDelivery,
     /// `"fail" | "take_subsystem"`; omitted ⇒ `fail`. Retained for wire
@@ -676,8 +674,6 @@ pub struct PromotionRequest {
     /// source commit's subject.
     #[serde(default)]
     pub message: String,
-    /// Wire `excludedPaths`: paths skipped by the plan and reported as
-    /// excluded.
     #[serde(default)]
     pub excluded_paths: Vec<String>,
 }
@@ -699,9 +695,6 @@ pub enum PreflightOutcome {
 pub struct PreflightFileResult {
     pub path: String,
     pub outcome: PreflightOutcome,
-    /// Set when writing this path would move it backwards: the target blob
-    /// is reachable from the source tip but not from the selected commit
-    /// producing the write. Warning only — never a conflict, never a refusal.
     #[serde(default)]
     pub reverts_newer: Option<RevertsNewerWork>,
 }
@@ -723,29 +716,18 @@ pub struct PromotionDispatchResult {
     pub delivery: PromotionDelivery,
     #[serde(default)]
     pub next_commands: Vec<String>,
-    /// Paths overwritten with the subsystem's copy (a diverged target copy
-    /// never refuses — promotion is a copy and the subsystem always wins).
     #[serde(default)]
     pub replaced: Vec<String>,
-    /// Paths removed by the promotion.
     #[serde(default)]
     pub deleted: Vec<String>,
-    /// Paths already identical in the target.
     #[serde(default)]
     pub unchanged: Vec<String>,
-    /// Replaced paths whose target copy had independently diverged from the
-    /// commit's base (warning, not an error).
     #[serde(default)]
     pub flagged: Vec<String>,
-    /// Paths left out via `excludedPaths`.
     #[serde(default)]
     pub excluded: Vec<String>,
 }
 
-/// Dry-run mergeability summary for a promotion selection: per-file outcomes
-/// plus the actionable `conflicts` path list (true refusals only — a diverged
-/// target copy is overwritten, never a conflict). Counts always sum to
-/// `files.len()`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromotionPreflight {
@@ -755,10 +737,8 @@ pub struct PromotionPreflight {
     pub conflict: usize,
     pub skipped: usize,
     pub conflicts: Vec<String>,
-    /// Diverged paths the promotion will overwrite with the subsystem's copy.
     #[serde(default)]
     pub replaced: Vec<String>,
-    /// Paths left out via `excludedPaths`.
     #[serde(default)]
     pub excluded: Vec<String>,
 }
@@ -868,10 +848,6 @@ pub enum SubsystemDiffBucket {
     Identical,
 }
 
-/// The newer subsystem commit a backwards write would revert (wire,
-/// camelCase): main's copy of the path came from this commit, which is newer
-/// than the commit producing the write. Naming it lets the operator verify
-/// the warning instead of taking it on trust.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RevertsNewerWork {
@@ -896,7 +872,6 @@ pub struct SubsystemDiffCommit {
     pub touched_paths: Vec<String>,
 }
 
-/// One subsystem-tree path against the target tip (wire, camelCase).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubsystemDiffEntry {
@@ -907,10 +882,6 @@ pub struct SubsystemDiffEntry {
     pub main_blob: Option<String>,
     pub commits: Vec<SubsystemDiffCommit>,
     pub commits_truncated: bool,
-    /// Set when writing this path would move it backwards: main's blob came
-    /// from a later subsystem commit than the newest toucher. Warning only —
-    /// never a refusal, and un-excluding the path is how the operator does it
-    /// on purpose.
     pub reverts_newer: Option<RevertsNewerWork>,
 }
 
@@ -930,7 +901,6 @@ pub struct SubsystemDiff {
     pub data_source: DataSource,
 }
 
-/// Change letter for one path in an integration event audit (wire `change`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IntegrationEventChangeKind {
@@ -979,10 +949,6 @@ pub struct IntegrationEventProvenance {
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationEventAudit {
     pub main_commit_sha: String,
-    /// Full detail of the main commit itself (subject, author, authored date),
-    /// reusing the [`IntegrationEventCommit`] shape the included commits use.
-    /// `None` when there is no main commit or it cannot be resolved — never
-    /// fabricated, and never the SHA standing in as the subject.
     pub main_commit: Option<IntegrationEventCommit>,
     pub kind: IntegrationHistoryKind,
     pub subsystem_id: String,

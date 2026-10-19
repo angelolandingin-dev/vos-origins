@@ -10,7 +10,6 @@ import { Settings } from '../pages/Settings';
 import { SubsystemDiff } from '../pages/SubsystemDiff';
 import { useApp } from './context';
 
-/** Shell + active screen + the app-level promotion dialog shared by multiple screens. */
 let fixtureNoticeShown = false;
 
 export default function App() {

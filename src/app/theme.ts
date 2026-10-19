@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 
-/** Theme mode: follow the OS until the user picks explicitly. Persisted locally. */
-
 export type ThemeMode = 'system' | 'light' | 'dark';
 
 const STORAGE_KEY = 'vos-origins.theme-mode';
@@ -21,7 +19,6 @@ export function readThemeMode(): ThemeMode {
   return 'system';
 }
 
-/** Apply the mode to the document root. `.dark`/`.light` win over the media query. */
 export function applyTheme(mode: ThemeMode): void {
   const root = document.documentElement;
   const effective = mode === 'system' ? (systemDark() ? 'dark' : 'light') : mode;
@@ -30,7 +27,6 @@ export function applyTheme(mode: ThemeMode): void {
   root.style.colorScheme = effective;
 }
 
-/** Call once before first render so the correct theme applies without a flash. */
 export function initTheme(): ThemeMode {
   const mode = readThemeMode();
   applyTheme(mode);

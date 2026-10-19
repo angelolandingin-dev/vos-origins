@@ -50,13 +50,6 @@ export interface CommitTableProps {
   error: ApiError | null;
   onRetry: () => void;
   targetBranch: string;
-  /**
-   * `table` is the full-width column armature (Promote Commits). `sidebar` is
-   * the GitHub Desktop commit list: the same rows, the same selection
-   * semantics and the same controls, laid out as a two-line list for the
-   * browser's left column. It is the same component on purpose — a second list
-   * would fork the selection.
-   */
   layout?: 'table' | 'sidebar';
   search: string;
   onSearchChange: (value: string) => void;
@@ -68,31 +61,19 @@ export interface CommitTableProps {
   onPageChange: (page: number) => void;
   pageSize: number;
   onPageSizeChange: (size: number) => void;
-  /**
-   * Selection is optional. The Promote tab passes the full set and owns the
-   * promotion flow; the read-only Commit Browser omits it and renders no
-   * checkboxes, no select-all control and no batch promote affordance.
-   */
   selectedShas?: string[];
   onToggleSha?: (sha: string) => void;
   onSelectShas?: (shas: string[]) => void;
-  /** Row selection for the details rail; omitted where a click leads nowhere. */
   focusedSha?: string | null;
   onFocusSha?: (sha: string) => void;
   onPromoteSelected?: () => void;
   onClearSelection?: () => void;
-  /** Details-rail toggle; omitted where there is no rail to toggle. */
   detailsVisible?: boolean;
   onToggleDetails?: () => void;
   toolbarExtras?: ReactNode;
   emptyMessage?: string;
 }
 
-/**
- * The second line of a commit row, shared by both layouts: author, relative
- * date, and the flags. This is why the sidebar can drop the separate AUTHOR and
- * AUTHORED columns — their data still reaches the row.
- */
 function commitMeta(commit: CommitSummary): string {
   return [
     commit.authorLogin ?? commit.authorName,
@@ -104,7 +85,6 @@ function commitMeta(commit: CommitSummary): string {
     .join(' · ');
 }
 
-/** Timeline dot: status colour lives on this 10px dot only — never on the row. */
 function dotClassFor(commit: CommitSummary): string {
   const kind = commit.status.kind;
   switch (kind) {
@@ -273,9 +253,6 @@ export function CommitTable({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {isSidebar ? (
-        // Two explicit rows rather than a wrapping toolbar: a 380px column has
-        // no room for search + status + sort on one line, and a deterministic
-        // stack beats an unpredictable reflow.
         <div className="flex flex-col gap-2 border-b border-line px-2.5 py-2">
           <div className="relative min-w-0">{searchInput}</div>
           <div className="flex items-center gap-2">
@@ -324,9 +301,6 @@ export function CommitTable({
             }
           />
         ) : isSidebar ? (
-          // GitHub Desktop's commit list: the same rows as the table, laid out
-          // as a two-line list. Subject, status and SHA are kept; the separate
-          // AUTHOR/AUTHORED columns fold into the meta line below the subject.
           <ul aria-label="Commits" className="divide-y divide-line">
             {commits.map((commit) => {
               const selected = selectable && selectedList.includes(commit.sha);

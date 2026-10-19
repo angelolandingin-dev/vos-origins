@@ -1,6 +1,3 @@
-//! Fictitious sample data (`Fixture` mode only); SHAs are full-length so
-//! validation paths behave realistically.
-
 use chrono::{DateTime, Duration, Utc};
 
 use super::{relative_time, FailureEffect, IntegrationEvent, IntegrationEventKind};
@@ -40,7 +37,6 @@ pub struct DepSeed {
     pub note: Option<&'static str>,
 }
 
-/// Status is computed per target by `commit_index`; never hardcoded here.
 pub struct CommitSeed {
     pub sha: &'static str,
     pub subject: &'static str,
@@ -230,10 +226,6 @@ pub fn branch_ancestry() -> Vec<(&'static str, Vec<&'static str>)> {
         ("spike/kb-scratch", vec![]),
     ]
 }
-
-// ---------------------------------------------------------------------------
-// Commits
-// ---------------------------------------------------------------------------
 
 const HR_SEEDS: &[CommitSeed] = &[
     CommitSeed {

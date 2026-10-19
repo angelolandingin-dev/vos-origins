@@ -5,18 +5,6 @@ import type { CommitDiff, DiffHunk, DiffLine } from '../api/types';
 import { cx } from './ui/cx';
 import { EmptyState, ErrorState, IconButton, InlineAlert, LoadingState } from './ui/primitives';
 
-/**
- * Read-only bounded diff renderer (spec §3.2): renders the engine-bounded
- * hunks in full — no internal scroll container, no row windowing. The single
- * scroller lives in the parent (the diff view's section list); this component
- * must never introduce one of its own. Over-bound responses flag truncated
- * (around 1500 lines per file); the full file stays one click away on GitHub.
- *
- * Fixed comparative measure: every row is exactly ROW_HEIGHT tall and both
- * line-number gutters are a constant width, so the two compared states are
- * read at one scale rather than re-zoomed per view.
- */
-
 const ROW_HEIGHT = 20;
 
 type Row =
@@ -33,7 +21,6 @@ function buildUnifiedRows(hunks: DiffHunk[]): Row[] {
   return rows;
 }
 
-/** Pairs removed/added runs so both sides line up like the approved mockup. */
 function buildSideBySideRows(hunks: DiffHunk[]): Row[] {
   const rows: Row[] = [];
   for (const hunk of hunks) {
@@ -92,7 +79,6 @@ function lineClasses(kind: DiffLine['kind'] | 'empty'): string {
   }
 }
 
-/** GitHub Desktop tints the line-number gutter more strongly than the code wash. */
 function gutterClasses(kind: DiffLine['kind']): string {
   switch (kind) {
     case 'added':
@@ -110,7 +96,6 @@ function signClasses(kind: DiffLine['kind']): string {
   return 'text-disabled';
 }
 
-/** Fixed-width line-number cell; its tint follows the row's change kind. */
 function LineNumber({ kind, value }: { kind: DiffLine['kind']; value: number | null }) {
   return (
     <span
@@ -139,7 +124,6 @@ export interface DiffViewerProps {
   loading: boolean;
   error: ApiError | null;
   onRetry: () => void;
-  /** Side-by-side/unified mode is owned by the parent, which holds the single toggle. */
   mode: 'side' | 'unified';
   onOpenExternal: (url: string) => void;
 }
@@ -208,7 +192,6 @@ export function DiffViewer({
   );
 }
 
-/** Full row rendering: every hunk row mounts — the engine bounds the total, not the viewport. */
 function DiffRows({ rows }: { rows: Row[] }) {
   return (
     <div className="bg-ground">

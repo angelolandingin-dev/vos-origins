@@ -425,13 +425,6 @@ impl GitHubAdapter {
         })
     }
 
-    /// Fixture audit for one history row: the row resolves through the same
-    /// fixture history list above, `includedCommits` enrich from fixture
-    /// commits without fabrication, and what a `Reverted` row undid resolves
-    /// through the structured `reverts_event_id` link onto the same event
-    /// list — never inferred from message text. Fixtures carry no git
-    /// objects, so `changes`/`totals`/`provenance` stay empty rather than
-    /// invented.
     pub fn integration_event_audit(
         &self,
         world: &FixtureWorld,
@@ -491,10 +484,6 @@ impl GitHubAdapter {
                 },
             })
             .collect();
-        // Structured revert link only: the fixture event for this row names
-        // the undone event by id; take that event's `main_commit_sha`. When
-        // the referenced event is not in the window, stay null and let
-        // `detail` explain rather than guessing from message text.
         let reverted_main_commit_sha = if entry.kind == IntegrationHistoryKind::Reverted {
             world
                 .events
@@ -518,8 +507,6 @@ impl GitHubAdapter {
                 .main_commit_sha
                 .clone()
                 .unwrap_or_else(|| wanted.to_string()),
-            // Fixtures carry no git objects: the entry's own record is the
-            // source of truth, mirroring live where `detail` is the subject.
             main_commit: entry
                 .main_commit_sha
                 .clone()
@@ -549,10 +536,6 @@ impl GitHubAdapter {
         })
     }
 
-    /// Fixture main-commit diff: fixtures carry no git objects, so no per-file
-    /// diff content exists. The requested commit resolves to an empty file list
-    /// rather than invented hunks; the audit's own `changes` list is empty for
-    /// the same reason, so the two agree.
     pub fn main_commit_diff(
         &self,
         world: &FixtureWorld,

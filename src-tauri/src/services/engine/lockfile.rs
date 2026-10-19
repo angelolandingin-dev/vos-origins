@@ -222,7 +222,6 @@ mod tests {
     fn resolve_program_finds_real_clis_and_passes_through_unknown_names() {
         #[cfg(windows)]
         {
-            // `cmd` is a real executable on PATH in every Windows environment.
             let resolved = resolve_program("cmd");
             assert!(
                 resolved.is_file(),

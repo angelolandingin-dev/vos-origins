@@ -10,14 +10,6 @@ export interface UiSelectOption {
   title?: string;
 }
 
-/**
- * Ledger-styled Radix Select (listbox popup, keyboard-navigable).
- *
- * WebView2/Tauri safety: Radix Select does not take `modal`, so it never sets
- * `pointer-events: none` on the body. Content uses `position="popper"` with
- * `avoidCollisions` so popups near the window edge flip instead of clipping,
- * and closes restore focus to the trigger via `onCloseAutoFocus`.
- */
 export function Select({
   value,
   onValueChange,
@@ -80,15 +72,6 @@ export function Select({
           <SelectPrimitive.ScrollUpButton className="flex h-[25px] items-center justify-center bg-overlay text-muted">
             <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
           </SelectPrimitive.ScrollUpButton>
-          {/*
-            The viewport is the element to cap, not the trigger or the content
-            shell. Radix publishes the space left in the window as
-            `--radix-select-content-available-height` on the content (inherited
-            here); subtracting the two 25px scroll buttons keeps the whole popup
-            inside that space. `overscroll-contain` plus a wheel
-            stop-propagation keep a wheel gesture at the end of the list from
-            scrolling the surface behind it.
-          */}
           <SelectPrimitive.Viewport
             className="overflow-y-auto overscroll-contain p-1"
             style={{

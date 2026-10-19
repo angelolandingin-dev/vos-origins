@@ -32,28 +32,6 @@ import {
 import { SPLIT_DEFAULT_WIDTH, splitWidthStyle } from './ui/split-pane';
 import { SplitResizer } from './ui/split-resizer';
 
-/**
- * The commit's changed-files column and the selected file's diff, side by side
- * (GitHub Desktop History shape) — rendered IN PLACE in the Commit Browser, not
- * as a separate surface: the commit list is the workspace's left rail, this is
- * the rest of the workspace. There is no back control because there is nowhere
- * to go back to.
- *
- * The left column is the changed-files list with the commit's own context
- * beneath it (author, evidence, dependencies, related PRs, target-branch
- * facts); the right column is exactly one file's diff, a file header and its
- * hunks, rendered by the shared `DiffViewer`. The geometry contract is the
- * app's single horizontal splitter: the shared `SplitResizer`, the
- * `--split-width` custom property, the 320px diff floor and the unified
- * default — never a second splitter.
- *
- * The details are fetched once by the workspace (the same read also feeds the
- * Changes/Dependencies tabs) and handed in, so mounting the diff never issues a
- * duplicate commit-details request. The browser stays read-only: the single
- * Promote… action hands the commit to the Promote tab through the shared
- * selection, which owns the dialog, delivery modes, exclusions and preflight.
- */
-
 function fileGlyph(file: ChangedFile): { glyph: string; className: string } {
   switch (file.change) {
     case 'added':
@@ -71,19 +49,12 @@ export interface CommitDiffViewProps {
   subsystemId: string;
   sha: string;
   targetBranch: string;
-  /** The commit's details, fetched once by the workspace. */
   details: CommitDetails | null;
   loading: boolean;
   error: ApiError | null;
   onRetry: () => void;
-  /** The selected file, owned by the workspace so the Changes tab can open one. */
   selectedPath: string | null;
   onSelectPath: (path: string) => void;
-  /**
-   * Read-only handoff: selects this commit in the shared selection and opens
-   * the Promote tab, which owns the whole promotion flow. The browser never
-   * opens a promotion flow itself.
-   */
   onPromoteHandoff: (sha: string, excludedPaths: string[]) => void;
   mainRepository: string | null;
 }
@@ -113,15 +84,11 @@ export function CommitDiffView({
   const listedFiles = query
     ? files.filter((file) => file.path.toLowerCase().includes(query))
     : files;
-  // Derived during render (never written from an effect): the requested path
-  // wins while it is still one of this commit's files, then the first file.
   const activePath =
     (selectedPath && files.some((file) => file.path === selectedPath)
       ? selectedPath
       : files[0]?.path) ?? null;
   const activeFile = files.find((file) => file.path === activePath) ?? null;
-  // Exclusions are keyed by path, so a selection that survives a commit switch
-  // only ever carries the paths that are actually in this commit.
   const activeExcluded = excluded.filter((path) => files.some((file) => file.path === path));
 
   const toggleExcluded = (path: string) => {
@@ -346,7 +313,6 @@ export function CommitDiffView({
                   : 'Untick files to exclude them from promotion.'}
               </p>
 
-              {/* The commit's own context sits beneath its file list. */}
               <div className="border-t border-line">
                 <CommitDetailsContext
                   details={details}

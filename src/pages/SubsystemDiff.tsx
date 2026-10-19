@@ -39,7 +39,6 @@ import {
  * the same `excludedPaths`.
  */
 
-/** Rows shown before the history "show all" control. The backend caps touches well above this. */
 const HISTORY_LIMIT = 20;
 
 const BUCKET_META: Record<SubsystemDiffBucket, { label: string; dot: string }> = {
@@ -49,7 +48,6 @@ const BUCKET_META: Record<SubsystemDiffBucket, { label: string; dot: string }> =
   identical: { label: 'Identical', dot: 'bg-status-superseded' },
 };
 
-/** Status is a 6px dot plus a word — never a pill or filled badge. */
 export function BucketMark({
   bucket,
   className = '',
@@ -543,13 +541,6 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
   );
 }
 
-/**
- * The on-click file rail, in the details-rail idiom: path + bucket first
- * (the why), the latest commit prominent, then the newest-first history with
- * each row's per-branch promoted state. History commits can be ticked
- * directly into the same promotion selection — cheap, because it is one set
- * unioned by the resolver the page already runs.
- */
 function FileDetail({
   entry,
   union,

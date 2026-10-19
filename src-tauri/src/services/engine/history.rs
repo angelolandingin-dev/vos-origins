@@ -27,13 +27,6 @@ use super::provenance::parse_trailers;
 
 const FIELD: char = '\u{1f}';
 
-/// Shared scan of the target history: every status read (commit page, commit
-/// details, integration statuses, history) walks the same reachable history
-/// and replays the same trailer events, so the parsed result is memoized per
-/// branch tip. The key carries the resolved tip SHA — not just the branch
-/// name — so a fetch/push that moves the tip always recomputes: the same tip
-/// implies the same reachable objects, hence the same events. Bounded and
-/// time-limited like the response cache (perf only; git stays authoritative).
 const REPLAY_CACHE_TTL: Duration = Duration::from_secs(90);
 const REPLAY_CACHE_CAP: usize = 16;
 
@@ -57,9 +50,6 @@ fn replay_key(repo_dir: &Path, reference: &str, tip: &str) -> String {
     format!("{}::{reference}::{tip}", repo_dir.to_string_lossy())
 }
 
-/// Test-only: how many full history scans have been computed for the current
-/// tip of `branch`. Scoped to this repo's key, so parallel tests using their
-/// own sandboxes cannot disturb the count.
 #[cfg(test)]
 pub fn replay_scans_for_tests(repo_dir: &Path, branch: &str) -> u64 {
     let Some(reference) = resolve_ref(repo_dir, branch) else {
@@ -99,7 +89,6 @@ pub struct Event {
     pub ordinary: bool,
 }
 
-/// Ordinary GitHub revert: subject `Revert "<inner>"` + `This reverts commit <sha>`.
 pub fn parse_ordinary_github_revert(
     subject: &str,
     message: &str,
@@ -146,10 +135,6 @@ pub fn collect_events(repo_dir: &Path, rev: &str) -> Vec<Event> {
     collect_history(repo_dir, rev).events
 }
 
-/// Evidence-grade commit fields harvested from the same single `git log`
-/// walk that yields the trailer events below. Lets status enrichment answer
-/// every row on a page from memory instead of re-spawning `git show` per
-/// integration commit.
 #[derive(Debug, Clone, Default)]
 pub struct CommitDetail {
     pub committed_iso: String,
@@ -157,9 +142,6 @@ pub struct CommitDetail {
     pub message: String,
 }
 
-/// One branch walk, three extractions: the trailer events, the full reachable
-/// SHA set (answers `is-ancestor` membership with no per-row `merge-base`
-/// spawns), and the evidence fields for the event commits.
 #[derive(Debug, Clone, Default)]
 pub struct CollectedHistory {
     pub events: Vec<Event>,
@@ -173,8 +155,6 @@ pub fn collect_history(repo_dir: &Path, rev: &str) -> CollectedHistory {
         out.reachable.insert(record.sha.clone());
         let parsed = parse_trailers(&record.message);
         let subsystem = parsed.first("Subsystem-ID").map(|s| s.to_string());
-        // `Source-Commit` values arrive validated (40/64 hex, lowercased) and
-        // phantom-free from `parse_trailers`; only the trailing block counts.
         let source_commits: Vec<String> = parsed.get("Source-Commit").to_vec();
         let base = |kind: EventType| Event {
             kind,
@@ -317,10 +297,6 @@ pub fn replay_events(events: &[Event]) -> ReplayResult {
                 let mut target = resolved.as_ref().and_then(|sha| integration_index.get(sha));
                 let mut resolved_commit = resolved.clone();
                 if target.is_none() {
-                    // Abbreviated SHA: resolve only on a unique prefix match,
-                    // scanning integrations oldest-first so the winner is
-                    // deterministic. Ambiguous prefixes fall through to the
-                    // subject match instead of guessing.
                     if let Some(prefix) = resolved.clone() {
                         let mut candidates: Vec<String> = Vec::new();
                         for commit in &integration_order {
@@ -336,7 +312,6 @@ pub fn replay_events(events: &[Event]) -> ReplayResult {
                     }
                 }
                 if target.is_none() {
-                    // Most recent subject match wins: scan newest-first.
                     if let Some(subject) = &event.reverts_subject {
                         for commit in integration_order.iter().rev() {
                             let matches = integration_index
@@ -366,10 +341,6 @@ pub fn replay_events(events: &[Event]) -> ReplayResult {
                     for sha in &affected {
                         let key = status_key(&subsystem, sha);
                         let prev = statuses.get(&key).cloned();
-                        // Only a currently-Integrated (subsystem, SHA) may
-                        // transition to Reverted. Anything else (notably an
-                        // Eligible SHA that was never integrated) is skipped
-                        // rather than fabricating a Reverted record.
                         let Some(prev) = prev else {
                             continue;
                         };
@@ -470,21 +441,11 @@ pub fn resolve_ref(repo_dir: &Path, branch: &str) -> Option<String> {
     git::resolve_branch_ref(repo_dir, branch)
 }
 
-/// Memoized replay for a reference that may not resolve (e.g. a missing
-/// remote-tracking ref in a sandbox with no `origin` remote). `None` costs
-/// no walk: unresolvable references are never walked here, so probing both
-/// the remote and the local ref per page stays O(1) spawns.
 pub fn cached_replay_if_resolvable(repo_dir: &Path, reference: &str) -> Option<ReplayResult> {
     git::rev_parse(repo_dir, reference)?;
     Some(cached_replay(repo_dir, reference))
 }
 
-/// Memoized [`collect_events`] + [`replay_events`] for `reference` (a ref or
-/// SHA as resolved by [`resolve_ref`]). The tip SHA in the key makes this
-/// exact: identical tips see identical reachable history, so a hit can never
-/// serve stale statuses; a moved tip (fetch, push, local commit) always
-/// recomputes. Unresolvable references are never cached, so a clone that is
-/// still materializing cannot poison the entry a later read needs.
 pub fn cached_replay(repo_dir: &Path, reference: &str) -> ReplayResult {
     let Some(tip) = git::rev_parse(repo_dir, reference) else {
         let collected = collect_history(repo_dir, reference);
@@ -715,7 +676,6 @@ mod tests {
         let eligible_sha = "b".repeat(40);
         let events = vec![
             integrate_event(&"c".repeat(40), "first", &integrated_sha, 1),
-            // Revert names an unknown integration but carries an Eligible SHA.
             revert_event(
                 &"d".repeat(40),
                 2,
@@ -731,7 +691,6 @@ mod tests {
                 .contains_key(&status_key("hr-management", &eligible_sha)),
             "an Eligible SHA must never gain a Reverted record"
         );
-        // The genuinely integrated SHA is untouched by the unrelated revert.
         let record = &replayed.statuses[&status_key("hr-management", &integrated_sha)];
         assert_eq!(record.status, ReplayStatus::Integrated);
         assert_eq!(record.reverted_by, None);
@@ -743,7 +702,6 @@ mod tests {
         let new_commit = "2".repeat(40);
         let old_sha = "a".repeat(40);
         let new_sha = "b".repeat(40);
-        // Same subject on both integrations: subject fallback must pick newest.
         let events = vec![
             integrate_event(&old_commit, "same subject", &old_sha, 1),
             integrate_event(&new_commit, "same subject", &new_sha, 2),
@@ -766,7 +724,6 @@ mod tests {
             ReplayStatus::Integrated
         );
 
-        // Exact SHA match wins even when the subject would match elsewhere.
         let events = vec![
             integrate_event(&old_commit, "same subject", &old_sha, 1),
             integrate_event(&new_commit, "same subject", &new_sha, 2),
@@ -788,7 +745,6 @@ mod tests {
             ReplayStatus::Integrated
         );
 
-        // Unique abbreviated prefix resolves; ambiguous prefixes do not guess.
         let events = vec![
             integrate_event(&old_commit, "same subject", &old_sha, 1),
             integrate_event(&new_commit, "same subject", &new_sha, 2),

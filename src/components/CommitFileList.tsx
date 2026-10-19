@@ -2,14 +2,6 @@ import type { PromotionPreflight } from '../api/types';
 import { PathLabel } from './PathLabel';
 import { Checkbox } from './ui/primitives';
 
-/**
- * The visible list of everything the promotion will commit, replacing the old
- * free-text path input. Every preflight-reported path renders pre-checked as
- * included; unchecking a path excludes it through the same `excludedPaths`
- * mechanism, viewed from the other side. Checked = will be written,
- * unchecked = skipped. Fixed height (~12 rows) with scroll past the limit so
- * a wide promotion never turns the dialog into a wall.
- */
 export interface CommitFileListProps {
   preflight: PromotionPreflight | null;
   preflightLoading: boolean;

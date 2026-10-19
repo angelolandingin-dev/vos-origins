@@ -1,20 +1,12 @@
 import type { SubsystemDiffEntry } from '../api/types';
 
 export interface DiffResolution {
-  /** Union of unpromoted touching commits (plus explicitly ticked ones), newest-first. */
   commits: string[];
-  /** Other paths those commits touch that are not selected — the exclusions prefill. */
   excludedPaths: string[];
   /** Selected main-side changed paths: flagged, never silently gaining a commit. */
   mainSideSelected: string[];
 }
 
-/**
- * TypeScript mirror of the Rust `resolve_selection`: the union of unpromoted
- * touching commits over the selected paths plus explicitly ticked history
- * commits, ordered newest-first by commit date. Set equality with the backend
- * twin is what the acceptance needs; the engine sorts anyway.
- */
 export function resolveDiffSelection(
   entries: SubsystemDiffEntry[],
   selected: ReadonlySet<string>,

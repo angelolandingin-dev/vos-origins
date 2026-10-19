@@ -59,13 +59,6 @@ pub struct EngineRequest {
     pub mode: PromotionMode,
     pub base_sha: Option<String>,
     pub target_branch: String,
-    /// `local` builds the branch + commit in the target clone and stops
-    /// (no push, no PR); `local_direct` commits the same delta straight onto
-    /// the local target branch (no push, no PR — pushing stays manual);
-    /// `worktree` writes the same delta into the user's own checkout of the
-    /// target branch and stages it (no branch, no commit, no push, no PR);
-    /// `push_pr` is today's push-then-PR behaviour.
-    /// Defaults to `local_direct` when omitted on the wire.
     pub delivery: PromotionDelivery,
     /// Wire `onConflict` (`fail` | `take_subsystem`). Retained for wire
     /// compatibility only: promotion is a copy and the subsystem's copy
@@ -76,13 +69,10 @@ pub struct EngineRequest {
     /// The promotion commit's own message (required; an empty one is refused so
     /// a multi-commit promotion is never labelled with only the last subject).
     pub message: String,
-    /// Wire `excludedPaths`: paths skipped by the plan and reported as
-    /// excluded. Makes the "exclude the path" remedy real.
     pub excluded_paths: Vec<String>,
 }
 
 impl EngineRequest {
-    /// Test helper: `push_pr` delivery without touching the new field.
     #[cfg(test)]
     pub fn for_push_pr(
         subsystem_id: &str,
@@ -122,8 +112,6 @@ pub struct EngineDeps<'a> {
     pub github: &'a dyn GitHubOps,
     pub lockfile: &'a dyn LockfileGenerator,
     pub source_url: &'a dyn Fn(&SubsystemEntry) -> Option<String>,
-    /// Resolves the authenticated GitHub account used to author the provenance
-    /// commit. Injected so the engine (and its tests) never spawn `gh`.
     pub account: fn() -> Option<GitHubAccount>,
 }
 
@@ -136,23 +124,13 @@ pub struct ChangeSummary {
     pub main_owned_skipped: Vec<String>,
     pub secret_excluded: Vec<String>,
     pub regenerated: Vec<String>,
-    /// Paths whose target copy had diverged (blob-membership failure) and was
-    /// overwritten with the subsystem's copy. Surfaced as a dedicated
-    /// `conflict_taken_from_subsystem` warning.
     pub conflict_taken: Vec<String>,
     /// Copy-semantics reporting (§5): paths whose target copy was overwritten
     /// (`updated` + `conflict_taken` mirror, kept as the canonical list).
     pub replaced: Vec<String>,
-    /// Paths where the target already matched the source (no write).
     pub unchanged: Vec<String>,
-    /// Subset of `replaced` whose target copy had independently diverged from
-    /// the commit's base (cross-subsystem overlap the user cares about).
-    /// Surfaced as a warning finding and in the PR body.
     pub flagged: Vec<String>,
-    /// Paths skipped via `excludedPaths` (remedy two is real).
     pub excluded: Vec<String>,
-    /// `worktree` delivery only: paths ignored by the target repo
-    /// (`git check-ignore`) that were written but never staged.
     pub ignored_skipped: Vec<String>,
 }
 
@@ -306,9 +284,6 @@ fn delete_vos_sources_refs(repo_dir: &Path) {
     }
 }
 
-/// `globalFiles` match: exact path or directory prefix. No glob engine —
-/// `foo/bar` matches `foo/bar` and `foo/bar/**` (via `foo/bar/` prefix).
-/// Entries are normalized to `/` separators; a trailing `/` means directory.
 fn is_global_match(path: &str, global_files: &[String]) -> bool {
     let norm = path.replace('\\', "/");
     for entry in global_files {
@@ -746,7 +721,6 @@ fn run_inner(
         }
     }
 
-    // --- Policy snapshot pin (addendum C) ---------------------------------
     // `registry` (and thus `subsystem`, its `integration_policy` and
     // `global_files`) was read ONCE at the start of this run and this
     // snapshot is used for both the preflight-equivalent checks below
@@ -759,17 +733,12 @@ fn run_inner(
         .iter()
         .map(|p| p.replace('\\', "/"))
         .collect();
-    // Report excluded paths even when they match nothing (the remedy is real
-    // only if the report shows what was skipped).
     {
         let mut excluded: Vec<String> = excluded_set.iter().cloned().collect();
         excluded.sort();
         report.changes.excluded = excluded;
     }
 
-    // Apply-paths only: dependency manifests are merged, lockfiles
-    // regenerated, main-owned/secret never imported — overwrites on those
-    // are decided elsewhere. Excluded paths are skipped entirely.
     let apply_paths: Vec<String> = {
         let mut v: Vec<String> = Vec::new();
         for planned in &classified_plan {
@@ -777,8 +746,6 @@ fn run_inner(
                 if !matches!(entry.status, PathStatus::Apply | PathStatus::ExplicitReview) {
                     continue;
                 }
-                // Renames already expanded to `to.path` by classify_entry.
-                // Use the classified path here.
                 if excluded_set.contains(&entry.path) {
                     continue;
                 }
@@ -791,9 +758,6 @@ fn run_inner(
         v
     };
 
-    // Ordered selection for blob sets: ancestry order from build_plan
-    // (already ancestor-first; unrelated SHAs deterministically by
-    // committer timestamp then SHA — see build_plan).
     let ordered_selection: Vec<(String, Option<String>)> = verified_plan
         .iter()
         .map(|v| (v.sha.clone(), v.base_sha.clone()))
@@ -808,7 +772,6 @@ fn run_inner(
     );
     let target_tree =
         crate::services::engine::blobset::tree_blob_map(&options.target_repo_dir, &target_tip);
-    // Oldest selected base blob per path (for the flagged/reporting check).
     let oldest_base = ordered_selection.first().and_then(|(_, b)| b.clone());
     let oldest_tree: std::collections::HashMap<String, String> = match oldest_base.as_deref() {
         Some(base) => {
@@ -816,14 +779,6 @@ fn run_inner(
         }
         None => std::collections::HashMap::new(),
     };
-    // Shared overwrite-allowance (the SAME function the preflight calls):
-    // range membership widened by one batched selected-history probe, so a
-    // target holding the subsystem's own earlier content (a previous
-    // promotion outside the selected range) is behind-or-equal, not diverged.
-    // The fetched source objects live in this same checkout, so it is both
-    // the target repo and the source object DB here; the probe is scoped to
-    // the SELECTED ancestry (not the whole DB, which also holds target-only
-    // objects), so main-system-only content still refuses.
     let history_tips: Vec<String> = ordered_selection
         .iter()
         .map(|(sha, _)| sha.clone())
@@ -835,14 +790,8 @@ fn run_inner(
         &apply_paths,
         &history_tips,
     );
-    // Paths a `take_subsystem` policy overwrites despite membership failure
-    // (reported as replaced + conflict-taken and trailered below).
     let mut conflict_takeover: Vec<String> = Vec::new();
 
-    // --- globalFiles guard (§6) -------------------------------------------
-    // Matched paths are protected app-shell files: if the target copy is NOT
-    // in the blob set, refuse. Entries are exact paths or directory prefixes
-    // (no glob engine).
     {
         let global_files = subsystem.global_files.clone().unwrap_or_default();
         if !global_files.is_empty() {
@@ -851,9 +800,6 @@ fn run_inner(
                 if !is_global_match(path, &global_files) {
                     continue;
                 }
-                // Shared allowance (range membership OR source containment).
-                // Protected shell files stay refused regardless of policy:
-                // `take_subsystem` never rescues them.
                 if !overwrite_ok.get(path).copied().unwrap_or(false) {
                     violations.push(path.clone());
                 }
@@ -877,28 +823,12 @@ fn run_inner(
         }
     }
 
-    // --- Diverged target copies are overwritten (§3) ----------------------
-    // Promotion is a copy: the selected commits' files arrive from the
-    // subsystem, and the main system is never edited directly — so the
-    // subsystem's copy always wins and a diverged target copy never refuses.
-    // For each touched path: if the target-tip blob IS in that path's blob
-    // set (or both sides are absent), the target is behind-or-equal and the
-    // copy below writes it normally. Otherwise the shared allowance probes
-    // source containment, and EITHER WAY the subsystem's copy is written:
-    // the path is recorded as replaced + conflict-taken and in the commit
-    // trailers, so the operator sees what was rewritten. This REPLACES any
-    // timestamps / `ours != base` logic: dates determine display order only,
-    // never correctness — blob membership decides (addendum E3). Every other
-    // guard (unsafe, secret, main-owned, global, dependency, lockfile)
-    // stays hard: those are not "main vs subsystem" choices.
     {
         for path in &apply_paths {
-            // globalFiles hits already refused above with their own code.
             let global_files = subsystem.global_files.clone().unwrap_or_default();
             if is_global_match(path, &global_files) {
                 continue;
             }
-            // Shared allowance (range membership OR source containment).
             if overwrite_ok.get(path).copied().unwrap_or(false) {
                 continue;
             }
@@ -987,11 +917,6 @@ fn run_inner(
                                             report.changes.replaced.push(result.path);
                                         } else {
                                             report.changes.applied.push(result.path.clone());
-                                            // A fresh add still counts as replaced
-                                            // for reporting when the target had
-                                            // a file (add-over-existing reports
-                                            // via the reason above; plain adds
-                                            // stay in `applied` only).
                                         }
                                     }
                                     apply::ApplyOutcome::Merged => {
@@ -1038,9 +963,6 @@ fn run_inner(
         }
     }
 
-    // `conflict_takeover`: every diverged path the subsystem's copy
-    // overwrote (the only behaviour — there is no "who wins" choice).
-    // Reported as subsystem-won (the warning below fires on this same list).
     conflict_takeover.sort();
     report
         .changes
@@ -1058,14 +980,6 @@ fn run_inner(
         ));
     }
 
-    // --- Reporting §5 ------------------------------------------------------
-    // `replaced`: overwritten existing copies (updated mirror). `flagged`:
-    // subset of replaced whose target copy had independently diverged from
-    // the oldest selected base (cross-subsystem overlap the user cares
-    // about) — i.e. target blob != oldest-base blob, even though the write
-    // was allowed because the target blob IS in the source blob set (it came
-    // from source history, e.g. a previously promoted version that later
-    // moved). Decided by blob comparison only, never by dates.
     {
         report.changes.applied.sort();
         report.changes.applied.dedup();
@@ -1077,15 +991,11 @@ fn run_inner(
         report.changes.unchanged.dedup();
         report.changes.replaced.sort();
         report.changes.replaced.dedup();
-        // `replaced` mirrors `updated` (overwrites) for the canonical list.
         for p in report.changes.updated.iter() {
             if !report.changes.replaced.contains(p) {
                 report.changes.replaced.push(p.clone());
             }
         }
-        // Takeover paths the apply did not record as `updated` (e.g. the
-        // target was absent so the copy reported an add) are still
-        // force-overwrites under the active policy: list them as replaced.
         for p in conflict_takeover.iter() {
             if !report.changes.replaced.contains(p) {
                 report.changes.replaced.push(p.clone());
@@ -1096,8 +1006,6 @@ fn run_inner(
         for p in report.changes.replaced.iter() {
             let target_blob = target_tree.get(p).cloned();
             let base_blob = oldest_tree.get(p).cloned();
-            // Target had moved since the base (independently diverged), yet
-            // the write was allowed (membership checked above) — flag it.
             if target_blob != base_blob {
                 flagged.push(p.clone());
             }
@@ -1269,8 +1177,6 @@ fn run_inner(
         return Err(Bail);
     }
 
-    // A promotion carries its own message so a multi-commit promotion is never
-    // labelled with only the last source commit's subject.
     let subject = request.message.trim().to_string();
     if subject.is_empty() {
         report.blockers.push(Blocker::new(
@@ -1279,15 +1185,6 @@ fn run_inner(
         ));
         return Err(Bail);
     }
-    // `worktree` delivery: the delta built above (identical copy application,
-    // dependency-delta merge, and lockfile regeneration) is written into the
-    // user's own checkout of the target branch and staged — exactly the paths
-    // the promotion wrote or deleted, nothing else. No branch is created,
-    // nothing is committed (so no provenance trailers are written), nothing
-    // is pushed, and no PR is opened. Status is derived from reachable
-    // history, so a worktree promotion leaves every commit status exactly as
-    // it was; the user reviews with `git diff --staged` and commits
-    // themselves. The temporary branch and worktree are always removed.
     if request.delivery == PromotionDelivery::Worktree {
         match stage_into_own_worktree(
             &options.target_repo_dir,
@@ -1341,9 +1238,6 @@ fn run_inner(
         target: &request.target_branch,
         subject: &subject,
     });
-    // Overwrite record: which diverged paths the subsystem's copy replaced,
-    // appended inside the trailing trailer block so the audit survives a
-    // squash. A single honest key (`Promotion-Replaced`).
     if !conflict_takeover.is_empty() {
         message.push_str(&format!(
             "Promotion-Replaced: {}\n",
@@ -1354,8 +1248,6 @@ fn run_inner(
     let message_file = options
         .temp_root
         .join(format!("vos-msg-{}.txt", sanitize_nonce(&options.nonce)));
-    // Attribution is resolved here, after every guard, so an opted-out or
-    // unresolvable account costs no `gh` spawn and never fails the promotion.
     let attribute_to_account = registry.promotion.attribute_to_account;
     let account = if attribute_to_account {
         (deps.account)()
@@ -1450,12 +1342,6 @@ fn run_inner(
         }
     }
 
-    // `local_direct` delivery: the commit built above (identical delta
-    // application, provenance trailers, and the subsystem-wins copy) lands
-    // straight onto the local target branch. Never pushes,
-    // never opens a PR. Fail-closed: the target tip is re-checked against
-    // the pinned tip, a dirty checkout of the target refuses, and the
-    // temporary branch is always removed.
     if request.delivery == PromotionDelivery::LocalDirect {
         // Linked-worktree guard (§10): refuse when `git worktree list` shows
         // the target branch checked out in a different linked worktree. An
@@ -1540,10 +1426,6 @@ fn run_inner(
             return Err(Bail);
         }
 
-        // The commit is on the target: drop the temporary branch and worktree
-        // so no `integration/*` ref is left behind. The worktree goes first
-        // (a branch checked out in a linked worktree cannot be deleted), and
-        // `*worktree` is cleared so the outer cleanup does not redo it.
         git::worktree_remove(repo, &worktree_dir);
         let _ = std::fs::remove_dir_all(&worktree_dir);
         *worktree = None;
@@ -1583,8 +1465,6 @@ fn run_inner(
             deps.github,
         );
         if !recheck.active_shas.is_empty() || !recheck.open_prs.is_empty() {
-            // Our commit is on the temp branch only; the target never moved.
-            // Fail closed rather than pushing a duplicate.
             if !recheck.active_shas.is_empty() {
                 report.blockers.push(Blocker::new(
                     "DUPLICATE_ACTIVE",
@@ -1699,7 +1579,6 @@ fn sanitize_nonce(nonce: &str) -> String {
         .collect()
 }
 
-/// Prefix shared by branch naming and duplicate detection.
 pub fn integration_branch_prefix(subsystem_id: &str, commits: &[String]) -> String {
     let first = commits.first().cloned().unwrap_or_default();
     format!("integration/{}-{}", subsystem_id, short(&first))
@@ -1736,15 +1615,6 @@ pub fn integration_branch_name(
 /// reported as replaced). Dates determine display order only, never
 /// correctness (addendum E3). The function is deleted, not deprecated, so no
 /// caller can accidentally consult timestamps.
-///
-/// Pinned tip of the promotion target: the shared branch resolver (local ref,
-/// then bare name, then ANY remote-tracking ref — see
-/// [`git::resolve_branch_ref`]) resolved to a commit SHA.
-///
-/// Returns a SHA, not a ref name, exactly as before: the tip is pinned for the
-/// whole run (`report.start_point`, the worktree base, the ancestry check) and
-/// `local_direct` compares it against `git::local_tip` and hands it to
-/// `update-ref` as the expected old value, so it must be a stable object name.
 fn resolve_local_ref(repo_dir: &Path, branch: &str) -> Option<String> {
     git::resolve_branch_ref(repo_dir, branch)
         .and_then(|reference| git::rev_parse(repo_dir, &reference))
@@ -1807,8 +1677,6 @@ fn stage_into_own_worktree(
     written.extend(report.changes.updated.iter().cloned());
     written.extend(report.changes.merged.iter().cloned());
     written.extend(report.changes.conflict_taken.iter().cloned());
-    // `replaced` mirrors `updated`; include defensively in case a future path
-    // populates one without the other.
     written.extend(report.changes.replaced.iter().cloned());
     let mut deleted: HashSet<String> = report.changes.deleted.iter().cloned().collect();
     for rel in WORKTREE_DRIFT_PATHS {
@@ -1839,8 +1707,6 @@ fn stage_into_own_worktree(
             sorted.sort_unstable();
             let mut args: Vec<&str> = vec!["check-ignore", "--"];
             args.extend(sorted);
-            // Exit 0 = at least one ignored (stdout lists them); 1 = none
-            // ignored; other = error (treat as none, staging will decide).
             if let Ok(out) = git::run(repo, &args) {
                 if out.status == 0 {
                     let ignored: Vec<String> = out
@@ -2229,8 +2095,6 @@ fn build_plan(
     // last-writer-wins can't flip with click order. Dates determine display
     // order only, never correctness (blob membership decides).
     let mut ordered: Vec<String> = Vec::with_capacity(request.commits.len());
-    // Pre-sort by (committer epoch, SHA) so the ancestry insertion below is
-    // input-order independent for unrelated commits.
     let mut by_time: Vec<(String, i64)> = request
         .commits
         .iter()
@@ -2295,8 +2159,6 @@ fn build_pr_body(
         lines.push(format!("- `{sha}`"));
     }
     lines.push(String::new());
-    // Machine-readable metadata block read back by `integration-history` to match an open PR
-    // against EACH requested source SHA.
     lines.push(format!("Subsystem-ID: {}", subsystem.id));
     lines.push(format!("Source-Repo: {}", subsystem.repository));
     for sha in &request.commits {
@@ -2455,8 +2317,6 @@ mod tests {
             "-m",
             "base",
         ]);
-        // Expected set: keep.txt (staged) + missing.txt (never staged).
-        // Inject: stage an extra file the promotion never wrote.
         std::fs::write(dir.join("keep.txt"), "keep\n").expect("write");
         std::fs::write(dir.join("extra.txt"), "injected race\n").expect("write");
         git(&["add", "--", "keep.txt", "extra.txt"]);
@@ -2479,12 +2339,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The promotion-path resolver must accept a branch that exists ONLY as a
-    /// non-`origin` remote-tracking ref: a fork clone keeps the real branch on
-    /// `upstream`, and the old three-form pattern (`refs/heads/`,
-    /// `refs/remotes/origin/`, bare) reported it missing — so the promotion was
-    /// refused with `TARGET_NOT_LOCAL`. A real second remote is set up so the
-    /// test proves the glob resolves it, not a hand-made ref.
     #[test]
     fn promotion_resolver_accepts_a_branch_only_on_a_non_origin_remote() {
         use std::process::Command;
@@ -2532,8 +2386,6 @@ mod tests {
         git(&upstream, &["branch", "UAT"]);
         let uat_sha = git(&upstream, &["rev-parse", "UAT"]);
 
-        // A fork: `origin` carries only `master`; the second remote carries
-        // `UAT`, which lands under `refs/remotes/upstream/`.
         git(
             &root,
             &[
@@ -2570,7 +2422,6 @@ mod tests {
             Some(uat_sha),
             "the promotion path must accept a branch that lives only on a non-origin remote"
         );
-        // A local branch is still preferred, and an absent branch still misses.
         let master_sha = git(&clone, &["rev-parse", "refs/heads/master"]);
         assert_eq!(resolve_local_ref(&clone, "master"), Some(master_sha));
         assert_eq!(resolve_local_ref(&clone, "does-not-exist"), None);

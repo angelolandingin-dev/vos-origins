@@ -17,7 +17,6 @@ use fixtures::FixtureWorld;
 use github::api::GitHubAdapter;
 use services::cache::{Cache, Singleflight};
 
-/// Disposable fixture world + response cache; never authoritative.
 pub struct AppState {
     pub world: Mutex<FixtureWorld>,
     pub cache: Cache,

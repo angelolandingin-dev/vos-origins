@@ -58,21 +58,13 @@ pub struct ModeOp {
 pub struct ApplyOutcomeSet {
     pub results: Vec<ApplyResult>,
     pub mode_ops: Vec<ModeOp>,
-    /// Paths written or deleted via `on_conflict = take_subsystem` instead of
-    /// failing. The engine reports these distinctly (`conflict_taken_from_subsystem`).
     pub taken_from_subsystem: Vec<String>,
 }
 
-/// Reason recorded when an add overwrites an existing target file whose
-/// copy is not newer than the source commit (subsystem repos were split
-/// from the main system, so shared files appear as adds in fresh history).
 pub const ADD_OVER_EXISTING_REASON: &str = "replaced the target's existing copy";
 
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
-    /// Paths where an add may overwrite an existing divergent target file.
-    /// Membership is decided by the promotion engine's recency guard;
-    /// `apply` only consults it, never computes it.
     pub allowed_add_overwrite: HashSet<String>,
     /// `fail` (default) refuses every unmergeable path; `take_subsystem`
     /// writes the subsystem's content (or applies its deletion) and records
@@ -132,10 +124,6 @@ fn is_reparse_or_symlink(path: &Path) -> bool {
 /// Symlinked parents/files would let a write escape the worktree, so every
 /// existing component is checked; containment is the second line of defence.
 pub fn assert_real_path_within(dir: &Path, rel_path: &str) -> Result<(), ApplyConflict> {
-    // Whole-segment ".." only. A substring check also matches legitimate names
-    // like Next.js catch-all routes (`[...path]`), which made the apply refuse a
-    // path the classifier had already accepted. `classify::inspect_path_safety`
-    // performs the same segment-wise check, so the two now agree.
     let normalised = rel_path.replace('\\', "/");
     let bytes = normalised.as_bytes();
     let drive_letter = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
@@ -227,8 +215,6 @@ pub(crate) enum MergeOutcome {
     Conflict(#[allow(dead_code)] String),
 }
 
-/// Three-way text merge (see `MergeOutcome` — retained for tests only, dead on
-/// promotion paths; preflight has zero call sites by construction).
 #[allow(dead_code)]
 pub(crate) fn three_way_merge(
     scratch_dir: &Path,
@@ -278,20 +264,9 @@ pub(crate) fn three_way_merge(
     }
 }
 
-/// Post-process `git merge-file --diff3` conflict output: `Some(merged)` when
-/// every conflict block is whitespace-only (resolved with the `ours` block
-/// bytes), `None` when any block differs by real content or the markers are
-/// malformed (fail safe: still a conflict).
-///
-/// Operates on raw bytes split at `\n`; reassembly is an exact round-trip, so
-/// resolved blocks keep the target's bytes verbatim (indentation, trailing
-/// newline state, everything outside the stripped whitespace comparison).
 #[allow(dead_code)]
 fn resolve_whitespace_only_blocks(output: &[u8]) -> Option<Vec<u8>> {
     let lines: Vec<&[u8]> = output.split(|b| *b == b'\n').collect();
-    // Fast path: no conflict markers at all. (merge-file only exits nonzero
-    // on conflicts, so this is defensive; treating marker-free output as a
-    // clean merge would risk silently accepting garbage.)
     if !lines.iter().any(|l| l.starts_with(b"<<<<<<<")) {
         return None;
     }
@@ -339,15 +314,9 @@ fn resolve_whitespace_only_blocks(output: &[u8]) -> Option<Vec<u8>> {
     if !saw_block {
         return None;
     }
-    // `split`/`join` at `\n` round-trips the input exactly, so every kept
-    // byte (ours blocks, clean regions, trailing newline state) is verbatim.
     Some(merged.join(&b'\n'))
 }
 
-/// Block equivalence ignoring whitespace: each line is trimmed and interior
-/// runs of ASCII whitespace collapse to a single space before comparing.
-/// Re-indentation (leading runs) and trailing whitespace vanish; `hello world`
-/// vs `helloworld` still differ (a run is not nothing).
 #[allow(dead_code)]
 fn blocks_equal_ignoring_whitespace(ours: &[&[u8]], theirs: &[&[u8]]) -> bool {
     if ours.len() != theirs.len() {
@@ -466,7 +435,6 @@ fn apply_entries(
         let theirs = match theirs_opt {
             Some(bytes) => bytes,
             None => {
-                // The subsystem deleted this path: so does the target.
                 if ours_opt.is_none() {
                     record(set, ApplyOutcome::Unchanged, Some("already absent"));
                 } else {
@@ -486,8 +454,6 @@ fn apply_entries(
             push_mode(set, rel_path, mode.as_deref());
             return Ok(());
         }
-        // A mode-only delta: the commit left the content alone, so the subsystem
-        // has nothing new for this path and the target's bytes stay.
         if base_opt.as_ref().map(|b| normalised(b)).as_deref() == Some(theirs_norm.as_slice()) {
             record(
                 set,
@@ -517,12 +483,9 @@ fn apply_entries(
     if entry.status == 'D' {
         apply_one(entry.path.as_deref().unwrap_or_default())?;
     } else if entry.status == 'R' {
-        // Rename: the old path goes away, the new path carries the content.
         apply_one(entry.old_path.as_deref().unwrap_or_default())?;
         apply_one(entry.new_path.as_deref().unwrap_or_default())?;
     } else if entry.status == 'C' {
-        // Copy: the source stays. Only the new path is materialized; the old
-        // path must never be merged or rewritten as if it moved.
         apply_one(entry.new_path.as_deref().unwrap_or_default())?;
     } else {
         apply_one(entry.path.as_deref().unwrap_or_default())?;
@@ -571,7 +534,6 @@ mod tests {
         assert!(assert_real_path_within(&dir, "/etc/passwd").is_err());
         assert!(assert_real_path_within(&dir, "C:/windows/system32").is_err());
         assert!(assert_real_path_within(&dir, "src/app.ts").is_ok());
-        // Next.js catch-all routes carry ".." as a substring, not a segment.
         assert!(
             assert_real_path_within(&dir, "src/app/api/fm/consignment/[...path]/route.ts").is_ok()
         );
@@ -585,7 +547,6 @@ mod tests {
         assert_eq!(normalise_ws_line(b"a  =\t b;  "), b"a = b;");
         assert_eq!(normalise_ws_line(b"   "), b"");
         assert_eq!(normalise_ws_line(b""), b"");
-        // A run is not nothing: `hello world` and `helloworld` still differ.
         assert_ne!(
             normalise_ws_line(b"hello world"),
             normalise_ws_line(b"helloworld")

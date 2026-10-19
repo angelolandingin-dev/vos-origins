@@ -46,7 +46,6 @@ export function PromoteCommits() {
   return <PromoteCommitsView subsystem={subsystem} />;
 }
 
-/** Filter state that survives a subsystem / target-branch switch. */
 function PromoteCommitsView({ subsystem }: { subsystem: SubsystemSummary }) {
   const app = useApp();
   const [search, setSearch] = useState('');
@@ -266,8 +265,6 @@ function PromoteCommitsPanel({
               ) : (
                 <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
                   {app.selectedShas.map((sha) => {
-                    // The selection carries its own summaries, so a selected commit
-                    // keeps its subject and status whatever page or filter is shown.
                     const commit =
                       selectedCommits.find((candidate) => candidate.sha === sha) ??
                       app.promotion.commits.find((candidate) => candidate.sha === sha) ??

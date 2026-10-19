@@ -22,7 +22,6 @@ import {
 
 /** Integration History (spec §§3.3/8.3). Pending PRs are never shown as integrated; provenance problems surface. */
 
-/** The engine caps the list at 200; 50 → 100 → 200 reaches it in two taps. */
 const HISTORY_LIMITS = [50, 100, 200];
 const HISTORY_CAP = 200;
 
@@ -37,7 +36,6 @@ export function IntegrationHistory() {
   const app = useApp();
   const [subsystemFilter, setSubsystemFilter] = useState<string>('all');
   const [limit, setLimit] = useState<number>(HISTORY_LIMITS[0] ?? 50);
-  // No selection until the operator picks an auditable row.
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const history = useAsyncData(
@@ -59,8 +57,6 @@ export function IntegrationHistory() {
   const entries = history.data?.entries ?? [];
   const total = history.data?.total ?? 0;
   const shown = entries.length;
-  // Only events carrying a main commit can be audited; the rest render
-  // without any row affordance so no click leads nowhere.
   const selectedEntry =
     entries.find((entry) => entry.id === selectedId && entry.mainCommitSha) ?? null;
 
@@ -85,9 +81,6 @@ export function IntegrationHistory() {
     ],
   );
 
-  // Pending state derives from request identity: while a fetch is in flight
-  // the rail sees null, so switching events mid-flight never flashes the
-  // previous event's data.
   const visibleAudit = audit.loading ? null : audit.data;
 
   const branches = (app.targetBranches.data?.branches ?? []).filter((branch) => branch.allowed);

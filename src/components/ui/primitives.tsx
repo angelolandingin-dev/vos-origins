@@ -26,7 +26,6 @@ import { Tooltip } from './tooltip';
 
 export { Combobox, ScrollArea, Select, Tooltip };
 
-/** The GitHub mark is not part of Lucide 1.x, so it is provided inline. */
 export function GitHubMark({ className = 'h-4 w-4' }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" className={className}>
@@ -180,7 +179,6 @@ export function Panel({
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
-  /** Inline style for the body — used to publish a resizable pane's width. */
   bodyStyle?: CSSProperties;
   headerClassName?: string;
   as?: 'section' | 'div' | 'aside';
@@ -298,7 +296,6 @@ export function EmptyState({
   );
 }
 
-/** Error state with code, message and remedy. Never renders a silent empty success. */
 export function ErrorState({
   error,
   onRetry,

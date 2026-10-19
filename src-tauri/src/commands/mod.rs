@@ -108,7 +108,6 @@ mod tests {
             let gate = gate.clone();
             handles.push(std::thread::spawn(move || {
                 gate.wait();
-                // Slow compute so the first caller holds the slot while the rest wait.
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 cached_json(&state, "k::shared", || {
                     calls.fetch_add(1, Ordering::Relaxed);

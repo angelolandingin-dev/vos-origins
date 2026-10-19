@@ -48,10 +48,6 @@ function GridMark() {
   );
 }
 
-/**
- * Resize handles for the undecorated window (z-40 stays below the z-50 dialog layer).
- * `ResizeDirection` mirrors the unexported type from `@tauri-apps/api/window`.
- */
 type ResizeDirection =
   'East' | 'North' | 'NorthEast' | 'NorthWest' | 'South' | 'SouthEast' | 'SouthWest' | 'West';
 

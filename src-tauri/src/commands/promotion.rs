@@ -1,13 +1,3 @@
-//! Promotion dispatch via the in-tool engine (§4/§9.2).
-//! Fixture mode returns a labelled simulation naming the missing prerequisites.
-//! Delivery is local-first: `local_direct` (default) commits the delta straight
-//! onto the local target branch (no push, no PR — pushing stays manual);
-//! `local` builds a branch + commit in the user's clone (no push, no PR);
-//! `worktree` writes the delta into the user's own checkout of the target
-//! branch and stages it (no branch, no commit, no push, no PR — the user
-//! commits themselves); `push_pr` is the explicit opt-in that pushes and
-//! opens a PR.
-
 use std::path::{Path, PathBuf};
 
 use tauri::State;
@@ -89,10 +79,6 @@ pub async fn dispatch_promotion(
 
     let delivery = request.delivery;
 
-    // Target checkout resolution. `local*`/`worktree` prefers the user's own clone:
-    // registry `localMainRepositoryPath` → `VOS_TARGET_REPO_DIR` → the
-    // tool-managed checkout cache. `push_pr` keeps today's behaviour
-    // (`VOS_TARGET_REPO_DIR` else a disposable temp clone).
     let (target_repo_dir, cloned_dir, used_managed_fallback) = match delivery {
         PromotionDelivery::Local | PromotionDelivery::LocalDirect | PromotionDelivery::Worktree => {
             let (dir, fallback) = resolve_local_target(&registry, &token)?;
@@ -180,9 +166,6 @@ pub async fn dispatch_promotion(
     let mut cloned = cloned_dir;
     cleanup_clone(&mut cloned);
 
-    // `local_direct`: the commit already landed on the local target branch —
-    // report it there (never an integration branch), with the literal push
-    // command as the only manual step. Never a push, never a PR.
     if delivery == PromotionDelivery::LocalDirect {
         let next_commands =
             build_direct_next_commands(&local_dir_for_commands, &target_for_message);
@@ -265,11 +248,6 @@ pub async fn dispatch_promotion(
         });
     }
 
-    // `worktree`: the delta is staged in the user's own checkout of the
-    // target branch — no branch, no commit (so no provenance trailers), no
-    // push, no PR. Statuses are derived from reachable history, so a
-    // worktree promotion leaves every commit status exactly as it was. The
-    // message says so in plain words and never implies an integration.
     if delivery == PromotionDelivery::Worktree {
         let next_commands = build_worktree_next_commands(
             &local_dir_for_commands,
@@ -338,15 +316,6 @@ pub async fn dispatch_promotion(
     })
 }
 
-/// Dry-run mergeability preflight for the promotion dialog: per-file
-/// `clean` / `merged` / `conflict` / `skipped` for the selected SHAs against
-/// the target branch tip, computed from the same blobs and blob-membership
-/// rules the real apply uses. A diverged target copy reports `clean` (the
-/// subsystem's copy overwrites it) and is listed in `replaced` — it is never
-/// a conflict.
-/// Read-only: creates no branch, no commit, and no worktree, and performs no
-/// push or PR. The failure path is untouched — the real promotion still fails
-/// closed exactly as it does today.
 #[tauri::command]
 pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<PromotionPreflight> {
     if request.source_commit_shas.is_empty() {
@@ -390,7 +359,6 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
         .with_remedy("Choose a target branch that exists and is allowed by promotion.allowedTargetBranches / allowedTargetBranchPatterns."));
     }
 
-    // Cached checkouts only: no clone, no push, no PR; the TTL fetch costs no more than a read.
     let token = gh_cli::auth_token();
     let (target_repo_dir, _) = crate::services::live_read::resolve_target_checkout(
         &registry.main_repository,
@@ -421,9 +389,6 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
     // and excludedPaths travel with this call, never re-read.
     let excluded_paths = request.excluded_paths.clone();
     let global_files = subsystem.global_files.clone().unwrap_or_default();
-    // The source tip feeds the "reverts newer work" warning (information
-    // only): `None` when the branch is unreadable skips the check, never
-    // refuses.
     let source_tip =
         crate::services::engine::git::rev_parse(&source_repo_dir, &subsystem.source_branch);
     let report = tauri::async_runtime::spawn_blocking(move || {
@@ -545,7 +510,6 @@ fn resolve_local_target(registry: &Registry, token: &str) -> AppResult<(PathBuf,
 
     if let Ok(raw) = std::env::var("VOS_TARGET_REPO_DIR") {
         if raw.trim().is_empty() {
-            // Empty env var behaves as unset → fall through to the cache.
         } else {
             let path = PathBuf::from(raw.trim());
             if !path.is_dir() {
@@ -578,8 +542,6 @@ fn resolve_local_target(registry: &Registry, token: &str) -> AppResult<(PathBuf,
     Ok((dir, true))
 }
 
-/// `push_pr` checkout: today's behaviour (`VOS_TARGET_REPO_DIR` else a
-/// disposable temp clone that the caller deletes afterwards).
 async fn resolve_push_pr_target(
     registry: &Registry,
     token: &str,
@@ -612,10 +574,6 @@ async fn resolve_push_pr_target(
     }
 }
 
-/// Follow-up steps for a `worktree` promotion (copyable in the UI): the
-/// delta is already staged, so the user reviews the index and commits with
-/// the promotion message as the commit subject, keeping the provenance
-/// wording if they want it.
 pub fn build_worktree_next_commands(
     local_path: &Path,
     promotion_message: &str,
@@ -641,9 +599,6 @@ pub fn build_worktree_next_commands(
     commands
 }
 
-/// Literal push step for a `local_direct` promotion (copyable in the UI):
-/// the commit is already on the local target branch, so only the push is
-/// manual.
 pub fn build_direct_next_commands(local_path: &Path, target: &str) -> Vec<String> {
     vec![
         format!("cd {}", local_path.display()),
@@ -841,10 +796,6 @@ fn engine_findings_local(
 }
 
 fn append_shared_findings(report: &PromotionReport, findings: &mut Vec<ValidationFinding>) {
-    // Per-path change lists (replaced / deleted / unchanged / excluded) travel
-    // as structured fields on the result — the dialog renders them as one
-    // condensed summary with expandable details — so they are NOT repeated as
-    // raw path dumps here.
     if !report.changes.flagged.is_empty() {
         findings.push(ValidationFinding::warning(
             "flagged_overlap",

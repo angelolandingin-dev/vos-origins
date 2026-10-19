@@ -1,15 +1,3 @@
-//! Reusable on-disk checkout cache for live reads.
-//!
-//! Before this module every live command performed a full `git clone` into a
-//! fresh temp dir and deleted it on return, so each tab switch re-cloned the
-//! target and/or source repository. Checkouts now live at
-//! `%APPDATA%\vos-origins\checkouts\<key>` (XDG/temp
-//! fallback, `VOS_CHECKOUTS_DIR` override for tests): the first use clones
-//! with `--no-tags`, later uses `git fetch` the existing clone, and the
-//! directory is never deleted by readers. One process-wide mutex per key
-//! keeps two commands from cloning the same repo simultaneously, and refresh
-//! failures fall back to the stale checkout instead of failing the read.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -32,10 +20,6 @@ fn lock_for(key: &str) -> Arc<Mutex<()>> {
     })
 }
 
-/// Root of the checkout cache. Production uses
-/// `%APPDATA%\vos-origins\checkouts` (XDG config home when
-/// `APPDATA` is unset, temp dir as a last resort); tests point
-/// `VOS_CHECKOUTS_DIR` at a disposable dir.
 pub fn checkouts_root() -> PathBuf {
     if let Ok(dir) = std::env::var("VOS_CHECKOUTS_DIR") {
         if !dir.trim().is_empty() {
@@ -116,22 +100,14 @@ pub fn cache_key(prefix: &str, repo_ref: &str) -> String {
     format!("{prefix}-{}", &digest[..12])
 }
 
-/// Stable cache key for the main (target) repository.
 pub fn target_key(main_repository: &str) -> String {
     cache_key("t", main_repository)
 }
 
-/// Stable cache key for a subsystem source repository. Keyed by repository only,
-/// so two subsystems pointing at the same repo share one clone.
 pub fn source_key(entry: &SubsystemEntry) -> String {
     cache_key("s", &entry.repository)
 }
 
-/// Deletes leftover checkout directories from older cache-key schemes. Keys are
-/// `<t|s>-<12 hex>`; an `s-`/`t-` directory that does not match is an orphan
-/// from a previous scheme, is never read again, and only wastes disk. Anything
-/// that is not an `s-`/`t-` directory is left alone, so a custom
-/// `VOS_CHECKOUTS_DIR` never loses unrelated content.
 pub fn sweep_orphaned_checkouts() {
     let Ok(entries) = std::fs::read_dir(checkouts_root()) else {
         return;
@@ -154,8 +130,6 @@ pub fn sweep_orphaned_checkouts() {
     }
 }
 
-/// A local repo dir passes through untouched (like `VOS_TARGET_REPO_DIR`):
-/// it is never copied into the cache. Returns `None` for remotes.
 pub fn local_dir_for(raw: &str) -> Option<PathBuf> {
     let candidate = PathBuf::from(raw);
     if candidate.is_dir() {
@@ -233,8 +207,6 @@ fn is_usable_checkout(dir: &Path) -> bool {
     )
 }
 
-/// How long a cached checkout is considered fresh enough to skip a network
-/// `git fetch`. `VOS_CHECKOUT_FETCH_TTL_SECS` overrides it (`0` = always fetch).
 const DEFAULT_FETCH_TTL_SECS: u64 = 180;
 
 fn fetch_ttl_secs() -> u64 {
@@ -259,9 +231,7 @@ fn fetch_is_recent(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The managed path never fetches a user-provided clone; failures are swallowed.
 pub fn fetch_local_clone_if_stale(dir: &Path, token: Option<&str>) -> bool {
-    // Skip non-repos so a plain directory costs no git spawn on every read.
     if !dir.join(".git").exists() {
         return false;
     }
@@ -312,11 +282,6 @@ pub fn refresh_cached_checkout(key: &str, remote: &str, token: Option<&str>) -> 
     Ok(true)
 }
 
-/// Reusable checkout for a remote: clone once, `git fetch` on reuse, never
-/// delete. A failed refresh keeps the stale checkout (fail-open read), but a
-/// broken/partial checkout is discarded and re-cloned. A fetch is skipped while
-/// the checkout is fresh (see [`fetch_ttl_secs`]).
-/// Only for remotes — pass local dirs through with [`local_dir_for`].
 pub fn ensure_remote_checkout(key: &str, remote: &str, token: Option<&str>) -> AppResult<PathBuf> {
     let dir = checkouts_root().join(key);
     let slot = lock_for(key);
@@ -334,7 +299,6 @@ pub fn ensure_remote_checkout(key: &str, remote: &str, token: Option<&str>) -> A
     Ok(dir)
 }
 
-/// Explicit force-refresh path: delete the cached checkout and clone again.
 pub fn ensure_remote_checkout_forced(key: &str, remote: &str) -> AppResult<PathBuf> {
     let dir = checkouts_root().join(key);
     let slot = lock_for(key);
@@ -464,9 +428,6 @@ mod tests {
     impl EnvRestore {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
-            // Tests run single-threaded behind the crate-wide
-            // `crate::test_support::env_lock` (see above), and
-            // this crate is edition 2021 where `set_var` is still safe.
             std::env::set_var(key, value);
             Self { key, previous }
         }
@@ -495,10 +456,8 @@ mod tests {
         let slug = slug_for_repo(authed);
         assert!(!slug.contains("ghs_secret123"), "{slug}");
         assert!(!slug.contains('@'), "{slug}");
-        // Same repo, different token → same slug (no orphaned checkouts).
         let rotated = "https://x-access-token:other_token@github.com/ORG/hr-management.git";
         assert_eq!(slug_for_repo(rotated), slug);
-        // Different repos → different slugs.
         assert_ne!(slug_for_repo("https://github.com/ORG/other.git"), slug);
     }
 
@@ -525,7 +484,6 @@ mod tests {
         // Sentinel: a re-clone would wipe this untracked file.
         std::fs::write(first.join("SENTINEL.txt"), "keep me\n").expect("sentinel");
 
-        // New commit lands upstream; the cached clone must pick it up by fetch.
         std::fs::write(origin.join("b.txt"), "b\n").expect("write");
         let second_sha = commit_all(&origin, "second");
 
@@ -568,7 +526,6 @@ mod tests {
             "force-refresh re-clones from scratch"
         );
 
-        // The env flag takes the same path through the normal entry point.
         std::fs::write(first.join("SENTINEL.txt"), "y\n").expect("sentinel");
         let _flag = EnvRestore::set("VOS_CHECKOUT_FORCE_REFRESH", "1");
         let via_flag =
@@ -702,7 +659,6 @@ mod tests {
         init_repo(&local, "master");
         assert_eq!(local_dir_for(&local.to_string_lossy()), Some(local.clone()));
         assert!(local_dir_for("https://github.com/ORG/hr.git").is_none());
-        // Nothing was cloned into the cache root for a passthrough path.
         assert!(
             std::fs::read_dir(&root)
                 .map(|mut entries| entries.next().is_none())

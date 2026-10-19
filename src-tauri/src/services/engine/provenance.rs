@@ -43,9 +43,6 @@ pub struct CommitAuthor {
     pub email: String,
 }
 
-/// Picks the provenance commit's author. Attribution off, or an account that
-/// could not be resolved, both fall back to the bot identity so a missing
-/// login/id never fails a promotion.
 pub fn commit_author(attribute_to_account: bool, account: Option<&GitHubAccount>) -> CommitAuthor {
     match (attribute_to_account, account) {
         (true, Some(account)) => CommitAuthor {
@@ -155,10 +152,6 @@ pub fn parse_trailers(message: &str) -> ParsedTrailers {
     for line in block {
         if let Some((key, value)) = split_trailer(line) {
             if TRAILER_KEYS.contains(&key.as_str()) {
-                // `Source-Commit:` values are only meaningful as full SHAs
-                // (40/64 hex, as `extract_source_commits` enforces for PR
-                // bodies). Anything else is dropped here so commit-history
-                // collection can never mint phantom SHAs from typos or prose.
                 let value = if key == "Source-Commit" {
                     let candidate = value.trim();
                     let ok = (candidate.len() == 40 || candidate.len() == 64)
