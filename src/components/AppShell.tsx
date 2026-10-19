@@ -37,21 +37,24 @@ export interface AppShellProps {
   children: ReactNode;
 }
 
-// Flat 12px reduction of the brand hub: gradients, glow and the hub ring read as mud at this size, so solid nodes only.
+// Two-tone trace of topbar.png: slate disc, fixed light hub. Hardcoded fills — the reference is a fixed brand asset, not theme chrome.
 function BranchMark() {
   return (
-    <svg viewBox="0 0 16 16" aria-hidden="true" className="h-3 w-3 text-accent-fg">
-      <path
-        d="M5.6 8H11M5.6 8C7.8 8 8.4 3.4 10.6 3.3M5.6 8C7.8 8 8.4 12.6 10.6 12.7"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-      />
-      <circle cx="3.6" cy="8" r="2.4" fill="currentColor" />
-      <circle cx="12.2" cy="3.2" r="1.7" fill="currentColor" />
-      <circle cx="12.6" cy="8" r="1.7" fill="currentColor" />
-      <circle cx="12.2" cy="12.8" r="1.7" fill="currentColor" />
+    <svg viewBox="0 0 16 16" aria-hidden="true" className="h-4 w-4 shrink-0">
+      <circle cx="8" cy="8" r="8" fill="#364148" />
+      <g stroke="#fff" fill="none" strokeLinecap="round">
+        <path d="M6.3 8H10.9" strokeWidth="1.4" />
+        <path d="M6 7.6C7.6 7.4 8.2 5.2 9 4.7L10.7 4.3" strokeWidth="1.4" />
+        <path d="M6 7.6C6.9 7.5 7.4 6.6 7.9 5.9" strokeWidth="2" />
+        <path d="M6 8.4C7.6 8.6 8.2 10.8 9 11.3L10.7 11.7" strokeWidth="1.4" />
+        <path d="M6 8.4C6.9 8.5 7.4 9.4 7.9 10.1" strokeWidth="2" />
+      </g>
+      <g fill="#fff">
+        <circle cx="4.6" cy="8" r="1.9" />
+        <circle cx="12" cy="4.2" r="1.5" />
+        <circle cx="12.2" cy="8" r="1.5" />
+        <circle cx="12" cy="11.8" r="1.5" />
+      </g>
     </svg>
   );
 }
@@ -288,9 +291,7 @@ export function AppShell({
         className="flex h-7 shrink-0 items-center justify-between gap-2 border-b border-line bg-surface pr-1 pl-2.5"
       >
         <div className="flex min-w-0 items-center gap-2" data-tauri-drag-region title="VOS Origins">
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] bg-accent">
-            <BranchMark />
-          </span>
+          <BranchMark />
           <h1 className="truncate text-[11px] font-semibold text-fg">VOS Origins</h1>
         </div>
         <WindowsControls />
