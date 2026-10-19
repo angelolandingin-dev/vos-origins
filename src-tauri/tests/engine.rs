@@ -5134,3 +5134,76 @@ fn promotion_progress_emits_stages_in_order() {
         ],
     );
 }
+
+#[test]
+fn promotion_progress_index_never_exceeds_total() {
+    use std::cell::RefCell;
+
+    let src_dir = make_temp_dir("src-progress-bounds");
+    let main_dir = make_temp_dir("main-progress-bounds");
+    init_repo(&src_dir, "master");
+    commit_files(
+        &src_dir,
+        "A: base",
+        &[
+            (
+                "package.json",
+                format!(
+                    "{}\n",
+                    serde_json::json!({"name":"hr-management","version":"1.0.0","dependencies":{"next":"^16.2.1"}})
+                )
+                .as_bytes(),
+            ),
+            ("src/modules/hr/index.ts", b"export const a = 1;\n"),
+        ],
+        &[],
+    );
+    // Two commits touching the same file: the copy loop applies it once per
+    // commit while the file list shows it once.
+    let b = commit_files(
+        &src_dir,
+        "B: touch index",
+        &[("src/modules/hr/index.ts", b"export const a = 2;\n")],
+        &[],
+    );
+    let c = commit_files(
+        &src_dir,
+        "C: touch index again",
+        &[("src/modules/hr/index.ts", b"export const a = 3;\n")],
+        &[],
+    );
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let events = RefCell::new(Vec::new());
+
+    let report = promote_with_progress(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![b, c],
+            delivery: PromotionDelivery::Local,
+            ..Default::default()
+        },
+        &|update: PromotionProgress| {
+            events
+                .borrow_mut()
+                .push((update.stage.to_string(), update.index, update.total))
+        },
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    assert!(
+        events.borrow().iter().any(|(stage, _, _)| stage == "copy"),
+        "copy stage must emit"
+    );
+    for (stage, index, total) in events.borrow().iter() {
+        if let (Some(i), Some(t)) = (index, total) {
+            assert!(
+                i <= t,
+                "stage {stage} reported index {i} exceeding total {t}"
+            );
+        }
+    }
+}

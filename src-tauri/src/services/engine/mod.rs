@@ -968,12 +968,23 @@ fn run_inner(
     let mut mode_ops: Vec<apply::ModeOp> = Vec::new();
     let mut pkg_pairs: Vec<(String, Option<String>)> = Vec::new();
 
+    // The counter below ticks once per apply call, and one path can be
+    // applied once per selected commit that touches it — so the total is the
+    // loop's own operation count, not the deduplicated path list.
+    let copy_total: usize = classified_plan
+        .iter()
+        .flat_map(|planned| planned.entries.iter())
+        .filter(|entry| {
+            matches!(entry.status, PathStatus::Apply | PathStatus::ExplicitReview)
+                && !excluded_set.contains(entry.path.as_str())
+        })
+        .count();
     emit_progress(
         progress,
         "copy",
         "Copying selected paths",
         Some(0),
-        Some(apply_paths.len()),
+        Some(copy_total),
         None,
     );
     let mut copied = 0usize;
@@ -1040,13 +1051,13 @@ fn run_inner(
                         }
                     }
                     copied += 1;
-                    if copied % 10 == 0 || copied == apply_paths.len() {
+                    if copied % 10 == 0 || copied == copy_total {
                         emit_progress(
                             progress,
                             "copy",
                             "Copying selected paths",
                             Some(copied),
-                            Some(apply_paths.len()),
+                            Some(copy_total),
                             None,
                         );
                     }
