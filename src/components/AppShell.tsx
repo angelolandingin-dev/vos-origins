@@ -37,13 +37,21 @@ export interface AppShellProps {
   children: ReactNode;
 }
 
-function GridMark() {
+// Flat 12px reduction of the brand hub: gradients, glow and the hub ring read as mud at this size, so solid nodes only.
+function BranchMark() {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-3 w-3 text-accent-fg">
-      <rect x="3" y="3" width="8" height="8" rx="2" fill="currentColor" />
-      <rect x="13" y="3" width="8" height="8" rx="2" fill="currentColor" fillOpacity="0.75" />
-      <rect x="3" y="13" width="8" height="8" rx="2" fill="currentColor" fillOpacity="0.75" />
-      <rect x="13" y="13" width="8" height="8" rx="2" fill="currentColor" fillOpacity="0.5" />
+    <svg viewBox="0 0 16 16" aria-hidden="true" className="h-3 w-3 text-accent-fg">
+      <path
+        d="M5.6 8H11M5.6 8C7.8 8 8.4 3.4 10.6 3.3M5.6 8C7.8 8 8.4 12.6 10.6 12.7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+      />
+      <circle cx="3.6" cy="8" r="2.4" fill="currentColor" />
+      <circle cx="12.2" cy="3.2" r="1.7" fill="currentColor" />
+      <circle cx="12.6" cy="8" r="1.7" fill="currentColor" />
+      <circle cx="12.2" cy="12.8" r="1.7" fill="currentColor" />
     </svg>
   );
 }
@@ -281,7 +289,7 @@ export function AppShell({
       >
         <div className="flex min-w-0 items-center gap-2" data-tauri-drag-region title="VOS Origins">
           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] bg-accent">
-            <GridMark />
+            <BranchMark />
           </span>
           <h1 className="truncate text-[11px] font-semibold text-fg">VOS Origins</h1>
         </div>
