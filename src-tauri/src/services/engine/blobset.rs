@@ -308,8 +308,14 @@ mod tests {
 
     fn tmp(prefix: &str) -> std::path::PathBuf {
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("vos-blobset-{prefix}-{n}-{}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "vos-blobset-{prefix}-{n}-{nanos}-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         dir
     }
