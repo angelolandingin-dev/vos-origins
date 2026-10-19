@@ -264,10 +264,10 @@ export function CommitTable({
       ) : (
         <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
           <div className="relative min-w-[180px] flex-1">{searchInput}</div>
-          {statusSelect}
-          {sortButton}
-          {toolbarExtras}
-          <div className="ml-auto flex items-center gap-2">{selectionControls}</div>
+          <div className="flex shrink-0 items-center gap-2">{statusSelect}</div>
+          <div className="flex shrink-0 items-center gap-2">{sortButton}</div>
+          <div className="flex shrink-0 items-center gap-2">{toolbarExtras}</div>
+          <div className="ml-auto flex shrink-0 items-center gap-2">{selectionControls}</div>
         </div>
       )}
 
