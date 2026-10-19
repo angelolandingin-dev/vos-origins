@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Boxes,
   ExternalLink,
@@ -26,6 +26,13 @@ import {
   Panel,
   Tabs,
 } from './ui/primitives';
+import {
+  COMMIT_RAIL_DEFAULT_WIDTH,
+  COMMIT_RAIL_MIN_WIDTH,
+  clampCommitRailWidth,
+  commitRailMaxWidth,
+} from './ui/split-pane';
+import { SplitResizer } from './ui/split-resizer';
 
 /**
  * Subsystem + commit workspace (spec §3.2). The wide layout is GitHub Desktop's
@@ -117,6 +124,12 @@ function CommitWorkspacePanel({
   // commit it belongs to so a commit switch falls back to that commit's first
   // file rather than a stale path. The Changes tab opens a file through it.
   const [selectedFile, setSelectedFile] = useState<{ sha: string; path: string } | null>(null);
+  // The commit rail's own width, separate from the diff splitter's. Its ceiling
+  // depends on the live pane because the changed-files column and the diff keep
+  // their own floors to its right.
+  const [railWidth, setRailWidth] = useState(COMMIT_RAIL_DEFAULT_WIDTH);
+  const [paneWidth, setPaneWidth] = useState(0);
+  const columnsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
@@ -127,7 +140,22 @@ function CommitWorkspacePanel({
     return () => list.removeEventListener('change', update);
   }, []);
 
-  // Changing any filter restarts paging from the first page.
+  // The columns container only exists on the Commits tab, so re-observe when it
+  // remounts rather than keeping an observer on the detached node.
+  useEffect(() => {
+    const element = columnsRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setPaneWidth(entry.contentRect.width);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [sourceTab]);
+
+  const railMax = commitRailMaxWidth(paneWidth);
+  const visibleRailWidth = clampCommitRailWidth(railWidth, paneWidth);
+
   const handleSearchChange = (value: string) => {
     onSearchChange(value);
     setPageNumber(1);
@@ -311,15 +339,15 @@ function CommitWorkspacePanel({
         />
 
         {sourceTab === 'commits' ? (
-          // GitHub Desktop shape: the commit list is a left column, the
-          // details/diff fill the rest. Below the wide breakpoint the list
-          // keeps the full width and the details become the overlay below.
-          <div className="flex min-h-0 flex-1">
+          <div ref={columnsRef} className="flex min-h-0 flex-1">
             <div
               className={cx(
                 'flex min-h-0 min-w-0 flex-col border-line',
-                isWide ? 'w-[380px] shrink-0 border-r' : 'flex-1',
+                isWide ? 'shrink-0' : 'flex-1',
+                // The resizer is the divider when the diff is beside it.
+                isWide && !detailsVisible && 'border-r',
               )}
+              style={isWide ? { width: visibleRailWidth } : undefined}
             >
               <CommitTable
                 layout="sidebar"
@@ -345,6 +373,15 @@ function CommitWorkspacePanel({
                 emptyMessage={`No commits were returned from ${subsystem.repository}@${subsystem.sourceBranch}. Check the registry entry and branch protection.`}
               />
             </div>
+            {isWide && detailsVisible ? (
+              <SplitResizer
+                width={visibleRailWidth}
+                onWidthChange={setRailWidth}
+                min={COMMIT_RAIL_MIN_WIDTH}
+                max={railMax}
+                label="Resize the commit list"
+              />
+            ) : null}
             {isWide && detailsVisible ? diffPanel : null}
           </div>
         ) : null}

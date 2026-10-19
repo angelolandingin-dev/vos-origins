@@ -1,14 +1,14 @@
 import type { KeyboardEvent, PointerEvent } from 'react';
 import { useRef } from 'react';
 
-import { SPLIT_MAX_WIDTH, SPLIT_MIN_WIDTH, clampSplitWidth } from './split-pane';
+import { SPLIT_MAX_WIDTH, SPLIT_MIN_WIDTH } from './split-pane';
 
 /**
- * The one horizontal splitter in the app, shared by both diff surfaces: the
- * changed-files column against the diff. There is no drag library in the
- * project, so this mirrors `AppShell`'s pointer-event window handles — pointer
- * capture on the handle itself, no document listeners to clean up. Geometry and
- * the `--split-width` contract live in `split-pane.ts`.
+ * A horizontal splitter handle, shared by the diff splitter (changed-files column
+ * against the diff) and the commit-browser rail; each supplies its own width and
+ * bounds. There is no drag library in the project, so this mirrors `AppShell`'s
+ * pointer-event window handles — pointer capture on the handle itself, no document
+ * listeners to clean up.
  */
 
 const KEYBOARD_STEP = 16;
@@ -19,10 +19,20 @@ export interface SplitResizerProps {
   onWidthChange: (width: number) => void;
   /** Accessible name, e.g. "Resize the changed-files column". */
   label: string;
+  /** Bounds for the dragged pane; default to the diff splitter's. */
+  min?: number;
+  max?: number;
 }
 
-export function SplitResizer({ width, onWidthChange, label }: SplitResizerProps) {
+export function SplitResizer({
+  width,
+  onWidthChange,
+  label,
+  min = SPLIT_MIN_WIDTH,
+  max = SPLIT_MAX_WIDTH,
+}: SplitResizerProps) {
   const origin = useRef({ x: 0, width });
+  const clamp = (value: number) => Math.min(max, Math.max(min, value));
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -34,7 +44,7 @@ export function SplitResizer({ width, onWidthChange, label }: SplitResizerProps)
 
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-    onWidthChange(clampSplitWidth(origin.current.width + (event.clientX - origin.current.x)));
+    onWidthChange(clamp(origin.current.width + (event.clientX - origin.current.x)));
   };
 
   const onPointerUp = (event: PointerEvent<HTMLDivElement>) => {
@@ -46,19 +56,19 @@ export function SplitResizer({ width, onWidthChange, label }: SplitResizerProps)
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Home') {
       event.preventDefault();
-      onWidthChange(SPLIT_MIN_WIDTH);
+      onWidthChange(min);
       return;
     }
     if (event.key === 'End') {
       event.preventDefault();
-      onWidthChange(SPLIT_MAX_WIDTH);
+      onWidthChange(max);
       return;
     }
     const step =
       event.key === 'ArrowLeft' ? -KEYBOARD_STEP : event.key === 'ArrowRight' ? KEYBOARD_STEP : 0;
     if (step === 0) return;
     event.preventDefault();
-    onWidthChange(clampSplitWidth(width + step));
+    onWidthChange(clamp(width + step));
   };
 
   return (
@@ -67,8 +77,8 @@ export function SplitResizer({ width, onWidthChange, label }: SplitResizerProps)
       aria-orientation="vertical"
       aria-label={label}
       aria-valuenow={width}
-      aria-valuemin={SPLIT_MIN_WIDTH}
-      aria-valuemax={SPLIT_MAX_WIDTH}
+      aria-valuemin={min}
+      aria-valuemax={max}
       tabIndex={0}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
