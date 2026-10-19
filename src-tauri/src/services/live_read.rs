@@ -312,6 +312,8 @@ pub fn resolve_target_checkout(
         });
     if let Some(path) = configured {
         if path.is_dir() {
+            // The managed path never fetches the user's clone, so merged trailers stay unreachable.
+            crate::services::checkouts::fetch_local_clone_if_stale(&path, token);
             return Ok((path, None));
         }
         return Err(AppError::new(
@@ -324,6 +326,7 @@ pub fn resolve_target_checkout(
         .with_remedy("Set the local clone in Settings (localMainRepositoryPath) or VOS_TARGET_REPO_DIR to your local main-system git clone, or clear it to use the managed checkout."));
     }
     if let Some(local) = crate::services::checkouts::local_dir_for(main_repository) {
+        crate::services::checkouts::fetch_local_clone_if_stale(&local, token);
         return Ok((local, None));
     }
     let token = token
@@ -3134,6 +3137,48 @@ mod tests {
         Registry::from_json(&registry_json(&subsystems), "test").expect("registry")
     }
 
+    struct TtlGuard {
+        previous: Option<String>,
+    }
+
+    impl TtlGuard {
+        fn set(value: &str) -> Self {
+            let previous = std::env::var("VOS_CHECKOUT_FETCH_TTL_SECS").ok();
+            std::env::set_var("VOS_CHECKOUT_FETCH_TTL_SECS", value);
+            Self { previous }
+        }
+    }
+
+    impl Drop for TtlGuard {
+        fn drop(&mut self) {
+            match self.previous.as_deref() {
+                Some(value) => std::env::set_var("VOS_CHECKOUT_FETCH_TTL_SECS", value),
+                None => std::env::remove_var("VOS_CHECKOUT_FETCH_TTL_SECS"),
+            }
+        }
+    }
+
+    fn cloned_remote_sandbox(prefix: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let origin = tmp(&format!("{prefix}-origin"));
+        init(&origin, "master");
+        write(&origin, "base.txt", "base\n");
+        let _ = commit_all(&origin, "main base");
+        git(&origin, &["branch", "staging"]);
+
+        let holder = tmp(&format!("{prefix}-holder"));
+        let clone = holder.join("main-system");
+        git(
+            &holder,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().expect("utf8"),
+                clone.to_str().expect("utf8"),
+            ],
+        );
+        (origin, holder, clone)
+    }
+
     /// Source with A (base) then B (feature); main with staging + a real
     /// trailer integration commit for B only.
     fn sandbox_status() -> (PathBuf, PathBuf, String, String, Registry) {
@@ -3645,6 +3690,121 @@ mod tests {
         // directly (remote unreadable → stale string contains time).
         let stale = fetch_time_str(&main);
         assert!(!stale.is_empty());
+    }
+
+    #[test]
+    fn resolve_target_checkout_fetches_a_stale_user_clone() {
+        let _env = crate::test_support::env_lock();
+        let (origin, _holder, clone) = cloned_remote_sandbox("fetch");
+        let clone_str = clone.to_string_lossy().to_string();
+
+        {
+            let _ttl = TtlGuard::set("0");
+            write(&origin, "b.txt", "b\n");
+            let upstream = commit_all(&origin, "second");
+            let (resolved, _) = resolve_target_checkout("ORG/main-system", Some(&clone_str), None)
+                .expect("resolve");
+            assert_eq!(resolved, clone, "the configured clone is what reads use");
+            assert_eq!(
+                git(&resolved, &["rev-parse", "origin/master"]),
+                upstream,
+                "the read path must fetch the user clone when stale"
+            );
+        }
+
+        {
+            let _ttl = TtlGuard::set("100000");
+            write(&origin, "c.txt", "c\n");
+            let third = commit_all(&origin, "third");
+            let (resolved, _) = resolve_target_checkout("ORG/main-system", Some(&clone_str), None)
+                .expect("resolve");
+            assert_ne!(
+                git(&resolved, &["rev-parse", "origin/master"]),
+                third,
+                "a warm read must skip the fetch"
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_failure_leaves_the_read_stale_but_working() {
+        let _env = crate::test_support::env_lock();
+        let (_src, main, _a, b, registry) = sandbox_status();
+        git(
+            &main,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://127.0.0.1:1/ORG/main-system.git",
+            ],
+        );
+        let _ttl = TtlGuard::set("0");
+        let (resolved, _) =
+            resolve_target_checkout("ORG/main-system", Some(&main.to_string_lossy()), None)
+                .expect("a fetch failure must not error the read");
+        assert_eq!(resolved, main);
+        let statuses = integration_statuses_live(
+            &resolved,
+            &registry,
+            &StubGitHubOps::new(),
+            "staging",
+            Some("hr-management"),
+            std::slice::from_ref(&b),
+        )
+        .expect("the stale clone still answers");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].status.kind, CommitStatusKind::Integrated);
+    }
+
+    #[test]
+    fn local_only_label_survives_a_fetch() {
+        let _env = crate::test_support::env_lock();
+        let src = tmp("lbl-src");
+        init(&src, "master");
+        write(&src, "a.txt", "a\n");
+        let _ = commit_all(&src, "A base");
+        write(&src, "b.txt", "b feature\n");
+        let b = commit_all(&src, "B feature");
+
+        let (_origin, _holder, clone) = cloned_remote_sandbox("lbl");
+        // Local-only integration on the clone's staging; the remote stays behind.
+        git(&clone, &["checkout", "-q", "staging"]);
+        write(&clone, "b.txt", "b feature\n");
+        let trailer = format!(
+            "integrate(hr-management): B feature\n\nSubsystem-ID: hr-management\nSource-Repo: ORG/hr-management\nSource-Commit: {b}\nPromotion-Mode: individual\nPromotion-Target: staging\n"
+        );
+        let _ = commit_all(&clone, &trailer);
+        let integration = git(&clone, &["rev-parse", "HEAD"]);
+
+        let _ttl = TtlGuard::set("0");
+        let (resolved, _) =
+            resolve_target_checkout("ORG/main-system", Some(&clone.to_string_lossy()), None)
+                .expect("resolve");
+        assert!(
+            git::rev_parse(&resolved, "refs/remotes/origin/staging").is_some(),
+            "the fetch must have populated the remote-tracking ref"
+        );
+        assert!(
+            !git::is_ancestor(&resolved, &integration, "refs/remotes/origin/staging"),
+            "the integration commit is local-only, absent from the remote"
+        );
+
+        let statuses = integration_statuses_live(
+            &resolved,
+            &single_registry(),
+            &StubGitHubOps::new(),
+            "staging",
+            Some("hr-management"),
+            std::slice::from_ref(&b),
+        )
+        .expect("statuses");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].status.kind, CommitStatusKind::Integrated);
+        assert_eq!(
+            statuses[0].status.label, "Integrated (local only, unpushed)",
+            "a fetch must not collapse the local-only distinction"
+        );
     }
 
     /// The status qualification must ask "is this commit on a remote?" against

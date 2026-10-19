@@ -740,6 +740,34 @@ pub fn fetch_cached(repo_dir: &Path, token: Option<&str>) -> Result<(), GitError
     Ok(())
 }
 
+/// No remote arg (the clone's own remote); token in the header, not argv, since
+/// `credential.helper` is cleared.
+fn local_clone_fetch_command(repo_dir: &Path, token: Option<&str>) -> (Command, Vec<String>) {
+    let secret = token.map(str::trim).filter(|t| !t.is_empty());
+    let (mut command, mut display) = authed_command(Some(repo_dir), secret);
+    let args = ["fetch", "--no-tags", "--prune"];
+    command.args(args);
+    display.extend(args.iter().map(|s| s.to_string()));
+    (command, display)
+}
+
+pub fn fetch_local_clone(repo_dir: &Path, token: Option<&str>) -> Result<(), GitError> {
+    let (command, display) = local_clone_fetch_command(repo_dir, token);
+    let out = run_authed(command, &display).map_err(|err| GitError {
+        args: sanitize(&err.args),
+        status: err.status,
+        stderr: sanitize(&err.stderr),
+    })?;
+    if out.status != 0 {
+        return Err(GitError {
+            args: sanitize(&display.join(" ")),
+            status: Some(out.status),
+            stderr: sanitize(&out.stderr),
+        });
+    }
+    Ok(())
+}
+
 /// Split `https://user:token@host/…` into a clean URL plus the bearer token.
 /// Local paths and credential-free URLs pass through with no token.
 fn split_credentials(url: &str) -> (String, Option<String>) {
@@ -1120,5 +1148,74 @@ mod tests {
         assert!(!text.contains("ghs_fetch_secret_123"), "{text}");
         assert!(!text.contains("x-access-token"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_clone_fetch_carries_the_token_in_the_header_not_argv() {
+        let dir = Path::new("C:/repos/main-system");
+        let (command, display) = local_clone_fetch_command(dir, Some("gho_secret_token"));
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        let header = args
+            .iter()
+            .find(|arg| arg.starts_with("http.extraHeader="))
+            .expect("the fetch must carry an auth header");
+        assert_eq!(
+            header,
+            &format!("http.extraHeader={}", basic_auth_header("gho_secret_token")),
+            "the header must be the Basic(x-access-token:TOKEN) form git-http accepts"
+        );
+        assert!(
+            header.contains("Authorization: Basic "),
+            "git-http rejects Bearer; must be Basic: {header}"
+        );
+        assert!(
+            args.iter().all(|arg| !arg.contains("gho_secret_token")),
+            "no argv element may leak the raw token: {args:?}"
+        );
+        let tail: Vec<&str> = args
+            .iter()
+            .map(String::as_str)
+            .skip_while(|arg| *arg != "fetch")
+            .collect();
+        assert_eq!(tail, vec!["fetch", "--no-tags", "--prune"], "{args:?}");
+        assert!(
+            !args.iter().any(|arg| arg.contains("origin")),
+            "the remote must come from the clone's own config: {args:?}"
+        );
+        // A prompt here would hang the app.
+        let env_keys: Vec<String> = command
+            .get_envs()
+            .map(|(key, _)| key.to_string_lossy().to_string())
+            .collect();
+        assert!(env_keys.iter().any(|key| key == "GIT_TERMINAL_PROMPT"));
+        assert!(
+            display
+                .iter()
+                .any(|arg| arg == "http.extraHeader=Authorization: Basic ***"),
+            "display must be redacted: {display:?}"
+        );
+    }
+
+    #[test]
+    fn local_clone_fetch_without_a_token_has_no_auth_header() {
+        let dir = Path::new("C:/repos/main-system");
+        for token in [None, Some(""), Some("   ")] {
+            let (command, display) = local_clone_fetch_command(dir, token);
+            let args: Vec<String> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().to_string())
+                .collect();
+            assert!(
+                !args.iter().any(|arg| arg.starts_with("http.extraHeader=")),
+                "token {token:?} must not produce a header: {args:?}"
+            );
+            assert!(
+                display.iter().all(|arg| !arg.contains("http.extraHeader")),
+                "token {token:?} must not produce a header in display: {display:?}"
+            );
+        }
     }
 }

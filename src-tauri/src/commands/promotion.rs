@@ -388,9 +388,7 @@ pub async fn preflight_promotion(request: PromotionRequest) -> AppResult<Promoti
         .with_remedy("Choose a target branch that exists and is allowed by promotion.allowedTargetBranches / allowedTargetBranchPatterns."));
     }
 
-    // Already-cached checkouts only: no fetch, no push, no PR. A stale cache
-    // refreshes on the same TTL the reads use, so this costs no more than
-    // opening the commit list.
+    // Cached checkouts only: no clone, no push, no PR; the TTL fetch costs no more than a read.
     let token = gh_cli::auth_token();
     let (target_repo_dir, _) = crate::services::live_read::resolve_target_checkout(
         &registry.main_repository,

@@ -55,23 +55,50 @@ pub struct CheckoutRefresh {
     pub data_source: crate::github::models::DataSource,
 }
 
-fn live_token_for_refresh() -> AppResult<String> {
-    gh_cli::auth_token().ok_or_else(|| {
-        AppError::new(
-            ErrorCode::Unauthenticated,
-            "No GitHub token is available to refresh the checkouts.",
-        )
-        .with_remedy("Run `gh auth login --hostname github.com` or set GH_TOKEN, then retry.")
-    })
+fn no_token_for_refresh() -> AppError {
+    AppError::new(
+        ErrorCode::Unauthenticated,
+        "No GitHub token is available to refresh the checkouts.",
+    )
+    .with_remedy(
+        "Run `gh auth login --hostname github.com` or set GH_TOKEN, then retry. A configured local main clone (localMainRepositoryPath) can be refreshed without a token.",
+    )
 }
 
-fn refresh_one(key: &str, repository: &str, token: &str, out: &mut CheckoutRefresh) {
+/// Token-less managed checkouts are skipped, not an error.
+fn refresh_one(key: &str, repository: &str, token: Option<&str>, out: &mut CheckoutRefresh) {
+    let Some(token) = token else {
+        out.skipped.push(repository.to_string());
+        return;
+    };
     let url = crate::services::engine::github_ops::authenticated_remote_url(repository, token);
     match crate::services::checkouts::refresh_cached_checkout(key, &url, Some(token)) {
         Ok(true) => out.refreshed.push(repository.to_string()),
         Ok(false) => out.skipped.push(repository.to_string()),
         Err(err) => out.failed.push(format!("{repository}: {}", err.message)),
     }
+}
+
+fn configured_local_main_clone(
+    registry: &crate::services::registry::Registry,
+) -> Option<std::path::PathBuf> {
+    let configured = registry
+        .local_main_repository_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("VOS_TARGET_REPO_DIR")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+        });
+    if let Some(path) = configured {
+        return path.is_dir().then_some(path);
+    }
+    crate::services::checkouts::local_dir_for(&registry.main_repository)
 }
 
 /// Manual "pull latest": force-fetch every **already-cached** checkout so the
@@ -93,7 +120,12 @@ pub async fn refresh_checkouts(
     }
 
     let registry = crate::services::live_read::load_live_registry()?;
-    let token = live_token_for_refresh()?;
+    // The local clone can refresh without a token; only a managed-only setup is fatal.
+    let local_clone = configured_local_main_clone(&registry);
+    let token = gh_cli::auth_token();
+    if token.is_none() && local_clone.is_none() {
+        return Err(no_token_for_refresh());
+    }
     let mut out = CheckoutRefresh {
         refreshed: Vec::new(),
         skipped: Vec::new(),
@@ -105,9 +137,17 @@ pub async fn refresh_checkouts(
     refresh_one(
         &crate::services::checkouts::target_key(&registry.main_repository),
         &registry.main_repository,
-        &token,
+        token.as_deref(),
         &mut out,
     );
+    if let Some(local) = local_clone {
+        match crate::services::checkouts::refresh_local_clone(&local, token.as_deref()) {
+            Ok(()) => out.refreshed.push(local.display().to_string()),
+            Err(err) => out
+                .failed
+                .push(format!("{}: {}", local.display(), err.message)),
+        }
+    }
     for entry in registry.subsystems.iter().filter(|entry| {
         subsystem_id
             .as_deref()
@@ -116,7 +156,7 @@ pub async fn refresh_checkouts(
         refresh_one(
             &crate::services::checkouts::source_key(entry),
             &entry.repository,
-            &token,
+            token.as_deref(),
             &mut out,
         );
     }
@@ -196,4 +236,65 @@ pub fn warm_checkouts_once() {
             );
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_dir(prefix: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "vos-system-{prefix}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    fn registry_json(main_repository: &str, extra: &str) -> crate::services::registry::Registry {
+        let json = format!(
+            r#"{{
+  "mainRepository": "{main_repository}",
+  {extra}
+  "promotion": {{ "allowedTargetBranches": ["staging"], "requirePullRequest": true }},
+  "subsystems": []
+}}"#
+        );
+        crate::services::registry::Registry::from_json(&json, "test").expect("registry")
+    }
+
+    #[test]
+    fn configured_local_main_clone_finds_the_user_clone() {
+        let _env = crate::test_support::env_lock();
+        let dir = unique_dir("clone");
+        let dir_json = dir.to_string_lossy().replace('\\', "\\\\");
+
+        let via_path = registry_json(
+            "ORG/main-system",
+            &format!(r#""localMainRepositoryPath": "{dir_json}","#),
+        );
+        assert_eq!(configured_local_main_clone(&via_path), Some(dir.clone()));
+
+        let missing_json = dir.join("nope").to_string_lossy().replace('\\', "\\\\");
+        let missing = registry_json(
+            "ORG/main-system",
+            &format!(r#""localMainRepositoryPath": "{missing_json}","#),
+        );
+        assert_eq!(configured_local_main_clone(&missing), None);
+
+        if std::env::var("VOS_TARGET_REPO_DIR")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .is_none()
+        {
+            let remote_only = registry_json("ORG/main-system", "");
+            assert_eq!(configured_local_main_clone(&remote_only), None);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

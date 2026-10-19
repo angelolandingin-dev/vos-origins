@@ -259,6 +259,33 @@ fn fetch_is_recent(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The managed path never fetches a user-provided clone; failures are swallowed.
+pub fn fetch_local_clone_if_stale(dir: &Path, token: Option<&str>) -> bool {
+    // Skip non-repos so a plain directory costs no git spawn on every read.
+    if !dir.join(".git").exists() {
+        return false;
+    }
+    if fetch_is_recent(dir) {
+        return false;
+    }
+    let _ = git::fetch_local_clone(dir, token);
+    true
+}
+
+pub fn refresh_local_clone(dir: &Path, token: Option<&str>) -> AppResult<()> {
+    git::fetch_local_clone(dir, token).map_err(|err| {
+        AppError::new(
+            ErrorCode::RepositoryInaccessible,
+            format!(
+                "Could not refresh the local main clone ({}).",
+                dir.display()
+            ),
+        )
+        .with_remedy("Check the network connection and that the clone's remote is reachable.")
+        .with_details(git::sanitize(&err.to_string()))
+    })
+}
+
 /// Force a fetch of an **already-cloned** checkout, ignoring the freshness window.
 /// Returns `Ok(false)` when nothing is cached for `key` (callers must not clone
 /// implicitly — new repos are cloned on demand when they are actually opened).
@@ -548,6 +575,121 @@ mod tests {
             ensure_remote_checkout(key, &origin.to_string_lossy(), None).expect("flag refresh");
         assert_eq!(via_flag, first);
         assert!(!first.join("SENTINEL.txt").exists());
+    }
+
+    #[test]
+    fn local_clone_is_fetched_when_stale_and_skipped_when_fresh() {
+        let _env = env_lock();
+        let root = unique_dir("local-fetch");
+        let origin = unique_dir("local-fetch-origin");
+        init_repo(&origin, "master");
+        std::fs::write(origin.join("a.txt"), "a\n").expect("write");
+        commit_all(&origin, "first");
+        let clone = root.join("clone");
+        git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().expect("utf8"),
+                clone.to_str().expect("utf8"),
+            ],
+        );
+
+        let _ttl = EnvRestore::set("VOS_CHECKOUT_FETCH_TTL_SECS", "0");
+        std::fs::write(origin.join("b.txt"), "b\n").expect("write");
+        let second = commit_all(&origin, "second");
+        assert!(
+            fetch_local_clone_if_stale(&clone, None),
+            "an expired TTL must attempt the fetch"
+        );
+        assert_eq!(
+            git(&clone, &["rev-parse", "origin/master"]),
+            second,
+            "the fetch must advance the clone's remote-tracking ref"
+        );
+
+        let _ttl = EnvRestore::set("VOS_CHECKOUT_FETCH_TTL_SECS", "100000");
+        std::fs::write(origin.join("c.txt"), "c\n").expect("write");
+        let third = commit_all(&origin, "third");
+        assert!(
+            !fetch_local_clone_if_stale(&clone, None),
+            "a fresh clone must skip the network round trip"
+        );
+        assert_ne!(
+            git(&clone, &["rev-parse", "origin/master"]),
+            third,
+            "a skipped fetch must leave the remote-tracking ref untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&origin);
+    }
+
+    #[test]
+    fn local_clone_fetch_failure_is_swallowed_and_leaves_the_clone_readable() {
+        let _env = env_lock();
+        let root = unique_dir("local-fetch-fail");
+        let clone = root.join("clone");
+        init_repo(&clone, "master");
+        std::fs::write(clone.join("a.txt"), "a\n").expect("write");
+        let sha = commit_all(&clone, "only local");
+        git(
+            &clone,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://127.0.0.1:1/ORG/does-not-exist.git",
+            ],
+        );
+        let _ttl = EnvRestore::set("VOS_CHECKOUT_FETCH_TTL_SECS", "0");
+        assert!(
+            fetch_local_clone_if_stale(&clone, None),
+            "the fetch is attempted even when it will fail"
+        );
+        assert_eq!(git(&clone, &["rev-parse", "HEAD"]), sha);
+        assert!(clone.join("a.txt").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn refresh_local_clone_force_fetches_and_reports_failure() {
+        let _env = env_lock();
+        let root = unique_dir("local-refresh");
+        let origin = unique_dir("local-refresh-origin");
+        init_repo(&origin, "master");
+        std::fs::write(origin.join("a.txt"), "a\n").expect("write");
+        commit_all(&origin, "first");
+        let clone = root.join("clone");
+        git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().expect("utf8"),
+                clone.to_str().expect("utf8"),
+            ],
+        );
+        std::fs::write(origin.join("b.txt"), "b\n").expect("write");
+        let second = commit_all(&origin, "second");
+        let _ttl = EnvRestore::set("VOS_CHECKOUT_FETCH_TTL_SECS", "100000");
+        refresh_local_clone(&clone, None).expect("force refresh");
+        assert_eq!(git(&clone, &["rev-parse", "origin/master"]), second);
+
+        git(
+            &clone,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://127.0.0.1:1/ORG/does-not-exist.git",
+            ],
+        );
+        assert!(refresh_local_clone(&clone, None).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&origin);
     }
 
     #[test]
