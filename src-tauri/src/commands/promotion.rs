@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use tauri::Emitter;
 use tauri::State;
 
 use crate::error::{AppError, AppResult, ErrorCode};
@@ -18,6 +19,7 @@ use crate::AppState;
 #[tauri::command]
 pub async fn dispatch_promotion(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     request: PromotionRequest,
 ) -> AppResult<PromotionDispatchResult> {
     if !request.confirmation_acknowledged {
@@ -121,6 +123,10 @@ pub async fn dispatch_promotion(
                 Some(authenticated_remote_url(&subsystem.repository, &token))
             }
         };
+        // Progress is best-effort: a failed emit never fails the promotion.
+        let emitter = move |update: engine::PromotionProgress| {
+            let _ = app.emit(engine::PROMOTION_PROGRESS_EVENT, &update);
+        };
         let temp_root = std::env::temp_dir().join("vos-integration");
         let _ = std::fs::create_dir_all(&temp_root);
         let options = EngineOptions {
@@ -141,7 +147,13 @@ pub async fn dispatch_promotion(
             source_url: &source_url,
             account: gh_cli::authenticated_account,
         };
-        engine::run_promotion(&engine_registry, &engine_request, &options, &deps)
+        engine::run_promotion_with_progress(
+            &engine_registry,
+            &engine_request,
+            &options,
+            &deps,
+            &emitter,
+        )
     })
     .await
     .map_err(|error| {

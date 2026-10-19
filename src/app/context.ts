@@ -18,6 +18,7 @@ import type {
   PromotionDispatchResult,
   PromotionMode,
   PromotionPreflight,
+  PromotionProgress,
   SubsystemSummary,
   TargetBranchList,
 } from '../api/types';
@@ -90,6 +91,7 @@ export interface PromotionState {
   message: string;
   excludedPaths: string[];
   dispatching: boolean;
+  progress: PromotionProgress[];
   error: ApiError | null;
   result: PromotionDispatchResult | null;
   dependencies: DependencyChange[];

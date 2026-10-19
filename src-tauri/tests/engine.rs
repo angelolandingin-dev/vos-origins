@@ -23,7 +23,8 @@ use vos_origins_lib::services::engine::lockfile::{
     LockfileGenerator, RealLockfileGenerator, StubLockfileGenerator,
 };
 use vos_origins_lib::services::engine::{
-    run_promotion, EngineDeps, EngineOptions, EngineRequest, PromotionReport,
+    run_promotion, run_promotion_with_progress, EngineDeps, EngineOptions, EngineRequest,
+    PromotionProgress, PromotionReport,
 };
 use vos_origins_lib::services::registry::Registry;
 
@@ -542,6 +543,17 @@ fn promote(
     registry: &Registry,
     options: PromoteOptions,
 ) -> PromotionReport {
+    promote_with_progress(source, main, github, registry, options, &|_| {})
+}
+
+fn promote_with_progress(
+    source: &Path,
+    main: &Path,
+    github: &StubGitHubOps,
+    registry: &Registry,
+    options: PromoteOptions,
+    progress: &dyn Fn(PromotionProgress),
+) -> PromotionReport {
     let request = EngineRequest {
         subsystem_id: options.subsystem_id,
         commits: options.commits,
@@ -602,7 +614,7 @@ fn promote(
         source_url: &source_url,
         account,
     };
-    run_promotion(registry, &request, &engine_options, &deps)
+    run_promotion_with_progress(registry, &request, &engine_options, &deps, progress)
 }
 
 fn codes(report: &PromotionReport) -> Vec<String> {
@@ -5049,5 +5061,76 @@ fn unresolved_account_falls_back_to_the_bot_without_failing() {
             .any(|w| w.code == "ACCOUNT_ATTRIBUTION_UNAVAILABLE"),
         "the fallback is reported: {:?}",
         report.warnings
+    );
+}
+
+#[test]
+fn promotion_progress_payload_matches_frontend_shape() {
+    let full = vos_origins_lib::services::engine::PromotionProgress {
+        stage: "copy",
+        label: "Copying selected paths".to_string(),
+        index: Some(3),
+        total: Some(9),
+        detail: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&full).unwrap(),
+        serde_json::json!({
+            "stage": "copy",
+            "label": "Copying selected paths",
+            "index": 3,
+            "total": 9,
+        }),
+        "absent details stay absent on the wire"
+    );
+    let bare = vos_origins_lib::services::engine::PromotionProgress {
+        stage: "resolve",
+        label: "Resolving subsystem and target".to_string(),
+        index: None,
+        total: None,
+        detail: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&bare).unwrap(),
+        serde_json::json!({
+            "stage": "resolve",
+            "label": "Resolving subsystem and target",
+        }),
+    );
+}
+
+#[test]
+fn promotion_progress_emits_stages_in_order() {
+    use std::cell::RefCell;
+
+    let src_dir = make_temp_dir("src-progress");
+    let main_dir = make_temp_dir("main-progress");
+    let src = create_source_chain(&src_dir);
+    let main = create_main_repo(&main_dir, &[], &[]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+    let stages = RefCell::new(Vec::new());
+
+    let report = promote_with_progress(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![src.c.clone()],
+            delivery: PromotionDelivery::Local,
+            ..Default::default()
+        },
+        &|update: PromotionProgress| stages.borrow_mut().push(update.stage.to_string()),
+    );
+    assert!(report.ok, "{:?}", report.blockers);
+    let mut ordered: Vec<String> = stages.borrow().clone();
+    ordered.dedup();
+    assert_eq!(
+        ordered,
+        vec![
+            "resolve", "fetch", "classify", "copy", "manifest", "prereqs", "commit", "deliver",
+            "cleanup"
+        ],
     );
 }

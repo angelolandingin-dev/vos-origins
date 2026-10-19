@@ -87,6 +87,7 @@ export default function App() {
         preflight={app.promotion.preflight}
         preflightLoading={app.promotion.preflightLoading}
         dispatching={app.promotion.dispatching}
+        progress={app.promotion.progress}
         error={app.promotion.error}
         result={app.promotion.result}
         onDispatch={app.dispatchPromotion}

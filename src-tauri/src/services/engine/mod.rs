@@ -115,6 +115,41 @@ pub struct EngineDeps<'a> {
     pub account: fn() -> Option<GitHubAccount>,
 }
 
+/// One engine progress event for a running promotion. Emitted on
+/// [`PROMOTION_PROGRESS_EVENT`]; the frontend codes against this shape, so
+/// keep it stable. `index`/`total` are only set for loop stages.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromotionProgress {
+    pub stage: &'static str,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+pub const PROMOTION_PROGRESS_EVENT: &str = "promotion-progress";
+
+fn emit_progress(
+    progress: &dyn Fn(PromotionProgress),
+    stage: &'static str,
+    label: &str,
+    index: Option<usize>,
+    total: Option<usize>,
+    detail: Option<String>,
+) {
+    progress(PromotionProgress {
+        stage,
+        label: label.to_string(),
+        index,
+        total,
+        detail,
+    });
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ChangeSummary {
     pub applied: Vec<String>,
@@ -344,6 +379,16 @@ pub fn run_promotion(
     options: &EngineOptions,
     deps: &EngineDeps<'_>,
 ) -> PromotionReport {
+    run_promotion_with_progress(registry, request, options, deps, &|_| {})
+}
+
+pub fn run_promotion_with_progress(
+    registry: &Registry,
+    request: &EngineRequest,
+    options: &EngineOptions,
+    deps: &EngineDeps<'_>,
+    progress: &dyn Fn(PromotionProgress),
+) -> PromotionReport {
     // Pin the checkout for the whole run: concurrent local runs on the same
     // repo race over `refs/vos-sources/*` (fetch writes that namespace into
     // the checkout). The per-checkout mutex serializes runs in this process.
@@ -354,8 +399,17 @@ pub fn run_promotion(
     let mut report = PromotionReport::new();
     let mut worktree: Option<PathBuf> = None;
 
-    let outcome = run_inner(registry, request, options, deps, &mut report, &mut worktree);
+    let outcome = run_inner(
+        registry,
+        request,
+        options,
+        deps,
+        &mut report,
+        &mut worktree,
+        progress,
+    );
 
+    emit_progress(progress, "cleanup", "Cleaning up", None, None, None);
     if let Some(dir) = worktree.as_ref() {
         if dir.exists() {
             git::worktree_remove(&options.target_repo_dir, dir);
@@ -399,7 +453,16 @@ fn run_inner(
     deps: &EngineDeps<'_>,
     report: &mut PromotionReport,
     worktree: &mut Option<PathBuf>,
+    progress: &dyn Fn(PromotionProgress),
 ) -> StepResult {
+    emit_progress(
+        progress,
+        "resolve",
+        "Resolving subsystem and target",
+        None,
+        None,
+        None,
+    );
     if crate::services::registry::assert_subsystem_id(&request.subsystem_id).is_err() {
         report.blockers.push(Blocker::new(
             "SUBSYSTEM_INVALID",
@@ -579,6 +642,14 @@ fn run_inner(
         }
     }
 
+    emit_progress(
+        progress,
+        "fetch",
+        "Fetching selected commits",
+        None,
+        None,
+        Some(format!("{} commit(s)", request.commits.len())),
+    );
     let duplicates = history::detect_branch_duplicates(
         &options.target_repo_dir,
         &request.target_branch,
@@ -655,6 +726,16 @@ fn run_inner(
     };
 
     let mut classified_plan: Vec<PlannedEntry> = Vec::new();
+    let total_deltas: usize = verified_plan.iter().map(|p| p.entries.len()).sum();
+    emit_progress(
+        progress,
+        "classify",
+        "Classifying paths",
+        Some(0),
+        Some(total_deltas),
+        None,
+    );
+    let mut classified = 0usize;
     for planned in &verified_plan {
         let mut entries = Vec::new();
         for delta in &planned.entries {
@@ -671,6 +752,17 @@ fn run_inner(
                 status,
                 reason,
             });
+            classified += 1;
+            if classified % 10 == 0 || classified == total_deltas {
+                emit_progress(
+                    progress,
+                    "classify",
+                    "Classifying paths",
+                    Some(classified),
+                    Some(total_deltas),
+                    None,
+                );
+            }
         }
         classified_plan.push(PlannedEntry {
             sha: planned.sha.clone(),
@@ -876,6 +968,15 @@ fn run_inner(
     let mut mode_ops: Vec<apply::ModeOp> = Vec::new();
     let mut pkg_pairs: Vec<(String, Option<String>)> = Vec::new();
 
+    emit_progress(
+        progress,
+        "copy",
+        "Copying selected paths",
+        Some(0),
+        Some(apply_paths.len()),
+        None,
+    );
+    let mut copied = 0usize;
     for planned in &classified_plan {
         for entry in &planned.entries {
             match entry.status {
@@ -937,6 +1038,17 @@ fn run_inner(
                             );
                             return Err(Bail);
                         }
+                    }
+                    copied += 1;
+                    if copied % 10 == 0 || copied == apply_paths.len() {
+                        emit_progress(
+                            progress,
+                            "copy",
+                            "Copying selected paths",
+                            Some(copied),
+                            Some(apply_paths.len()),
+                            None,
+                        );
                     }
                 }
                 PathStatus::DependencyMerge => {
@@ -1026,6 +1138,14 @@ fn run_inner(
 
     let mut deps_changed = false;
     let mut delta_names: Vec<String> = Vec::new();
+    emit_progress(
+        progress,
+        "manifest",
+        "Merging package.json delta",
+        None,
+        None,
+        None,
+    );
     if subsystem.dependency_strategy == DependencyStrategy::Reconcile && !pkg_pairs.is_empty() {
         let deltas: Vec<deps::DependencyDelta> = pkg_pairs
             .iter()
@@ -1073,6 +1193,14 @@ fn run_inner(
         delta_names.extend(reconciled.moved.iter().map(|m| m.name.clone()));
     }
 
+    emit_progress(
+        progress,
+        "prereqs",
+        "Checking dependency and import prerequisites",
+        None,
+        None,
+        None,
+    );
     {
         let mut code_files: Vec<deps::CodeFile> = Vec::new();
         for planned in &classified_plan {
@@ -1151,6 +1279,22 @@ fn run_inner(
         return Err(Bail);
     }
     if request.delivery == PromotionDelivery::Worktree {
+        emit_progress(
+            progress,
+            "commit",
+            "Committing with provenance trailers",
+            None,
+            None,
+            Some("Skipped — worktree delivery stages files without committing".to_string()),
+        );
+        emit_progress(
+            progress,
+            "deliver",
+            "Delivering",
+            None,
+            None,
+            Some("Staging into the working tree (no commit, no push)".to_string()),
+        );
         match stage_into_own_worktree(
             &options.target_repo_dir,
             &worktree_dir,
@@ -1226,6 +1370,14 @@ fn run_inner(
         ));
     }
     let author = provenance::commit_author(attribute_to_account, account.as_ref());
+    emit_progress(
+        progress,
+        "commit",
+        "Committing with provenance trailers",
+        None,
+        None,
+        None,
+    );
     match provenance::write_provenance_commit(
         &worktree_dir,
         &message,
@@ -1308,6 +1460,14 @@ fn run_inner(
     }
 
     if request.delivery == PromotionDelivery::LocalDirect {
+        emit_progress(
+            progress,
+            "deliver",
+            "Delivering",
+            None,
+            None,
+            Some("Committing onto the local target branch".to_string()),
+        );
         // Linked-worktree guard (§10): refuse when `git worktree list` shows
         // the target branch checked out in a different linked worktree. An
         // `update-ref` from here would desync that worktree (and a
@@ -1415,11 +1575,27 @@ fn run_inner(
     // pushes explicitly. This guard is delivery-based, not flag-based, so even
     // a caller passing `push: true` cannot push in local mode.
     if request.delivery == PromotionDelivery::Local {
+        emit_progress(
+            progress,
+            "deliver",
+            "Delivering",
+            None,
+            None,
+            Some("Creating a local branch and commit".to_string()),
+        );
         return Ok(());
     }
 
     // Pre-push duplicate re-check (§10, best-effort — same caveat as above:
     // narrows the window, does not close it; a manual push is never blocked).
+    emit_progress(
+        progress,
+        "deliver",
+        "Delivering",
+        None,
+        None,
+        Some("Pushing the integration branch and opening a pull request".to_string()),
+    );
     if options.push || options.create_pr {
         let recheck = history::detect_branch_duplicates(
             &options.target_repo_dir,
@@ -1463,6 +1639,14 @@ fn run_inner(
     }
 
     if options.push {
+        emit_progress(
+            progress,
+            "deliver",
+            "Delivering",
+            None,
+            None,
+            Some("Pushing the integration branch".to_string()),
+        );
         let mut url = options
             .push_remote_url
             .clone()
@@ -1506,6 +1690,14 @@ fn run_inner(
     }
 
     if options.create_pr {
+        emit_progress(
+            progress,
+            "deliver",
+            "Delivering",
+            None,
+            None,
+            Some("Opening the pull request".to_string()),
+        );
         let body = build_pr_body(subsystem, request, report, &branch_name);
         let pr_request = CreatePrRequest {
             head: branch_name.clone(),

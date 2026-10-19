@@ -371,6 +371,15 @@ export interface PromotionPreflight {
   excluded?: string[] | null;
 }
 
+/** One engine progress event for a running promotion (`promotion-progress`). */
+export interface PromotionProgress {
+  stage: string;
+  label: string;
+  index?: number | null;
+  total?: number | null;
+  detail?: string | null;
+}
+
 export interface PromotionDispatchResult {
   accepted: boolean;
   prUrl: string | null;

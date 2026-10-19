@@ -17,6 +17,7 @@ import type {
   PromotionDispatchResult,
   PromotionMode,
   PromotionPreflight,
+  PromotionProgress,
   SubsystemSummary,
   TargetBranchList,
   ValidationFinding,
@@ -70,6 +71,7 @@ export interface PromotionDialogProps {
   preflight: PromotionPreflight | null;
   preflightLoading: boolean;
   dispatching: boolean;
+  progress: PromotionProgress[];
   error: ApiError | null;
   result: PromotionDispatchResult | null;
   onDispatch: () => void;
@@ -180,6 +182,85 @@ function ResultNotes({ findings }: { findings: ValidationFinding[] }) {
   );
 }
 
+const PROMOTION_STAGES: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'resolve', label: 'Resolving subsystem and target' },
+  { id: 'fetch', label: 'Fetching selected commits' },
+  { id: 'classify', label: 'Classifying paths' },
+  { id: 'copy', label: 'Copying selected paths' },
+  { id: 'manifest', label: 'Merging package.json delta' },
+  { id: 'prereqs', label: 'Checking dependency prerequisites' },
+  { id: 'commit', label: 'Committing with provenance trailers' },
+  { id: 'deliver', label: 'Delivering' },
+  { id: 'cleanup', label: 'Cleaning up' },
+];
+
+function PromotionProgressView({ steps }: { steps: PromotionProgress[] }) {
+  const byStage = new Map(steps.map((step) => [step.stage, step]));
+  let currentIndex = -1;
+  PROMOTION_STAGES.forEach((stage, index) => {
+    if (byStage.has(stage.id)) currentIndex = index;
+  });
+  const current = currentIndex >= 0 ? byStage.get(PROMOTION_STAGES[currentIndex]!.id) : undefined;
+  const currentFraction =
+    current?.index != null && current?.total != null && current.total > 0
+      ? Math.min(current.index / current.total, 1)
+      : 0;
+  const done = currentIndex < 0 ? 0 : currentIndex + currentFraction;
+  const detail = current?.detail ?? current?.label ?? 'Starting…';
+  const counts =
+    current?.index != null && current?.total != null ? `${current.index} / ${current.total}` : null;
+
+  return (
+    <section className="space-y-2" aria-label="Promotion progress">
+      <div className="flex h-[29px] items-center justify-between gap-2">
+        <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+          Promotion progress
+        </h3>
+        {counts ? <span className="mono text-right text-muted tabular-nums">{counts}</span> : null}
+      </div>
+      <div className="h-[3px] overflow-hidden rounded-full bg-line" aria-hidden="true">
+        <div
+          className="h-full rounded-full bg-accent transition-[width]"
+          style={{ width: `${Math.round((done / PROMOTION_STAGES.length) * 100)}%` }}
+        />
+      </div>
+      <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+        {PROMOTION_STAGES.map((stage, index) => {
+          const seen = byStage.get(stage.id);
+          const state = index < currentIndex ? 'done' : index === currentIndex ? 'current' : 'todo';
+          return (
+            <li key={stage.id} className="flex h-[21px] items-center gap-2 px-2.5">
+              <span
+                aria-hidden="true"
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                  state === 'done'
+                    ? 'bg-status-applied'
+                    : state === 'current'
+                      ? 'animate-pulse bg-accent'
+                      : 'bg-line'
+                }`}
+              />
+              <span
+                className={`min-w-0 flex-1 truncate text-[11px] ${state === 'todo' ? 'text-muted' : 'text-fg'}`}
+              >
+                {seen?.label ?? stage.label}
+              </span>
+              {seen?.index != null && seen?.total != null ? (
+                <span className="mono shrink-0 text-[11px] text-muted tabular-nums">
+                  {seen.index} / {seen.total}
+                </span>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      <p role="status" className="mono truncate text-[11px] text-muted">
+        {detail}
+      </p>
+    </section>
+  );
+}
+
 function ExpandablePathList({ title, paths }: { title: string; paths: string[] }) {
   if (paths.length === 0) return null;
   return (
@@ -228,6 +309,7 @@ function PromotionDialogContent({
   preflight,
   preflightLoading,
   dispatching,
+  progress,
   error,
   result,
   onDispatch,
@@ -759,6 +841,7 @@ function PromotionDialogContent({
                 Confirmation recorded for this request.
               </p>
             ) : null}
+            {dispatching ? <PromotionProgressView steps={progress} /> : null}
           </section>
         </div>
       )}

@@ -1,5 +1,7 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 
+import { listen } from '@tauri-apps/api/event';
+
 import { api, asApiError } from '../api/invoke';
 import type {
   CommitSummary,
@@ -7,6 +9,7 @@ import type {
   PromotionDelivery,
   PromotionMode,
   PromotionPreflight,
+  PromotionProgress,
 } from '../api/types';
 import {
   AppContext,
@@ -66,6 +69,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     message: '',
     excludedPaths: [],
     dispatching: false,
+    progress: [],
     error: null,
     result: null,
   });
@@ -253,6 +257,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         message: '',
         excludedPaths: options?.excludedPaths ?? [],
         dispatching: false,
+        progress: [],
         error: null,
         result: null,
       });
@@ -312,7 +317,25 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
 
   const dispatchPromotion = useCallback(() => {
     if (!selectedSubsystemId) return;
-    setPromotion((current) => ({ ...current, dispatching: true, error: null }));
+    setPromotion((current) => ({ ...current, dispatching: true, progress: [], error: null }));
+    // Progress is best-effort: a failed listen must never block the dispatch.
+    let stopListening: (() => void) | null = null;
+    let done = false;
+    const finishListening = () => {
+      done = true;
+      stopListening?.();
+      stopListening = null;
+    };
+    void listen<PromotionProgress>('promotion-progress', (event) => {
+      if (done) return;
+      const step = event.payload;
+      setPromotion((current) => ({ ...current, progress: [...current.progress, step] }));
+    })
+      .then((stop) => {
+        if (done) stop();
+        else stopListening = stop;
+      })
+      .catch(() => {});
     void api
       .dispatchPromotion({
         subsystemId: selectedSubsystemId,
@@ -327,6 +350,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         excludedPaths: promotion.excludedPaths,
       })
       .then((result) => {
+        finishListening();
         setPromotion((current) => ({ ...current, dispatching: false, result }));
         if (result.delivery === 'local_direct') {
           pushNotice({
@@ -361,6 +385,7 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
         bumpDataVersion();
       })
       .catch((error: unknown) => {
+        finishListening();
         setPromotion((current) => ({ ...current, dispatching: false, error: asApiError(error) }));
       });
   }, [
