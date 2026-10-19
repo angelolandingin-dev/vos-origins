@@ -113,7 +113,7 @@ export function CommitDetailsContext({
             Dependency changes
           </h3>
           <ul className="space-y-1.5">
-            {details.dependencies.map((dependency) => (
+            {(details.dependencies ?? []).map((dependency) => (
               <li
                 key={`${dependency.section}-${dependency.name}`}
                 className={cx(
@@ -152,14 +152,14 @@ export function CommitDetailsContext({
         </div>
       ) : null}
 
-      {details.relatedPullRequests.length > 0 ? (
+      {(details.relatedPullRequests ?? []).length > 0 ? (
         <div className="space-y-1.5">
           <h3 className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">
             <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
             Related Pull Requests
           </h3>
           <ul className="divide-y divide-line border-y border-line">
-            {details.relatedPullRequests.map((pr) => (
+            {(details.relatedPullRequests ?? []).map((pr) => (
               <li key={pr.htmlUrl}>
                 <button
                   type="button"
@@ -190,7 +190,7 @@ export function CommitDetailsContext({
         <KeyValue label="Target branch">{targetBranch}</KeyValue>
         <KeyValue label="Parents">
           <span className="mono">
-            {details.parents.map((parent) => parent.slice(0, 7)).join(', ') || '—'}
+            {(details.parents ?? []).map((parent) => parent.slice(0, 7)).join(', ') || '-'}
           </span>
         </KeyValue>
         <KeyValue label="Content from">
