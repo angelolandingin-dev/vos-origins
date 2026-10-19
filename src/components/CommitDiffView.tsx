@@ -1,23 +1,24 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
-  ArrowLeft,
-  ChevronDown,
-  ChevronRight,
+  Check,
   Columns2,
+  Copy,
+  ExternalLink,
   FileCode2,
   GitPullRequestArrow,
   Rows3,
   Search,
 } from 'lucide-react';
 
+import type { ApiError } from '../api/invoke';
 import { api } from '../api/invoke';
-import type { ChangedFile, CommitSummary } from '../api/types';
+import type { ChangedFile, CommitDetails } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
+import { CommitDetailsContext } from './CommitDetails';
 import { DiffViewer } from './DiffViewer';
 import { PathLabel } from './PathLabel';
 import { CommitStatusBadge } from './StatusBadge';
 import { cx } from './ui/cx';
-import { formatDateTime } from './ui/format';
 import {
   Button,
   Checkbox,
@@ -26,19 +27,31 @@ import {
   IconButton,
   LoadingState,
   Panel,
+  Spinner,
 } from './ui/primitives';
 import { SPLIT_DEFAULT_WIDTH, splitWidthStyle } from './ui/split-pane';
 import { SplitResizer } from './ui/split-resizer';
 
 /**
- * Dedicated full-diff view (GitHub Desktop History style). A separate
- * full-workspace surface with a back control — not a corner panel: a
- * changed-files column with per-file include checkboxes, and every changed
- * file's diff stacked continuously in one scroll, each rendered by the shared
- * `DiffViewer`. Per-file diffs mount (and fetch) lazily as they near the
- * viewport; each mounted file renders its engine-bounded hunks in full, with
- * no inner scroll container and no row windowing — the section list holds the
- * view's only diff scroller.
+ * The commit's changed-files column and the selected file's diff, side by side
+ * (GitHub Desktop History shape) — rendered IN PLACE in the Commit Browser, not
+ * as a separate surface: the commit list is the workspace's left rail, this is
+ * the rest of the workspace. There is no back control because there is nowhere
+ * to go back to.
+ *
+ * The left column is the changed-files list with the commit's own context
+ * beneath it (author, evidence, dependencies, related PRs, target-branch
+ * facts); the right column is exactly one file's diff, a file header and its
+ * hunks, rendered by the shared `DiffViewer`. The geometry contract is the
+ * app's single horizontal splitter: the shared `SplitResizer`, the
+ * `--split-width` custom property, the 320px diff floor and the unified
+ * default — never a second splitter.
+ *
+ * The details are fetched once by the workspace (the same read also feeds the
+ * Changes/Dependencies tabs) and handed in, so mounting the diff never issues a
+ * duplicate commit-details request. The browser stays read-only: the single
+ * Promote… action hands the commit to the Promote tab through the shared
+ * selection, which owns the dialog, delivery modes, exclusions and preflight.
  */
 
 function fileGlyph(file: ChangedFile): { glyph: string; className: string } {
@@ -58,112 +71,58 @@ export interface CommitDiffViewProps {
   subsystemId: string;
   sha: string;
   targetBranch: string;
-  initialPath: string | null;
-  commit: CommitSummary | null;
-  onBack: () => void;
+  /** The commit's details, fetched once by the workspace. */
+  details: CommitDetails | null;
+  loading: boolean;
+  error: ApiError | null;
+  onRetry: () => void;
+  /** The selected file, owned by the workspace so the Changes tab can open one. */
+  selectedPath: string | null;
+  onSelectPath: (path: string) => void;
+  /**
+   * Read-only handoff: selects this commit in the shared selection and opens
+   * the Promote tab, which owns the whole promotion flow. The browser never
+   * opens a promotion flow itself.
+   */
+  onPromoteHandoff: (sha: string, excludedPaths: string[]) => void;
+  mainRepository: string | null;
 }
 
 export function CommitDiffView({
   subsystemId,
   sha,
   targetBranch,
-  initialPath,
-  commit,
-  onBack,
+  details,
+  loading,
+  error,
+  onRetry,
+  selectedPath,
+  onSelectPath,
+  onPromoteHandoff,
+  mainRepository,
 }: CommitDiffViewProps) {
   const app = useApp();
   const [mode, setMode] = useState<'side' | 'unified'>('unified');
   const [filesWidth, setFilesWidth] = useState(SPLIT_DEFAULT_WIDTH);
   const [filter, setFilter] = useState('');
   const [excluded, setExcluded] = useState<string[]>([]);
-  const [collapsed, setCollapsed] = useState<string[]>([]);
-  // Paths whose section has come near the viewport. Mounting (and fetching)
-  // happens once per path and is never undone, so scrolling back is instant.
-  // The requested file mounts immediately so its fetch starts on first paint.
-  const [mounted, setMounted] = useState<string[]>(() => (initialPath ? [initialPath] : []));
-  const [activeOverride, setActiveOverride] = useState<string | null>(null);
-  const scrollerRef = useRef<HTMLDivElement>(null);
-  const sectionRefs = useRef(new Map<string, HTMLElement>());
-  const initialScrolledRef = useRef(false);
+  const [copied, setCopied] = useState(false);
 
-  const details = useAsyncData(
-    () => api.getCommitDetails(subsystemId, sha, targetBranch),
-    [subsystemId, sha, targetBranch, app.dataVersion],
-  );
-  const files = useMemo(() => details.data?.files ?? [], [details.data]);
-  // Derived during render (never written from an effect): an explicit override
-  // wins, then the requested file, then the first changed file.
-  const defaultPath =
-    (initialPath && files.some((file) => file.path === initialPath)
-      ? initialPath
-      : files[0]?.path) ?? null;
-  const activePath = activeOverride ?? defaultPath;
+  const files = useMemo(() => details?.files ?? [], [details]);
   const query = filter.trim().toLowerCase();
   const listedFiles = query
     ? files.filter((file) => file.path.toLowerCase().includes(query))
     : files;
-  const fileKey = listedFiles.map((file) => file.path).join('\n');
-
-  // Escape returns to the workspace without touching focus or selection.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onBack();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onBack]);
-
-  // Lazily mount per-file diffs as they near the viewport.
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller || typeof IntersectionObserver !== 'function') {
-      setMounted(files.map((file) => file.path));
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const near: string[] = [];
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const path = (entry.target as HTMLElement).dataset['fileSection'];
-          if (path) near.push(path);
-        }
-        if (near.length === 0) return;
-        setMounted((prev) => {
-          const next = new Set(prev);
-          let changed = false;
-          for (const path of near) {
-            if (!next.has(path)) {
-              next.add(path);
-              changed = true;
-            }
-          }
-          return changed ? Array.from(next) : prev;
-        });
-      },
-      { root: scroller, rootMargin: '640px 0px' },
-    );
-    for (const element of sectionRefs.current.values()) observer.observe(element);
-    return () => observer.disconnect();
-  }, [fileKey, files]);
-
-  // Opening at a file (View Full Diff, or a per-file affordance) scrolls the
-  // diffs column straight to that section once the file list has loaded. This
-  // effect only moves the DOM scroll position; all state derives during render.
-  useEffect(() => {
-    if (initialScrolledRef.current) return;
-    if (!initialPath || !files.some((file) => file.path === initialPath)) return;
-    initialScrolledRef.current = true;
-    window.requestAnimationFrame(() => {
-      sectionRefs.current.get(initialPath)?.scrollIntoView({ block: 'start' });
-    });
-  }, [files, initialPath]);
-
-  const scrollToPath = (path: string) => {
-    setActiveOverride(path);
-    setMounted((prev) => (prev.includes(path) ? prev : [...prev, path]));
-    sectionRefs.current.get(path)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-  };
+  // Derived during render (never written from an effect): the requested path
+  // wins while it is still one of this commit's files, then the first file.
+  const activePath =
+    (selectedPath && files.some((file) => file.path === selectedPath)
+      ? selectedPath
+      : files[0]?.path) ?? null;
+  const activeFile = files.find((file) => file.path === activePath) ?? null;
+  // Exclusions are keyed by path, so a selection that survives a commit switch
+  // only ever carries the paths that are actually in this commit.
+  const activeExcluded = excluded.filter((path) => files.some((file) => file.path === path));
 
   const toggleExcluded = (path: string) => {
     setExcluded((prev) =>
@@ -171,19 +130,18 @@ export function CommitDiffView({
     );
   };
 
-  const toggleCollapsed = (path: string) => {
-    setCollapsed((prev) =>
-      prev.includes(path) ? prev.filter((entry) => entry !== path) : [...prev, path],
-    );
+  const copySha = async () => {
+    if (!details) return;
+    try {
+      await navigator.clipboard?.writeText(details.sha);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
   };
 
-  // Unticked files are carried into the promotion request's `excludedPaths`,
-  // which the promotion dialog and preflight already honour.
-  const promote = () => {
-    app.openPromotionDialog([sha], commit ? [commit] : [], { excludedPaths: excluded });
-  };
-
-  const statusKind = details.data?.status.kind;
+  const statusKind = details?.status.kind;
   const isPromotable = statusKind === 'eligible' || statusKind === 'reverted';
 
   return (
@@ -193,25 +151,37 @@ export function CommitDiffView({
       bodyStyle={splitWidthStyle(filesWidth)}
       title={
         <span className="flex min-w-0 items-center gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={ArrowLeft}
-            onClick={onBack}
-            title="Back to commits (Esc)"
-          >
-            Back
-          </Button>
-          {details.data ? (
+          {details ? (
             <>
-              <span className="mono shrink-0 text-accent-ink" title={details.data.sha}>
-                {details.data.shortSha}
-              </span>
-              <span
-                className="min-w-0 flex-1 truncate text-xs font-medium"
-                title={details.data.subject}
+              <button
+                type="button"
+                onClick={() => void copySha()}
+                title={`${details.sha}\nClick to copy the full SHA (abbreviated values are display-only)`}
+                className="mono shrink-0 rounded-[3px] text-accent-ink hover:underline"
               >
-                {details.data.subject}
+                {details.shortSha}
+              </button>
+              {loading ? (
+                <span
+                  role="status"
+                  aria-label="Loading the newly selected commit"
+                  title="Loading the newly selected commit — the view still shows the previous commit until it arrives."
+                >
+                  <Spinner className="h-3.5 w-3.5" />
+                </span>
+              ) : null}
+              <IconButton
+                icon={copied ? Check : Copy}
+                label={copied ? 'Full SHA copied' : 'Copy full SHA'}
+                onClick={() => void copySha()}
+              />
+              <IconButton
+                icon={ExternalLink}
+                label="Open this commit on GitHub"
+                onClick={() => app.openExternal(details.sourceUrl)}
+              />
+              <span className="min-w-0 flex-1 truncate text-xs font-medium" title={details.subject}>
+                {details.subject}
               </span>
             </>
           ) : (
@@ -222,19 +192,15 @@ export function CommitDiffView({
         </span>
       }
       actions={
-        details.data ? (
+        details ? (
           <>
-            <span className="meta hidden xl:flex">
-              {details.data.authorLogin ?? details.data.authorName} ·{' '}
-              {formatDateTime(details.data.committedAt)}
-            </span>
             <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
-              +{details.data.additions}
+              +{details.additions}
             </span>
             <span className="mono shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
-              −{details.data.deletions}
+              −{details.deletions}
             </span>
-            <CommitStatusBadge status={details.data.status} />
+            <CommitStatusBadge status={details.status} />
             <Button
               size="sm"
               variant="secondary"
@@ -252,30 +218,32 @@ export function CommitDiffView({
               variant="primary"
               icon={GitPullRequestArrow}
               disabled={!isPromotable}
-              onClick={promote}
+              onClick={() => onPromoteHandoff(sha, activeExcluded)}
               title={
                 isPromotable
-                  ? excluded.length > 0
-                    ? `Promote this commit without ${excluded.length} excluded file(s)`
-                    : 'Promote this commit'
+                  ? activeExcluded.length > 0
+                    ? `Select this commit and open the Promote tab without ${activeExcluded.length} excluded file(s)`
+                    : 'Select this commit and open the Promote tab to confirm it'
                   : 'Only eligible (or previously reverted) commits can be promoted'
               }
             >
-              {excluded.length > 0 ? `Promote (${excluded.length} excluded)` : 'Promote'}
+              {activeExcluded.length > 0
+                ? `Promote… (${activeExcluded.length} excluded)`
+                : 'Promote…'}
             </Button>
           </>
         ) : null
       }
     >
-      {details.loading && !details.data ? (
-        <LoadingState label="Loading the full diff…" />
-      ) : details.error ? (
-        <ErrorState error={details.error} onRetry={details.reload} />
-      ) : !details.data || files.length === 0 ? (
+      {loading && !details ? (
+        <LoadingState label="Loading the commit…" />
+      ) : error ? (
+        <ErrorState error={error} onRetry={onRetry} />
+      ) : !details ? (
         <EmptyState
           icon={FileCode2}
-          title="No changed files"
-          message="There is no file list for this commit."
+          title="No commit selected"
+          message="Pick a commit in the list to inspect its changed files and diff."
         />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
@@ -284,16 +252,17 @@ export function CommitDiffView({
             when the window is narrower than the dragged split, so a wide split
             can never push the diff column off-screen. The diff keeps a floor so
             its fixed-width header/row parts cannot be squeezed into a
-            horizontal overflow.
+            horizontal overflow. The commit list is a separate column of the
+            workspace, so this split only ever divides what is left of it.
           */}
           <div className="flex max-h-[220px] min-w-0 shrink-0 flex-col border-b border-line md:max-h-none md:w-[var(--split-width)] md:shrink md:border-b-0">
             <div className="flex h-[29px] shrink-0 items-center justify-between gap-2 px-2.5">
               <p className="text-[11px] font-semibold tracking-wide text-muted uppercase tabular-nums">
                 {files.length} changed file{files.length === 1 ? '' : 's'}
               </p>
-              {excluded.length > 0 ? (
+              {activeExcluded.length > 0 ? (
                 <span className="meta text-status-unknown-ink tabular-nums">
-                  {excluded.length} excluded
+                  {activeExcluded.length} excluded
                 </span>
               ) : null}
             </div>
@@ -311,61 +280,82 @@ export function CommitDiffView({
                 className="input pl-9"
               />
             </div>
-            <ul className="scroll-area min-h-0 flex-1 overflow-y-auto px-1 pb-2">
-              {listedFiles.map((file) => {
-                const glyph = fileGlyph(file);
-                const included = !excluded.includes(file.path);
-                const active = activePath === file.path;
-                return (
-                  <li
-                    key={file.path}
-                    className={cx(
-                      'flex min-h-[29px] items-start gap-2 rounded-md px-1.5 py-1',
-                      active && 'bg-selection',
-                    )}
-                  >
-                    <Checkbox
-                      checked={included}
-                      onChange={() => toggleExcluded(file.path)}
-                      label={
-                        included
-                          ? `Exclude ${file.path} from promotion`
-                          : `Include ${file.path} in promotion`
-                      }
-                      className="mt-0.5"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => scrollToPath(file.path)}
-                      title={`${file.path} — scroll to its diff`}
-                      className="flex min-w-0 flex-1 items-start gap-2 rounded-[3px] text-left"
-                    >
-                      <span
+            <div className="scroll-area min-h-0 flex-1 overflow-y-auto">
+              {files.length === 0 ? (
+                <p className="px-2.5 pb-2 text-[11px] text-disabled">
+                  No file list is available for this commit.
+                </p>
+              ) : listedFiles.length === 0 ? (
+                <p className="px-2.5 pb-2 text-[11px] text-disabled">No files match this filter.</p>
+              ) : (
+                <ul className="px-1 pb-2">
+                  {listedFiles.map((file) => {
+                    const glyph = fileGlyph(file);
+                    const included = !activeExcluded.includes(file.path);
+                    const active = activePath === file.path;
+                    return (
+                      <li
+                        key={file.path}
                         className={cx(
-                          'w-3 shrink-0 text-center text-sm font-bold',
-                          glyph.className,
+                          'flex min-h-[29px] items-start gap-2 rounded-md px-1.5 py-1',
+                          active && 'bg-selection',
                         )}
-                        aria-hidden="true"
                       >
-                        {glyph.glyph}
-                      </span>
-                      <PathLabel path={file.path} className="flex-1" />
-                      <span className="mono w-11 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
-                        +{file.additions}
-                      </span>
-                      <span className="mono w-11 shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
-                        −{file.deletions}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-            <p className="shrink-0 truncate border-t border-line px-2.5 py-1.5 text-[11px] text-muted">
-              {excluded.length > 0
-                ? `${excluded.length} unticked file(s) are excluded from promotion.`
-                : 'Untick files to exclude them from promotion.'}
-            </p>
+                        <Checkbox
+                          checked={included}
+                          onChange={() => toggleExcluded(file.path)}
+                          label={
+                            included
+                              ? `Exclude ${file.path} from promotion`
+                              : `Include ${file.path} in promotion`
+                          }
+                          className="mt-0.5"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => onSelectPath(file.path)}
+                          aria-current={active ? 'true' : undefined}
+                          title={`${file.path} — show its diff`}
+                          className="flex min-w-0 flex-1 items-start gap-2 rounded-[3px] text-left"
+                        >
+                          <span
+                            className={cx(
+                              'w-3 shrink-0 text-center text-sm font-bold',
+                              glyph.className,
+                            )}
+                            aria-hidden="true"
+                          >
+                            {glyph.glyph}
+                          </span>
+                          <PathLabel path={file.path} className="flex-1" />
+                          <span className="mono w-11 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
+                            +{file.additions}
+                          </span>
+                          <span className="mono w-11 shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
+                            −{file.deletions}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <p className="shrink-0 truncate border-t border-line px-2.5 py-1.5 text-[11px] text-muted">
+                {activeExcluded.length > 0
+                  ? `${activeExcluded.length} unticked file(s) are excluded from promotion.`
+                  : 'Untick files to exclude them from promotion.'}
+              </p>
+
+              {/* The commit's own context sits beneath its file list. */}
+              <div className="border-t border-line">
+                <CommitDetailsContext
+                  details={details}
+                  targetBranch={targetBranch}
+                  onOpenExternal={app.openExternal}
+                  mainRepository={mainRepository}
+                />
+              </div>
+            </div>
           </div>
 
           <SplitResizer
@@ -374,73 +364,58 @@ export function CommitDiffView({
             label="Resize the changed-files column"
           />
 
+          {/* Exactly one file's diff — a file header and its hunks. */}
           <div
-            ref={scrollerRef}
             className="scroll-area min-h-0 min-w-0 flex-1 overflow-y-auto bg-ground md:min-w-[320px]"
             tabIndex={0}
             role="region"
-            aria-label={`Full diff of ${details.data.shortSha}`}
+            aria-label={`Diff of ${details.shortSha}`}
           >
-            {listedFiles.map((file) => {
-              const glyph = fileGlyph(file);
-              const isCollapsed = collapsed.includes(file.path);
-              const isMounted = mounted.includes(file.path);
-              const isExcluded = excluded.includes(file.path);
-              return (
-                <section
-                  key={file.path}
-                  data-file-section={file.path}
-                  ref={(element) => {
-                    if (element) sectionRefs.current.set(file.path, element);
-                    else sectionRefs.current.delete(file.path);
-                  }}
-                  aria-label={`Diff of ${file.path}`}
-                  className="scroll-mt-2 border-b border-line last:border-b-0"
-                >
-                  <div className="flex min-h-[29px] items-center gap-2 bg-raised px-2.5 py-1">
-                    <IconButton
-                      icon={isCollapsed ? ChevronRight : ChevronDown}
-                      label={
-                        isCollapsed
-                          ? `Expand diff of ${file.path}`
-                          : `Collapse diff of ${file.path}`
-                      }
-                      onClick={() => toggleCollapsed(file.path)}
-                    />
-                    <span
-                      className={cx('w-3 shrink-0 text-center text-sm font-bold', glyph.className)}
-                      aria-hidden="true"
-                    >
-                      {glyph.glyph}
-                    </span>
-                    <PathLabel path={file.path} className="flex-1" />
-                    {isExcluded ? (
-                      <span className="meta shrink-0 text-status-unknown-ink">excluded</span>
-                    ) : null}
-                    <span className="mono w-11 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
-                      +{file.additions}
-                    </span>
-                    <span className="mono w-11 shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
-                      −{file.deletions}
-                    </span>
-                  </div>
-                  {isCollapsed ? null : isMounted ? (
-                    <FileDiffSection
-                      subsystemId={subsystemId}
-                      sha={sha}
-                      targetBranch={targetBranch}
-                      file={file}
-                      mode={mode}
-                      onOpenExternal={app.openExternal}
-                    />
-                  ) : (
-                    <div className="flex h-[120px] items-center justify-center">
-                      <p className="text-[11px] text-disabled">Diff loads on scroll…</p>
-                    </div>
-                  )}
-                </section>
-              );
-            })}
+            {activeFile ? (
+              <>
+                <div className="flex min-h-[29px] items-center gap-2 border-b border-line bg-raised px-2.5 py-1">
+                  <span
+                    className={cx(
+                      'w-3 shrink-0 text-center text-sm font-bold',
+                      fileGlyph(activeFile).className,
+                    )}
+                    aria-hidden="true"
+                  >
+                    {fileGlyph(activeFile).glyph}
+                  </span>
+                  <PathLabel path={activeFile.path} className="flex-1" />
+                  <span className="meta shrink-0">{activeFile.change}</span>
+                  <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
+                    +{activeFile.additions}
+                  </span>
+                  <span className="mono shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
+                    −{activeFile.deletions}
+                  </span>
+                </div>
+                {activeFile.previousPath ? (
+                  <p
+                    className="mono truncate border-b border-line px-2.5 py-1 text-[11px] text-disabled"
+                    title={`renamed from ${activeFile.previousPath}`}
+                  >
+                    renamed from {activeFile.previousPath}
+                  </p>
+                ) : null}
+                <FileDiffSection
+                  subsystemId={subsystemId}
+                  sha={sha}
+                  targetBranch={targetBranch}
+                  file={activeFile}
+                  mode={mode}
+                  onOpenExternal={app.openExternal}
+                />
+              </>
+            ) : (
+              <EmptyState
+                icon={FileCode2}
+                title="No file selected"
+                message="Choose a file in the changed-files column to read its diff."
+              />
+            )}
           </div>
         </div>
       )}
@@ -471,11 +446,13 @@ function FileDiffSection({
 
   if (diff.loading && !diff.data) return <LoadingState label={`Loading ${file.path}…`} />;
   if (diff.error) return <ErrorState error={diff.error} onRetry={diff.reload} compact />;
+  // A path the patch could not resolve — a mode-only change — has no text diff;
+  // it says so rather than inventing one.
   if (!diff.data) {
     return (
       <EmptyState
         icon={FileCode2}
-        title="No diff for this file"
+        title="No text diff for this file"
         message={file.path}
         className="p-4"
       />

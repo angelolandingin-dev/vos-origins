@@ -11,7 +11,6 @@ import {
 import { api } from '../api/invoke';
 import type { CommitStatusKind } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
-import { CommitDetailsPanel } from './CommitDetails';
 import { CommitDiffView } from './CommitDiffView';
 import { CommitTable } from './CommitTable';
 import { PathLabel } from './PathLabel';
@@ -29,8 +28,10 @@ import {
 } from './ui/primitives';
 
 /**
- * Subsystem + commit workspace (spec §3.2). In narrow windows the details panel
- * becomes a slide-over so no required action or message is ever unreachable.
+ * Subsystem + commit workspace (spec §3.2). The wide layout is GitHub Desktop's
+ * three columns — commit list | changed files | the selected file's diff. In
+ * narrow windows the whole right region becomes a slide-over so no required
+ * action or message is ever unreachable.
  */
 
 type SourceTab = 'commits' | 'changes' | 'dependencies' | 'settings';
@@ -46,9 +47,9 @@ function CommitWorkspaceView() {
   const [statusFilter, setStatusFilter] = useState<CommitStatusKind | 'all'>('all');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [pageSize, setPageSize] = useState(10);
-  // Details sits beside the table as a permanent rail on wide screens (and as a
-  // dismissible overlay below the compact breakpoint). Row clicks only move
-  // focus; they never open or close the panel.
+  // The diff region sits beside the commit list as a permanent rail on wide
+  // screens (and as a dismissible overlay below the compact breakpoint). Row
+  // clicks only move focus; they never open or close the panel.
   const [detailsVisible, setDetailsVisible] = useState(() =>
     typeof window === 'undefined' || typeof window.matchMedia !== 'function'
       ? true
@@ -112,12 +113,10 @@ function CommitWorkspacePanel({
       : true,
   );
   const [pageNumber, setPageNumber] = useState(1);
-  // Dedicated full-diff view (GitHub Desktop History style): replaces the whole
-  // workspace with a back control, a changed-files column and stacked per-file
-  // diffs.
-  const [diffView, setDiffView] = useState<{ sha: string; initialPath: string | null } | null>(
-    null,
-  );
+  // The file selected in the diff view's changed-files column, tagged with the
+  // commit it belongs to so a commit switch falls back to that commit's first
+  // file rather than a stale path. The Changes tab opens a file through it.
+  const [selectedFile, setSelectedFile] = useState<{ sha: string; path: string } | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
@@ -186,30 +185,28 @@ function CommitWorkspacePanel({
     [subsystem?.id, focusedSha, app.targetBranch, app.dataVersion],
   );
 
-  // Row subject/SHA only moves focus; the details rail is permanent on wide
+  // Row subject/SHA only moves focus; the diff region is permanent on wide
   // screens, so the two gestures never conflict.
   const handleFocusSha = (sha: string) => {
     app.setFocusedSha(sha);
   };
 
-  // View Full Diff and every per-file affordance open the dedicated diff
-  // view.
-  const openDiffView = (sha: string, filePath: string | null) => {
+  // Every per-file affordance moves focus and the selected file; the diff is
+  // rendered in place in the workspace, so there is no surface to open.
+  const openFile = (sha: string, filePath: string) => {
     app.setFocusedSha(sha);
-    setDiffView({ sha, initialPath: filePath || null });
-  };
-
-  const showDiff = (sha: string, filePath: string) => {
-    openDiffView(sha, filePath);
+    setSelectedFile({ sha, path: filePath });
+    onSourceTabChange('commits');
   };
 
   // The browser is read-only: row subject/SHA only moves focus, and the
   // single Promote… action hands the commit to the Promote tab through the
   // shared selection, which owns the dialog, delivery modes, exclusions and
   // preflight. The browser never opens a promotion flow itself.
-  const promoteHandoff = (sha: string) => {
+  const promoteHandoff = (sha: string, excludedPaths: string[]) => {
     const commit = listing.find((candidate) => candidate.sha === sha);
     app.setSelectedShas([sha], commit ? [commit] : []);
+    app.setPromotionExcludedPaths(excludedPaths);
     app.setFocusedSha(sha);
     app.navigate('promote-commits');
   };
@@ -232,36 +229,29 @@ function CommitWorkspacePanel({
     );
   }
 
-  const detailsPanel = (
-    <CommitDetailsPanel
+  // The right-hand region of the workspace: the changed-files column and the
+  // selected file's diff, rendered in place. The details are the workspace's
+  // own fetch (the same read feeds the Changes/Dependencies tabs), so mounting
+  // the diff never issues a duplicate commit-details request.
+  const diffPanel = (
+    <CommitDiffView
+      subsystemId={subsystem.id}
+      sha={details.data?.sha ?? focusedSha ?? ''}
+      targetBranch={app.targetBranch}
       details={details.data}
       loading={details.loading}
       error={details.error}
       onRetry={details.reload}
-      targetBranch={app.targetBranch}
+      selectedPath={
+        selectedFile && selectedFile.sha === details.data?.sha ? selectedFile.path : null
+      }
+      onSelectPath={(path) => {
+        if (details.data) setSelectedFile({ sha: details.data.sha, path });
+      }}
       onPromoteHandoff={promoteHandoff}
-      onShowDiff={showDiff}
-      onOpenExternal={app.openExternal}
-      onClose={isWide ? undefined : () => onDetailsVisibleChange(false)}
       mainRepository={app.auth.data?.mainRepository ?? null}
     />
   );
-
-  // Dedicated diff view replaces the whole workspace; the back control returns
-  // here with focus and selection untouched.
-  if (diffView && subsystem) {
-    const diffCommit = listing.find((candidate) => candidate.sha === diffView.sha) ?? null;
-    return (
-      <CommitDiffView
-        subsystemId={subsystem.id}
-        sha={diffView.sha}
-        targetBranch={app.targetBranch}
-        initialPath={diffView.initialPath}
-        commit={diffCommit}
-        onBack={() => setDiffView(null)}
-      />
-    );
-  }
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 gap-2.5">
@@ -355,9 +345,7 @@ function CommitWorkspacePanel({
                 emptyMessage={`No commits were returned from ${subsystem.repository}@${subsystem.sourceBranch}. Check the registry entry and branch protection.`}
               />
             </div>
-            {isWide && detailsVisible ? (
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col">{detailsPanel}</div>
-            ) : null}
+            {isWide && detailsVisible ? diffPanel : null}
           </div>
         ) : null}
 
@@ -371,7 +359,7 @@ function CommitWorkspacePanel({
                   <li key={file.path}>
                     <button
                       type="button"
-                      onClick={() => showDiff(details.data!.sha, file.path)}
+                      onClick={() => openFile(details.data!.sha, file.path)}
                       className="flex h-[29px] w-full items-center gap-2.5 rounded-md border border-line bg-surface px-2.5 text-left hover:bg-hover"
                     >
                       <FileText className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
@@ -499,8 +487,8 @@ function CommitWorkspacePanel({
             className="fixed inset-0 z-30 bg-scrim"
             onClick={() => onDetailsVisibleChange(false)}
           />
-          <aside className="fixed top-16 right-0 bottom-0 z-40 flex w-[380px] max-w-full flex-col border-l border-line bg-surface">
-            {detailsPanel}
+          <aside className="fixed top-16 right-0 bottom-0 z-40 flex w-[720px] max-w-full flex-col border-l border-line bg-surface">
+            {diffPanel}
           </aside>
         </>
       ) : null}

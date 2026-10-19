@@ -292,7 +292,11 @@ function PromoteCommitsPanel({
                 className="w-full"
                 icon={GitPullRequestArrow}
                 disabled={app.selectedShas.length === 0}
-                onClick={() => app.openPromotionDialog(app.selectedShas, selectedCommits)}
+                onClick={() =>
+                  app.openPromotionDialog(app.selectedShas, selectedCommits, {
+                    excludedPaths: app.promotion.excludedPaths,
+                  })
+                }
               >
                 Continue to confirmation
               </Button>

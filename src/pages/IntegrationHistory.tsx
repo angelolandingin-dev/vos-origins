@@ -65,8 +65,8 @@ export function IntegrationHistory() {
     entries.find((entry) => entry.id === selectedId && entry.mainCommitSha) ?? null;
 
   // Fetched on selection only, keyed by the selected event.
-  // The audit replaces the list within the tab while open (the CommitDiffView
-  // precedent): selecting a row opens the full page, Back / Escape returns.
+  // The audit replaces the list within the tab while open: selecting a row
+  // opens the full page, Back / Escape returns.
   const closeAudit = useCallback(() => setSelectedId(null), []);
   const audit = useAsyncData(
     () =>

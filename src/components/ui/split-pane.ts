@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react';
 
 /**
  * The geometry contract for the app's one horizontal splitter, shared by both
- * diff surfaces (`CommitDiffView`, `IntegrationEventAuditPanel`): the
+ * diff panes (`CommitDiffView`, `IntegrationEventAuditPanel`): the
  * changed-files column against the diff. The dragged width lives in the parent
  * and is published as the `--split-width` custom property, so the same number
  * can be handed to a responsive (`md:`) width utility and still stack on narrow

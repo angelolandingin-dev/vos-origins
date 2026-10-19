@@ -33,8 +33,8 @@ import { SplitResizer } from './ui/split-resizer';
 
 /**
  * Full-page audit for one integration event (spec §§3.3/8.3). Replaces the
- * history list within the tab while open — the CommitDiffView precedent — so
- * the audit is read as a page, not glanced at in a side rail.
+ * history list within the tab while open, so the audit is read as a page, not
+ * glanced at in a side rail.
  *
  * The layout follows the commit browser (GitHub Desktop History): the commit
  * is the panel header, a changed-files column sits at the left with the event's
