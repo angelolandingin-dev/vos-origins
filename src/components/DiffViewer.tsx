@@ -75,17 +75,53 @@ function buildSideBySideRows(hunks: DiffHunk[]): Row[] {
   return rows;
 }
 
+/**
+ * The code wash. Dedicated diff tokens — the `status-*-soft` tokens were tuned
+ * for a 6px status dot and read as a faint haze across a full row.
+ */
 function lineClasses(kind: DiffLine['kind'] | 'empty'): string {
   switch (kind) {
     case 'added':
-      return 'bg-status-applied-soft';
+      return 'bg-diff-add';
     case 'removed':
-      return 'bg-status-blocked-soft';
+      return 'bg-diff-del';
     case 'empty':
       return 'bg-raised';
     default:
       return '';
   }
+}
+
+/** GitHub Desktop tints the line-number gutter more strongly than the code wash. */
+function gutterClasses(kind: DiffLine['kind']): string {
+  switch (kind) {
+    case 'added':
+      return 'bg-diff-add-line';
+    case 'removed':
+      return 'bg-diff-del-line';
+    default:
+      return '';
+  }
+}
+
+function signClasses(kind: DiffLine['kind']): string {
+  if (kind === 'added') return 'text-status-applied';
+  if (kind === 'removed') return 'text-status-blocked';
+  return 'text-disabled';
+}
+
+/** Fixed-width line-number cell; its tint follows the row's change kind. */
+function LineNumber({ kind, value }: { kind: DiffLine['kind']; value: number | null }) {
+  return (
+    <span
+      className={cx(
+        'flex w-10 shrink-0 items-center justify-end pr-2 text-right text-disabled tabular-nums select-none',
+        gutterClasses(kind),
+      )}
+    >
+      {value ?? ''}
+    </span>
+  );
 }
 
 /**
@@ -132,14 +168,16 @@ export function DiffViewer({
 
   return (
     <div className="flex min-h-0 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
-        <span className="meta">{diff.language}</span>
-        <span className="mono text-right text-[11px] text-disabled tabular-nums">
+      <div className="flex items-center gap-2 border-b border-line px-2.5 py-2">
+        <span className="min-w-0 truncate text-[11px] text-muted">{diff.language}</span>
+        <span className="mono shrink-0 text-right text-[11px] text-disabled tabular-nums">
           {rows.length} rows
         </span>
-        {diff.binary ? <span className="meta text-status-unknown-ink">binary</span> : null}
+        {diff.binary ? (
+          <span className="shrink-0 text-[11px] text-status-unknown-ink">binary</span>
+        ) : null}
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           <IconButton
             icon={ExternalLink}
             label="Open this file on GitHub"
@@ -182,7 +220,7 @@ function DiffRows({ rows }: { rows: Row[] }) {
               style={{ height: ROW_HEIGHT }}
               className="mono flex items-center gap-3 bg-accent-soft px-2.5 text-[11px] text-accent-ink"
             >
-              <span className="truncate">{row.header}</span>
+              <span className="min-w-0 flex-1 truncate">{row.header}</span>
             </div>
           );
         }
@@ -195,29 +233,21 @@ function DiffRows({ rows }: { rows: Row[] }) {
               key={index}
               style={{ height: ROW_HEIGHT }}
               className={cx(
-                'mono flex items-center gap-2 px-2 text-[11px] leading-none',
+                'mono flex items-stretch text-[11px] leading-none',
                 lineClasses(line.kind),
               )}
             >
-              <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
-                {line.oldLine ?? ''}
-              </span>
-              <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
-                {line.newLine ?? ''}
-              </span>
+              <LineNumber kind={line.kind} value={line.oldLine} />
+              <LineNumber kind={line.kind} value={line.newLine} />
               <span
                 className={cx(
-                  'w-3 shrink-0 text-center select-none',
-                  line.kind === 'added'
-                    ? 'text-status-applied'
-                    : line.kind === 'removed'
-                      ? 'text-status-blocked'
-                      : 'text-disabled',
+                  'flex w-3 shrink-0 items-center justify-center select-none',
+                  signClasses(line.kind),
                 )}
               >
                 {sign}
               </span>
-              <span className="min-w-0 truncate text-fg" title={line.text}>
+              <span className="min-w-0 flex-1 truncate pr-2 pl-1 text-fg" title={line.text}>
                 {line.text || ' '}
               </span>
             </div>
@@ -233,9 +263,7 @@ function DiffRows({ rows }: { rows: Row[] }) {
             {(['left', 'right'] as const).map((side) => {
               const line = side === 'left' ? row.left : row.right;
               if (!line) {
-                return (
-                  <div key={side} className={cx('flex items-center px-2', lineClasses('empty'))} />
-                );
+                return <div key={side} className={cx('flex', lineClasses('empty'))} />;
               }
               const lineNumber = side === 'left' ? line.oldLine : line.newLine;
               const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
@@ -243,27 +271,21 @@ function DiffRows({ rows }: { rows: Row[] }) {
                 <div
                   key={side}
                   className={cx(
-                    'flex min-w-0 items-center gap-2 px-2',
+                    'flex min-w-0 items-stretch',
                     lineClasses(line.kind),
                     side === 'right' && 'border-l border-line',
                   )}
                 >
-                  <span className="w-10 shrink-0 text-right text-disabled tabular-nums select-none">
-                    {lineNumber ?? ''}
-                  </span>
+                  <LineNumber kind={line.kind} value={lineNumber} />
                   <span
                     className={cx(
-                      'w-3 shrink-0 text-center select-none',
-                      line.kind === 'added'
-                        ? 'text-status-applied'
-                        : line.kind === 'removed'
-                          ? 'text-status-blocked'
-                          : 'text-disabled',
+                      'flex w-3 shrink-0 items-center justify-center select-none',
+                      signClasses(line.kind),
                     )}
                   >
                     {sign}
                   </span>
-                  <span className="min-w-0 truncate text-fg" title={line.text}>
+                  <span className="min-w-0 flex-1 truncate pr-2 pl-1 text-fg" title={line.text}>
                     {line.text || ' '}
                   </span>
                 </div>

@@ -325,7 +325,10 @@ export function CommitDetailsPanel({
                       >
                         {glyph.glyph}
                       </span>
-                      <span className="mono min-w-0 flex-1 text-xs break-all text-fg tabular-nums">
+                      <span
+                        className="mono min-w-0 flex-1 truncate text-xs text-fg tabular-nums"
+                        title={file.path}
+                      >
                         {file.path}
                       </span>
                       <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
@@ -341,7 +344,10 @@ export function CommitDetailsPanel({
                       ) : null}
                     </button>
                     {file.previousPath ? (
-                      <p className="mono px-2.5 pl-7 text-[11px] break-all text-disabled">
+                      <p
+                        className="mono truncate px-2.5 pl-7 text-[11px] text-disabled"
+                        title={`renamed from ${file.previousPath}`}
+                      >
                         renamed from {file.previousPath}
                       </p>
                     ) : null}

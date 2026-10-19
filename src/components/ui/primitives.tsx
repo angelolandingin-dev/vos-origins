@@ -1,4 +1,10 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, Ref } from 'react';
+import type {
+  ButtonHTMLAttributes,
+  CSSProperties,
+  InputHTMLAttributes,
+  ReactNode,
+  Ref,
+} from 'react';
 import { useEffect, useId, useRef } from 'react';
 import {
   CircleAlert,
@@ -164,6 +170,7 @@ export function Panel({
   children,
   className,
   bodyClassName,
+  bodyStyle,
   headerClassName,
   as: Tag = 'section',
 }: {
@@ -173,6 +180,8 @@ export function Panel({
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
+  /** Inline style for the body — used to publish a resizable pane's width. */
+  bodyStyle?: CSSProperties;
   headerClassName?: string;
   as?: 'section' | 'div' | 'aside';
 }) {
@@ -187,7 +196,9 @@ export function Panel({
           {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
         </header>
       ) : null}
-      <div className={cx('min-h-0 flex-1', bodyClassName)}>{children}</div>
+      <div style={bodyStyle} className={cx('min-h-0 flex-1', bodyClassName)}>
+        {children}
+      </div>
     </Tag>
   );
 }

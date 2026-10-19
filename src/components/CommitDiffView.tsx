@@ -26,6 +26,8 @@ import {
   LoadingState,
   Panel,
 } from './ui/primitives';
+import { SPLIT_DEFAULT_WIDTH, splitWidthStyle } from './ui/split-pane';
+import { SplitResizer } from './ui/split-resizer';
 
 /**
  * Dedicated full-diff view (GitHub Desktop History style). A separate
@@ -69,7 +71,8 @@ export function CommitDiffView({
   onBack,
 }: CommitDiffViewProps) {
   const app = useApp();
-  const [mode, setMode] = useState<'side' | 'unified'>('side');
+  const [mode, setMode] = useState<'side' | 'unified'>('unified');
+  const [filesWidth, setFilesWidth] = useState(SPLIT_DEFAULT_WIDTH);
   const [filter, setFilter] = useState('');
   const [excluded, setExcluded] = useState<string[]>([]);
   const [collapsed, setCollapsed] = useState<string[]>([]);
@@ -186,6 +189,7 @@ export function CommitDiffView({
     <Panel
       className="min-h-0 min-w-0 flex-1"
       bodyClassName="flex min-h-0 flex-1 flex-col"
+      bodyStyle={splitWidthStyle(filesWidth)}
       title={
         <span className="flex min-w-0 items-center gap-2">
           <Button
@@ -274,7 +278,7 @@ export function CommitDiffView({
         />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-          <div className="flex max-h-[220px] shrink-0 flex-col border-b border-line md:max-h-none md:w-[340px] md:border-r md:border-b-0">
+          <div className="flex max-h-[220px] min-w-0 shrink-0 flex-col border-b border-line md:max-h-none md:w-[var(--split-width)] md:border-b-0">
             <div className="flex h-[29px] shrink-0 items-center justify-between gap-2 px-2.5">
               <p className="text-[11px] font-semibold tracking-wide text-muted uppercase tabular-nums">
                 {files.length} changed file{files.length === 1 ? '' : 's'}
@@ -337,13 +341,16 @@ export function CommitDiffView({
                       >
                         {glyph.glyph}
                       </span>
-                      <span className="mono min-w-0 flex-1 text-xs break-all text-fg tabular-nums">
+                      <span
+                        className="mono min-w-0 flex-1 truncate text-xs text-fg tabular-nums"
+                        title={file.path}
+                      >
                         {file.path}
                       </span>
-                      <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
+                      <span className="mono w-11 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                         +{file.additions}
                       </span>
-                      <span className="mono shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
+                      <span className="mono w-11 shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
                         −{file.deletions}
                       </span>
                     </button>
@@ -358,9 +365,15 @@ export function CommitDiffView({
             </p>
           </div>
 
+          <SplitResizer
+            width={filesWidth}
+            onWidthChange={setFilesWidth}
+            label="Resize the changed-files column"
+          />
+
           <div
             ref={scrollerRef}
-            className="scroll-area min-h-0 flex-1 overflow-y-auto bg-ground"
+            className="scroll-area min-h-0 min-w-0 flex-1 overflow-y-auto bg-ground"
             tabIndex={0}
             role="region"
             aria-label={`Full diff of ${details.data.shortSha}`}
@@ -397,16 +410,19 @@ export function CommitDiffView({
                     >
                       {glyph.glyph}
                     </span>
-                    <span className="mono min-w-0 flex-1 text-xs break-all text-fg tabular-nums">
+                    <span
+                      className="mono min-w-0 flex-1 truncate text-xs text-fg tabular-nums"
+                      title={file.path}
+                    >
                       {file.path}
                     </span>
                     {isExcluded ? (
                       <span className="meta shrink-0 text-status-unknown-ink">excluded</span>
                     ) : null}
-                    <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
+                    <span className="mono w-11 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                       +{file.additions}
                     </span>
-                    <span className="mono shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
+                    <span className="mono w-11 shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
                       −{file.deletions}
                     </span>
                   </div>

@@ -27,6 +27,8 @@ import { StatusBadge } from './StatusBadge';
 import { cx } from './ui/cx';
 import { formatDateTime } from './ui/format';
 import { Button, EmptyState, ErrorState, KeyValue, LoadingState, Panel } from './ui/primitives';
+import { SPLIT_DEFAULT_WIDTH, splitWidthStyle } from './ui/split-pane';
+import { SplitResizer } from './ui/split-resizer';
 
 /**
  * Full-page audit for one integration event (spec §§3.3/8.3). Replaces the
@@ -97,7 +99,8 @@ export function IntegrationEventAuditPage({
   const app = useApp();
   const [fileFilter, setFileFilter] = useState('');
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [mode, setMode] = useState<'side' | 'unified'>('side');
+  const [mode, setMode] = useState<'side' | 'unified'>('unified');
+  const [filesWidth, setFilesWidth] = useState(SPLIT_DEFAULT_WIDTH);
 
   // Escape returns to the event list — the CommitDiffView idiom.
   useEffect(() => {
@@ -194,6 +197,7 @@ export function IntegrationEventAuditPage({
     <Panel
       className="min-h-0 min-w-0 flex-1"
       bodyClassName="flex min-h-0 flex-1 flex-col md:flex-row"
+      bodyStyle={splitWidthStyle(filesWidth)}
       title={
         <span className="flex min-w-0 items-center gap-2">
           <Button
@@ -235,7 +239,7 @@ export function IntegrationEventAuditPage({
       }
     >
       {/* Changed-files column, with the event's own audit context beneath it. */}
-      <div className="flex max-h-[45%] shrink-0 flex-col border-b border-line md:max-h-none md:w-[340px] md:border-r md:border-b-0">
+      <div className="flex max-h-[45%] min-w-0 shrink-0 flex-col border-b border-line md:max-h-none md:w-[var(--split-width)] md:border-b-0">
         <div className="flex h-[29px] shrink-0 items-center justify-between gap-2 px-2.5">
           <p className="text-[11px] font-semibold tracking-wide text-muted uppercase tabular-nums">
             {audit.changes.length} changed file{audit.changes.length === 1 ? '' : 's'}
@@ -473,8 +477,14 @@ export function IntegrationEventAuditPage({
         </div>
       </div>
 
+      <SplitResizer
+        width={filesWidth}
+        onWidthChange={setFilesWidth}
+        label="Resize the changed-files column"
+      />
+
       {/* Selected file's diff — a file header and its hunks. */}
-      <div className="scroll-area min-h-0 flex-1 overflow-y-auto bg-ground">
+      <div className="scroll-area min-h-0 min-w-0 flex-1 overflow-y-auto bg-ground">
         {activeChange && activeGlyph ? (
           <>
             <div className="flex min-h-[29px] items-center gap-2 border-b border-line bg-raised px-2.5 py-1">
