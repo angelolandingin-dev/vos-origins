@@ -14,6 +14,7 @@ import {
 
 import type { ApiError } from '../api/invoke';
 import type { ChangedFile, CommitDetails, FileIntegrationPolicy } from '../api/types';
+import { PathLabel } from './PathLabel';
 import { CommitStatusBadge } from './StatusBadge';
 import { cx } from './ui/cx';
 import { formatDateTime } from './ui/format';
@@ -325,12 +326,11 @@ export function CommitDetailsPanel({
                       >
                         {glyph.glyph}
                       </span>
-                      <span
-                        className="mono min-w-0 flex-1 truncate text-xs text-fg tabular-nums"
-                        title={file.path}
-                      >
-                        {file.path}
-                      </span>
+                      <PathLabel
+                        path={file.path}
+                        className="flex-1"
+                        title={`${file.path}\n${policy.note}`}
+                      />
                       <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                         +{file.additions}
                       </span>

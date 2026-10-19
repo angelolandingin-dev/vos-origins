@@ -21,6 +21,7 @@ import type {
   TargetBranchList,
   ValidationFinding,
 } from '../api/types';
+import { PathLabel } from './PathLabel';
 import { RevertsNewerLine } from './RevertsNewer';
 import { CommitStatusBadge } from './StatusBadge';
 import { CommitFileList } from './CommitFileList';
@@ -201,12 +202,8 @@ function ExpandablePathList({ title, paths }: { title: string; paths: string[] }
       </summary>
       <ul className="divide-y divide-line border-t border-line max-h-32 overflow-y-auto">
         {paths.map((path) => (
-          <li
-            key={path}
-            className="mono flex h-[29px] items-center truncate px-2.5 text-[11px] text-muted tabular-nums"
-            title={path}
-          >
-            <span className="truncate">{path}</span>
+          <li key={path} className="flex h-[29px] items-center px-2.5">
+            <PathLabel path={path} className="flex-1 text-[11px]" muted />
           </li>
         ))}
       </ul>
@@ -652,9 +649,7 @@ function PromotionDialogContent({
                         aria-hidden="true"
                       />
                       <div className="min-w-0 flex-1">
-                        <p className="mono truncate text-[11px] text-fg" title={file.path}>
-                          {file.path}
-                        </p>
+                        <PathLabel path={file.path} className="text-[11px]" />
                         {file.revertsNewer ? <RevertsNewerLine warn={file.revertsNewer} /> : null}
                       </div>
                       {isExcluded(file.path) ? (
@@ -680,12 +675,7 @@ function PromotionDialogContent({
                         className="h-3 w-3 shrink-0 text-status-blocked"
                         aria-hidden="true"
                       />
-                      <span
-                        className="mono min-w-0 flex-1 truncate text-[11px] text-fg"
-                        title={path}
-                      >
-                        {path}
-                      </span>
+                      <PathLabel path={path} className="flex-1 text-[11px]" />
                       {isExcluded(path) ? (
                         <span className="shrink-0 text-[11px] text-muted">excluded</span>
                       ) : (

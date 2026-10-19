@@ -23,6 +23,7 @@ import type {
 import { useApp, useAsyncData } from '../app/context';
 import { DiffViewer } from './DiffViewer';
 import { INTEGRATION_KIND_META } from './integrationKindMeta';
+import { PathLabel } from './PathLabel';
 import { StatusBadge } from './StatusBadge';
 import { cx } from './ui/cx';
 import { formatDateTime } from './ui/format';
@@ -239,7 +240,7 @@ export function IntegrationEventAuditPage({
       }
     >
       {/* Changed-files column, with the event's own audit context beneath it. */}
-      <div className="flex max-h-[45%] min-w-0 shrink-0 flex-col border-b border-line md:max-h-none md:w-[var(--split-width)] md:border-b-0">
+      <div className="flex max-h-[45%] min-w-0 shrink-0 flex-col border-b border-line md:max-h-none md:w-[var(--split-width)] md:shrink md:border-b-0">
         <div className="flex h-[29px] shrink-0 items-center justify-between gap-2 px-2.5">
           <p className="text-[11px] font-semibold tracking-wide text-muted uppercase tabular-nums">
             {audit.changes.length} changed file{audit.changes.length === 1 ? '' : 's'}
@@ -307,9 +308,7 @@ export function IntegrationEventAuditPage({
                       >
                         {glyph.glyph}
                       </span>
-                      <span className="mono min-w-0 flex-1 truncate text-xs text-fg tabular-nums">
-                        {change.path}
-                      </span>
+                      <PathLabel path={change.path} className="flex-1" />
                       <span className="mono w-11 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                         +{change.additions}
                       </span>
@@ -484,7 +483,7 @@ export function IntegrationEventAuditPage({
       />
 
       {/* Selected file's diff — a file header and its hunks. */}
-      <div className="scroll-area min-h-0 min-w-0 flex-1 overflow-y-auto bg-ground">
+      <div className="scroll-area min-h-0 min-w-0 flex-1 overflow-y-auto bg-ground md:min-w-[320px]">
         {activeChange && activeGlyph ? (
           <>
             <div className="flex min-h-[29px] items-center gap-2 border-b border-line bg-raised px-2.5 py-1">
@@ -494,12 +493,7 @@ export function IntegrationEventAuditPage({
               >
                 {activeGlyph.glyph}
               </span>
-              <span
-                className="mono min-w-0 flex-1 truncate text-xs text-fg tabular-nums"
-                title={activeChange.path}
-              >
-                {activeChange.path}
-              </span>
+              <PathLabel path={activeChange.path} className="flex-1" />
               <span className="meta shrink-0">{activeChange.change}</span>
               <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                 +{activeChange.additions}

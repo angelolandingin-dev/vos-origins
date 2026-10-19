@@ -80,7 +80,7 @@
   --color-diff-del-line: var(--diff-del-line);
 
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
+  --font-mono: SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 
   --text-badge: 0.5625rem;
   --text-badge--line-height: 1;
@@ -317,7 +317,7 @@
 }
 
 @utility panel-title {
-  @apply truncate text-xs font-semibold tracking-tight text-fg;
+  @apply truncate text-xs font-semibold text-fg;
 }
 
 @utility muted {
@@ -325,7 +325,7 @@
 }
 
 @utility mono {
-  @apply font-mono text-xs tracking-tight;
+  @apply font-mono text-xs;
 }
 
 /* Focus contract: accent border + 1px focus ring. */
@@ -426,7 +426,7 @@
   }
 
   body {
-    @apply bg-ground font-sans text-fg antialiased;
+    @apply bg-ground font-sans text-fg;
     font-size: 12px;
     line-height: 1.5;
     overflow: hidden;

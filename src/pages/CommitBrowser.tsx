@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { GitBranch, RefreshCw } from 'lucide-react';
 
 import { api, asApiError } from '../api/invoke';
-import { useApp } from '../app/context';
+import { useApp, useAsyncData } from '../app/context';
 import { CommitWorkspace } from '../components/CommitWorkspace';
-import { SubsystemFilterList } from '../components/SubsystemFilterList';
+import { SubsystemSelector } from '../components/SubsystemSelector';
 import { Button, EmptyState, LoadingState, Select } from '../components/ui/primitives';
 
 /** Commit Browser (spec §3.3): commit-focused framing of the shared workspace. */
@@ -13,6 +13,15 @@ export function CommitBrowser() {
   const [pulling, setPulling] = useState(false);
   const subsystems = app.subsystems.data ?? [];
   const branches = (app.targetBranches.data?.branches ?? []).filter((branch) => branch.allowed);
+
+  // The selector's right-aligned count, fetched once for every subsystem (the
+  // Dashboard's scale fix) so the moved control keeps the count it always had.
+  const counts = useAsyncData(async () => {
+    const summaries = await api.getSubsystemSummaries();
+    const byId: Record<string, number> = {};
+    for (const summary of summaries) byId[summary.subsystemId] = summary.total;
+    return byId;
+  }, [app.dataVersion]);
 
   const pullLatest = () => {
     setPulling(true);
@@ -44,6 +53,14 @@ export function CommitBrowser() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {subsystems.length > 0 ? (
+            <SubsystemSelector
+              subsystems={subsystems}
+              selectedId={app.selectedSubsystemId}
+              onSelect={(id) => app.selectSubsystem(id)}
+              counts={counts.data ?? undefined}
+            />
+          ) : null}
           <span className="flex items-center gap-2">
             <span className="text-[11px] tracking-wide text-muted uppercase">
               Status for target
@@ -76,22 +93,7 @@ export function CommitBrowser() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2.5 px-3 pb-3 lg:flex-row">
-        {subsystems.length > 0 ? (
-          <aside
-            aria-label="Subsystem list"
-            className="flex shrink-0 flex-col overflow-hidden rounded-md border border-line bg-surface lg:w-[260px]"
-          >
-            <div className="max-h-[220px] min-h-0 flex-1 lg:max-h-none">
-              <SubsystemFilterList
-                subsystems={subsystems}
-                selectedId={app.selectedSubsystemId}
-                onSelect={(id) => app.selectSubsystem(id)}
-              />
-            </div>
-          </aside>
-        ) : null}
-
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 px-3 pb-3">
         <div className="flex min-h-0 flex-1">
           {app.subsystems.loading && subsystems.length === 0 ? (
             <LoadingState label="Loading the subsystem registry…" />

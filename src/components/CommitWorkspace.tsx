@@ -14,6 +14,7 @@ import { useApp, useAsyncData } from '../app/context';
 import { CommitDetailsPanel } from './CommitDetails';
 import { CommitDiffView } from './CommitDiffView';
 import { CommitTable } from './CommitTable';
+import { PathLabel } from './PathLabel';
 import { cx } from './ui/cx';
 import { formatDateTime } from './ui/format';
 import {
@@ -320,28 +321,44 @@ function CommitWorkspacePanel({
         />
 
         {sourceTab === 'commits' ? (
-          <CommitTable
-            page={commitPage.data}
-            loading={commitPage.loading}
-            error={commitPage.error}
-            onRetry={commitPage.reload}
-            targetBranch={app.targetBranch}
-            search={search}
-            onSearchChange={handleSearchChange}
-            statusFilter={statusFilter}
-            onStatusFilterChange={handleStatusFilterChange}
-            sort={sort}
-            onSortChange={handleSortChange}
-            pageNumber={pageNumber}
-            onPageChange={setPageNumber}
-            pageSize={pageSize}
-            onPageSizeChange={handlePageSizeChange}
-            focusedSha={focusedSha}
-            onFocusSha={handleFocusSha}
-            detailsVisible={detailsVisible}
-            onToggleDetails={() => onDetailsVisibleChange(!detailsVisible)}
-            emptyMessage={`No commits were returned from ${subsystem.repository}@${subsystem.sourceBranch}. Check the registry entry and branch protection.`}
-          />
+          // GitHub Desktop shape: the commit list is a left column, the
+          // details/diff fill the rest. Below the wide breakpoint the list
+          // keeps the full width and the details become the overlay below.
+          <div className="flex min-h-0 flex-1">
+            <div
+              className={cx(
+                'flex min-h-0 min-w-0 flex-col border-line',
+                isWide ? 'w-[380px] shrink-0 border-r' : 'flex-1',
+              )}
+            >
+              <CommitTable
+                layout="sidebar"
+                page={commitPage.data}
+                loading={commitPage.loading}
+                error={commitPage.error}
+                onRetry={commitPage.reload}
+                targetBranch={app.targetBranch}
+                search={search}
+                onSearchChange={handleSearchChange}
+                statusFilter={statusFilter}
+                onStatusFilterChange={handleStatusFilterChange}
+                sort={sort}
+                onSortChange={handleSortChange}
+                pageNumber={pageNumber}
+                onPageChange={setPageNumber}
+                pageSize={pageSize}
+                onPageSizeChange={handlePageSizeChange}
+                focusedSha={focusedSha}
+                onFocusSha={handleFocusSha}
+                detailsVisible={detailsVisible}
+                onToggleDetails={() => onDetailsVisibleChange(!detailsVisible)}
+                emptyMessage={`No commits were returned from ${subsystem.repository}@${subsystem.sourceBranch}. Check the registry entry and branch protection.`}
+              />
+            </div>
+            {isWide && detailsVisible ? (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">{detailsPanel}</div>
+            ) : null}
+          </div>
         ) : null}
 
         {sourceTab === 'changes' ? (
@@ -358,9 +375,7 @@ function CommitWorkspacePanel({
                       className="flex h-[29px] w-full items-center gap-2.5 rounded-md border border-line bg-surface px-2.5 text-left hover:bg-hover"
                     >
                       <FileText className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
-                      <span className="mono min-w-0 flex-1 truncate text-fg tabular-nums">
-                        {file.path}
-                      </span>
+                      <PathLabel path={file.path} className="flex-1" />
                       <span className="meta">{file.change}</span>
                       <span className="mono w-12 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                         +{file.additions}
@@ -476,17 +491,7 @@ function CommitWorkspacePanel({
         ) : null}
       </Panel>
 
-      {isWide ? (
-        detailsVisible ? (
-          <Panel
-            as="aside"
-            className="w-[340px] shrink-0"
-            bodyClassName="flex min-h-0 flex-1 flex-col"
-          >
-            {detailsPanel}
-          </Panel>
-        ) : null
-      ) : detailsVisible ? (
+      {!isWide && detailsVisible ? (
         <>
           <button
             type="button"

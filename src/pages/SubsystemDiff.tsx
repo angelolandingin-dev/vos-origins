@@ -11,6 +11,7 @@ import type {
 } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
 import { resolveDiffSelection } from '../components/diffResolve';
+import { PathLabel } from '../components/PathLabel';
 import { RevertsNewerLine } from '../components/RevertsNewer';
 import { revertsNewerText } from '../components/revertsNewerText';
 import { CommitStatusBadge } from '../components/StatusBadge';
@@ -341,9 +342,9 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                         type="button"
                         onClick={() => focusPath(entry.path)}
                         title={entry.path}
-                        className="min-w-0 flex-1 truncate text-left"
+                        className="min-w-0 flex-1 text-left"
                       >
-                        <span className="mono text-fg">{entry.path}</span>
+                        <PathLabel path={entry.path} />
                       </button>
                       {entry.revertsNewer ? (
                         <span title={revertsNewerText(entry.revertsNewer)}>
@@ -450,9 +451,7 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                     {selectedReverts.map((entry) =>
                       entry.revertsNewer ? (
                         <div key={entry.path}>
-                          <p className="mono truncate text-muted" title={entry.path}>
-                            {entry.path}
-                          </p>
+                          <PathLabel path={entry.path} muted />
                           <RevertsNewerLine warn={entry.revertsNewer} />
                         </div>
                       ) : null,
@@ -497,12 +496,8 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                   </summary>
                   <ul className="divide-y divide-line border-t border-line max-h-32 overflow-y-auto">
                     {resolution.excludedPaths.map((path) => (
-                      <li
-                        key={path}
-                        className="mono flex h-[29px] items-center truncate px-2.5 text-[11px] text-muted tabular-nums"
-                        title={path}
-                      >
-                        <span className="truncate">{path}</span>
+                      <li key={path} className="flex h-[29px] items-center px-2.5">
+                        <PathLabel path={path} className="flex-1 text-[11px]" muted />
                       </li>
                     ))}
                   </ul>
@@ -576,9 +571,7 @@ function FileDetail({
   return (
     <div className="space-y-3">
       <div className="min-w-0">
-        <p className="mono truncate text-fg" title={entry.path}>
-          {entry.path}
-        </p>
+        <PathLabel path={entry.path} />
         <p className="mt-1 flex items-center gap-2">
           <BucketMark bucket={entry.bucket} />
           <span className="text-[11px] text-muted">{entry.change}</span>

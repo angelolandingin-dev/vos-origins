@@ -1,4 +1,5 @@
 import type { PromotionPreflight } from '../api/types';
+import { PathLabel } from './PathLabel';
 import { Checkbox } from './ui/primitives';
 
 /**
@@ -102,12 +103,7 @@ export function CommitFileList({
                           : `Include ${file.path} in this promotion`
                     }
                   />
-                  <span
-                    className={`mono min-w-0 flex-1 truncate text-[11px] ${included ? 'text-fg' : 'text-muted'}`}
-                    title={file.path}
-                  >
-                    {file.path}
-                  </span>
+                  <PathLabel path={file.path} className="flex-1 text-[11px]" muted={!included} />
                   <span className="shrink-0 text-[11px] text-muted">{kind}</span>
                 </li>
               );

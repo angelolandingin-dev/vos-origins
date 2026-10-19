@@ -80,7 +80,23 @@ export function Select({
           <SelectPrimitive.ScrollUpButton className="flex h-[25px] items-center justify-center bg-overlay text-muted">
             <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
           </SelectPrimitive.ScrollUpButton>
-          <SelectPrimitive.Viewport className="max-h-[230px] overflow-y-auto p-1">
+          {/*
+            The viewport is the element to cap, not the trigger or the content
+            shell. Radix publishes the space left in the window as
+            `--radix-select-content-available-height` on the content (inherited
+            here); subtracting the two 25px scroll buttons keeps the whole popup
+            inside that space. `overscroll-contain` plus a wheel
+            stop-propagation keep a wheel gesture at the end of the list from
+            scrolling the surface behind it.
+          */}
+          <SelectPrimitive.Viewport
+            className="overflow-y-auto overscroll-contain p-1"
+            style={{
+              maxHeight:
+                'min(230px, max(0px, calc(var(--radix-select-content-available-height) - 50px)))',
+            }}
+            onWheel={(event) => event.stopPropagation()}
+          >
             {options.map((option) => (
               <SelectPrimitive.Item
                 key={option.value}

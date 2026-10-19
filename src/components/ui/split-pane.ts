@@ -9,9 +9,10 @@ import type { CSSProperties } from 'react';
  * windows. The handle itself is `SplitResizer` (split-resizer.tsx).
  */
 
-/** Wide enough for a 40-character path; narrow enough to leave the diff usable. */
+/** Wide enough for a 40-character path; the ceiling is generous because reading a
+ *  long path is the point of the column, and the diff keeps its own `min-w-0`. */
 export const SPLIT_MIN_WIDTH = 240;
-export const SPLIT_MAX_WIDTH = 560;
+export const SPLIT_MAX_WIDTH = 900;
 export const SPLIT_DEFAULT_WIDTH = 340;
 
 export function clampSplitWidth(width: number): number {

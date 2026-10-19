@@ -14,6 +14,7 @@ import { api } from '../api/invoke';
 import type { ChangedFile, CommitSummary } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
 import { DiffViewer } from './DiffViewer';
+import { PathLabel } from './PathLabel';
 import { CommitStatusBadge } from './StatusBadge';
 import { cx } from './ui/cx';
 import { formatDateTime } from './ui/format';
@@ -278,7 +279,14 @@ export function CommitDiffView({
         />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-          <div className="flex max-h-[220px] min-w-0 shrink-0 flex-col border-b border-line md:max-h-none md:w-[var(--split-width)] md:border-b-0">
+          {/*
+            `md:shrink` (not `shrink-0`) lets the files column give width back
+            when the window is narrower than the dragged split, so a wide split
+            can never push the diff column off-screen. The diff keeps a floor so
+            its fixed-width header/row parts cannot be squeezed into a
+            horizontal overflow.
+          */}
+          <div className="flex max-h-[220px] min-w-0 shrink-0 flex-col border-b border-line md:max-h-none md:w-[var(--split-width)] md:shrink md:border-b-0">
             <div className="flex h-[29px] shrink-0 items-center justify-between gap-2 px-2.5">
               <p className="text-[11px] font-semibold tracking-wide text-muted uppercase tabular-nums">
                 {files.length} changed file{files.length === 1 ? '' : 's'}
@@ -341,12 +349,7 @@ export function CommitDiffView({
                       >
                         {glyph.glyph}
                       </span>
-                      <span
-                        className="mono min-w-0 flex-1 truncate text-xs text-fg tabular-nums"
-                        title={file.path}
-                      >
-                        {file.path}
-                      </span>
+                      <PathLabel path={file.path} className="flex-1" />
                       <span className="mono w-11 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                         +{file.additions}
                       </span>
@@ -373,7 +376,7 @@ export function CommitDiffView({
 
           <div
             ref={scrollerRef}
-            className="scroll-area min-h-0 min-w-0 flex-1 overflow-y-auto bg-ground"
+            className="scroll-area min-h-0 min-w-0 flex-1 overflow-y-auto bg-ground md:min-w-[320px]"
             tabIndex={0}
             role="region"
             aria-label={`Full diff of ${details.data.shortSha}`}
@@ -410,12 +413,7 @@ export function CommitDiffView({
                     >
                       {glyph.glyph}
                     </span>
-                    <span
-                      className="mono min-w-0 flex-1 truncate text-xs text-fg tabular-nums"
-                      title={file.path}
-                    >
-                      {file.path}
-                    </span>
+                    <PathLabel path={file.path} className="flex-1" />
                     {isExcluded ? (
                       <span className="meta shrink-0 text-status-unknown-ink">excluded</span>
                     ) : null}

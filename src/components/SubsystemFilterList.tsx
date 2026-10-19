@@ -1,14 +1,9 @@
 import { useMemo, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 
-import type { ConnectivityState, SubsystemSummary } from '../api/types';
+import type { SubsystemSummary } from '../api/types';
+import { CONNECTIVITY_DOT } from './subsystemConnectivity';
 import { cx } from './ui/cx';
-
-const CONNECTIVITY_DOT: Record<ConnectivityState, { dot: string; label: string }> = {
-  connected: { dot: 'bg-status-applied', label: 'Connected' },
-  degraded: { dot: 'bg-status-unknown', label: 'Degraded' },
-  unknown: { dot: 'bg-status-superseded', label: 'Unknown' },
-};
 
 /**
  * Filterable subsystem list — the scale fix for the old segmented control.
@@ -23,12 +18,15 @@ export function SubsystemFilterList({
   onSelect,
   counts,
   ariaLabel = 'Subsystem filter',
+  className,
 }: {
   subsystems: SubsystemSummary[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   counts?: Record<string, number>;
   ariaLabel?: string;
+  /** Layout utilities for the root (e.g. `flex-1` inside a capped popover). */
+  className?: string;
 }) {
   const [query, setQuery] = useState('');
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -66,7 +64,7 @@ export function SubsystemFilterList({
   };
 
   return (
-    <div className="flex min-h-0 flex-col">
+    <div className={cx('flex min-h-0 flex-col', className)}>
       <div className="relative shrink-0 px-2 pt-2 pb-1.5">
         <Search
           className="pointer-events-none absolute top-1/2 left-5 h-3.5 w-3.5 -translate-y-1/2 text-disabled"
@@ -98,7 +96,11 @@ export function SubsystemFilterList({
         />
       </div>
 
-      <ul aria-label="Subsystems" className="scroll-area min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <ul
+        aria-label="Subsystems"
+        className="scroll-area min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2"
+        onWheel={(event) => event.stopPropagation()}
+      >
         {filtered.length === 0 ? (
           <li className="px-1 py-2 text-[11px] text-muted">No subsystems match.</li>
         ) : (

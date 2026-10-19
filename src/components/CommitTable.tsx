@@ -50,6 +50,14 @@ export interface CommitTableProps {
   error: ApiError | null;
   onRetry: () => void;
   targetBranch: string;
+  /**
+   * `table` is the full-width column armature (Promote Commits). `sidebar` is
+   * the GitHub Desktop commit list: the same rows, the same selection
+   * semantics and the same controls, laid out as a two-line list for the
+   * browser's left column. It is the same component on purpose — a second list
+   * would fork the selection.
+   */
+  layout?: 'table' | 'sidebar';
   search: string;
   onSearchChange: (value: string) => void;
   statusFilter: CommitStatusKind | 'all';
@@ -78,6 +86,22 @@ export interface CommitTableProps {
   onToggleDetails?: () => void;
   toolbarExtras?: ReactNode;
   emptyMessage?: string;
+}
+
+/**
+ * The second line of a commit row, shared by both layouts: author, relative
+ * date, and the flags. This is why the sidebar can drop the separate AUTHOR and
+ * AUTHORED columns — their data still reaches the row.
+ */
+function commitMeta(commit: CommitSummary): string {
+  return [
+    commit.authorLogin ?? commit.authorName,
+    commit.relativeTime,
+    commit.isMerge ? 'merge commit' : null,
+    commit.touchesManifest ? 'manifest change' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 /** Timeline dot: status colour lives on this 10px dot only — never on the row. */
@@ -112,6 +136,7 @@ export function CommitTable({
   error,
   onRetry,
   targetBranch,
+  layout = 'table',
   search,
   onSearchChange,
   statusFilter,
@@ -160,86 +185,114 @@ export function CommitTable({
   const rangeStart = total === 0 ? 0 : (pageNumber - 1) * pageSize + 1;
   const rangeEnd = Math.min(pageNumber * pageSize, total);
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
-        <div className="relative min-w-[180px] flex-1">
-          <Search
-            className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-disabled"
-            aria-hidden="true"
-          />
-          <input
-            type="search"
-            value={search}
-            onChange={(event) => onSearchChange(event.target.value)}
-            placeholder="Search commits…"
-            aria-label="Search commits by message, SHA, author or tag"
-            className="input pl-9"
-          />
-        </div>
+  const isSidebar = layout === 'sidebar';
 
-        <Select
-          ariaLabel="Filter commits by integration status"
-          className="w-[190px]"
-          value={statusFilter}
-          onValueChange={(next) => onStatusFilterChange(next as CommitStatusKind | 'all')}
-          options={STATUS_FILTER_OPTIONS.map((option) => ({
-            value: option.value,
-            label: option.label,
-          }))}
-        />
+  const searchInput = (
+    <>
+      <Search
+        className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-disabled"
+        aria-hidden="true"
+      />
+      <input
+        type="search"
+        value={search}
+        onChange={(event) => onSearchChange(event.target.value)}
+        placeholder="Search commits…"
+        aria-label="Search commits by message, SHA, author or tag"
+        className="input pl-9"
+      />
+    </>
+  );
 
+  const statusSelect = (
+    <Select
+      ariaLabel="Filter commits by integration status"
+      className={isSidebar ? 'min-w-0 flex-1' : 'w-[190px]'}
+      value={statusFilter}
+      onValueChange={(next) => onStatusFilterChange(next as CommitStatusKind | 'all')}
+      options={STATUS_FILTER_OPTIONS.map((option) => ({
+        value: option.value,
+        label: option.label,
+      }))}
+    />
+  );
+
+  const sortButton = (
+    <Button
+      size="sm"
+      variant="secondary"
+      icon={sort === 'newest' ? ArrowDownUp : ArrowUpDown}
+      onClick={() => onSortChange(sort === 'newest' ? 'oldest' : 'newest')}
+      title={
+        sort === 'newest'
+          ? 'Sorted newest first — click for oldest first'
+          : 'Sorted oldest first — click for newest first'
+      }
+    >
+      {sort === 'newest' ? 'Newest' : 'Oldest'}
+    </Button>
+  );
+
+  const selectionControls = (
+    <>
+      {selectable && selectedList.length > 0 ? (
+        <>
+          <span className="meta text-accent-ink tabular-nums">
+            <SquareCheck className="h-2.5 w-2.5" aria-hidden="true" />
+            {selectedList.length} selected
+          </span>
+          <IconButton icon={X} label="Clear commit selection" onClick={handleClearSelection} />
+        </>
+      ) : null}
+      {selectable ? (
         <Button
           size="sm"
-          variant="secondary"
-          icon={sort === 'newest' ? ArrowDownUp : ArrowUpDown}
-          onClick={() => onSortChange(sort === 'newest' ? 'oldest' : 'newest')}
+          variant="primary"
+          icon={GitPullRequestArrow}
+          disabled={selectedList.length === 0}
+          onClick={handlePromoteSelected}
           title={
-            sort === 'newest'
-              ? 'Sorted newest first — click for oldest first'
-              : 'Sorted oldest first — click for newest first'
+            selectedList.length === 0
+              ? 'Tick one or more commits to promote'
+              : `Promote ${selectedList.length} selected commit(s) to a main-system branch`
           }
         >
-          {sort === 'newest' ? 'Newest' : 'Oldest'}
+          Promote Selected
         </Button>
+      ) : null}
+      {onToggleDetails ? (
+        <IconButton
+          icon={detailsVisible ? PanelRightClose : PanelRight}
+          label={detailsVisible ? 'Hide commit details panel' : 'Show commit details panel'}
+          onClick={onToggleDetails}
+        />
+      ) : null}
+    </>
+  );
 
-        {toolbarExtras}
-
-        <div className="ml-auto flex items-center gap-2">
-          {selectable && selectedList.length > 0 ? (
-            <>
-              <span className="meta text-accent-ink tabular-nums">
-                <SquareCheck className="h-2.5 w-2.5" aria-hidden="true" />
-                {selectedList.length} selected
-              </span>
-              <IconButton icon={X} label="Clear commit selection" onClick={handleClearSelection} />
-            </>
-          ) : null}
-          {selectable ? (
-            <Button
-              size="sm"
-              variant="primary"
-              icon={GitPullRequestArrow}
-              disabled={selectedList.length === 0}
-              onClick={handlePromoteSelected}
-              title={
-                selectedList.length === 0
-                  ? 'Tick one or more commits to promote'
-                  : `Promote ${selectedList.length} selected commit(s) to a main-system branch`
-              }
-            >
-              Promote Selected
-            </Button>
-          ) : null}
-          {onToggleDetails ? (
-            <IconButton
-              icon={detailsVisible ? PanelRightClose : PanelRight}
-              label={detailsVisible ? 'Hide commit details panel' : 'Show commit details panel'}
-              onClick={onToggleDetails}
-            />
-          ) : null}
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {isSidebar ? (
+        // Two explicit rows rather than a wrapping toolbar: a 380px column has
+        // no room for search + status + sort on one line, and a deterministic
+        // stack beats an unpredictable reflow.
+        <div className="flex flex-col gap-2 border-b border-line px-2.5 py-2">
+          <div className="relative min-w-0">{searchInput}</div>
+          <div className="flex items-center gap-2">
+            {statusSelect}
+            {sortButton}
+            <div className="ml-auto flex items-center gap-2">{selectionControls}</div>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
+          <div className="relative min-w-[180px] flex-1">{searchInput}</div>
+          {statusSelect}
+          {sortButton}
+          {toolbarExtras}
+          <div className="ml-auto flex items-center gap-2">{selectionControls}</div>
+        </div>
+      )}
 
       <div className="scroll-area min-h-0 flex-1">
         {loading && commits.length === 0 ? (
@@ -270,6 +323,75 @@ export function CommitTable({
               ) : undefined
             }
           />
+        ) : isSidebar ? (
+          // GitHub Desktop's commit list: the same rows as the table, laid out
+          // as a two-line list. Subject, status and SHA are kept; the separate
+          // AUTHOR/AUTHORED columns fold into the meta line below the subject.
+          <ul aria-label="Commits" className="divide-y divide-line">
+            {commits.map((commit) => {
+              const selected = selectable && selectedList.includes(commit.sha);
+              const focused = focusedSha === commit.sha;
+              const interactive = Boolean(onFocusSha);
+              return (
+                <li key={commit.sha}>
+                  <div
+                    role={interactive ? 'button' : undefined}
+                    tabIndex={interactive ? 0 : undefined}
+                    onClick={onFocusSha ? () => onFocusSha(commit.sha) : undefined}
+                    onKeyDown={
+                      interactive
+                        ? (event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              onFocusSha?.(commit.sha);
+                            }
+                          }
+                        : undefined
+                    }
+                    className={cx(
+                      'row-hover flex w-full items-start gap-2.5 px-2.5 py-1.5 text-left',
+                      interactive && 'cursor-pointer',
+                      (focused || selected) && 'bg-selection',
+                    )}
+                  >
+                    {selectable ? (
+                      <span className="mt-0.5" onClick={(event) => event.stopPropagation()}>
+                        <Checkbox
+                          checked={selected}
+                          onChange={() => onToggleSha?.(commit.sha)}
+                          label={`Select commit ${commit.shortSha} – ${commit.subject}`}
+                        />
+                      </span>
+                    ) : null}
+                    <span
+                      aria-hidden="true"
+                      className={cx(
+                        'mt-1 h-2.5 w-2.5 shrink-0 rounded-full ring-2',
+                        dotClassFor(commit),
+                      )}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs text-fg" title={commit.subject}>
+                        {commit.subject}
+                      </span>
+                      <span
+                        className="mt-0.5 block truncate text-[11px] text-muted"
+                        title={commitMeta(commit)}
+                      >
+                        {commitMeta(commit)}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 flex-col items-end gap-1">
+                      <CommitStatusBadge status={commit.status} />
+                      <span className="mono text-[11px] text-accent-ink tabular-nums">
+                        {commit.shortSha}
+                      </span>
+                    </span>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         ) : (
           <table className="w-full border-separate border-spacing-0">
             <caption className="sr-only">
@@ -374,11 +496,7 @@ export function CommitTable({
                           {commit.subject}
                         </button>
                       </Tooltip>
-                      <p className="mt-0.5 truncate text-[11px] text-muted">
-                        {commit.authorLogin ?? commit.authorName} · {commit.relativeTime}
-                        {commit.isMerge ? ' · merge commit' : ''}
-                        {commit.touchesManifest ? ' · manifest change' : ''}
-                      </p>
+                      <p className="mt-0.5 truncate text-[11px] text-muted">{commitMeta(commit)}</p>
                     </td>
                     <td className="hidden max-w-40 py-2 pr-2.5 align-top text-xs text-muted xl:table-cell">
                       <span className="block truncate">{commit.authorName}</span>

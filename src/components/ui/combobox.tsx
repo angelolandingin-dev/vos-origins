@@ -181,12 +181,20 @@ export function Combobox({
               className="h-[29px] w-full bg-transparent pr-2 pl-8 text-xs text-fg outline-none placeholder:text-disabled"
             />
           </div>
+          {/*
+            Capped viewport: `max-h` + `overflow-y-auto` so a long option set
+            scrolls inside the popup; `overscroll-contain` and a wheel
+            stop-propagation keep a wheel gesture at the end of the list from
+            scrolling the surface behind it. Arrow-key movement still scrolls
+            the highlighted option into view (see the effect above).
+          */}
           <div
             ref={listRef}
             id={listId}
             role="listbox"
             aria-label={listLabel ?? ariaLabel}
-            className="max-h-[320px] min-h-0 overflow-y-auto p-1"
+            className="max-h-[320px] min-h-0 overflow-y-auto overscroll-contain p-1"
+            onWheel={(event) => event.stopPropagation()}
           >
             {filtered.length === 0 ? (
               <p className="px-2.5 py-3 text-[11px] text-muted">{emptyMessage}</p>
@@ -219,7 +227,10 @@ export function Combobox({
                     <span className="flex w-3.5 shrink-0 justify-center" aria-hidden="true">
                       {checked ? <Check className="h-3.5 w-3.5 text-accent" /> : null}
                     </span>
-                    <span className="mono min-w-0 flex-1 text-xs break-all text-fg tabular-nums">
+                    <span
+                      className="mono min-w-0 flex-1 truncate text-xs text-fg tabular-nums"
+                      title={option.label}
+                    >
                       {option.label}
                     </span>
                     {option.meta ? (
