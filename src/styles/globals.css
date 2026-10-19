@@ -153,9 +153,9 @@
   --status-divergent: #c24e00;
   --status-divergent-soft: #ffebda;
   --status-divergent-ink: #a04000;
-  --status-integrated: #6f42c1;
-  --status-integrated-soft: #eddeff;
-  --status-integrated-ink: #5a32a3;
+  --status-integrated: #1a7f37;
+  --status-integrated-soft: #dcffe4;
+  --status-integrated-ink: #165c26;
   --status-blocked: #d73a49;
   --status-blocked-soft: #ffdce0;
   --status-blocked-ink: #9e1c23;
@@ -213,9 +213,9 @@
   --status-divergent: #f66a0a;
   --status-divergent-soft: #2f1c0a;
   --status-divergent-ink: #ffa657;
-  --status-integrated: #6f42c1;
-  --status-integrated-soft: #231745;
-  --status-integrated-ink: #bc8cff;
+  --status-integrated: #28a745;
+  --status-integrated-soft: #0e2a1d;
+  --status-integrated-ink: #56d364;
   --status-blocked: #d73a49;
   --status-blocked-soft: #3c1618;
   --status-blocked-ink: #ff7b72;
@@ -274,9 +274,9 @@
     --status-divergent: #f66a0a;
     --status-divergent-soft: #2f1c0a;
     --status-divergent-ink: #ffa657;
-    --status-integrated: #6f42c1;
-    --status-integrated-soft: #231745;
-    --status-integrated-ink: #bc8cff;
+    --status-integrated: #28a745;
+    --status-integrated-soft: #0e2a1d;
+    --status-integrated-ink: #56d364;
     --status-blocked: #d73a49;
     --status-blocked-soft: #3c1618;
     --status-blocked-ink: #ff7b72;
