@@ -83,6 +83,12 @@ export function IntegrationEventAuditPage({
   const [mode, setMode] = useState<'side' | 'unified'>('unified');
   const [filesWidth, setFilesWidth] = useState(SPLIT_DEFAULT_WIDTH);
 
+  const openInCommitBrowser = (subsystemId: string, sha: string) => {
+    if (app.selectedSubsystemId !== subsystemId) app.selectSubsystem(subsystemId);
+    app.setFocusedSha(sha);
+    app.navigate('commit-browser');
+  };
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onBack();
@@ -401,20 +407,32 @@ export function IntegrationEventAuditPage({
                     <li key={commit.sha} className="py-1.5">
                       <div className="flex min-h-[29px] items-baseline gap-2">
                         <span className="meta shrink-0 text-right tabular-nums">{index + 1}</span>
-                        <span className="mono shrink-0 text-fg tabular-nums" title={commit.sha}>
-                          {commit.shortSha}
-                        </span>
                         {commit.unavailable ? (
-                          <span className="min-w-0 flex-1 truncate text-[11px] text-disabled">
-                            Not present in the local clone.
-                          </span>
+                          <>
+                            <span className="mono shrink-0 text-fg tabular-nums" title={commit.sha}>
+                              {commit.shortSha}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-[11px] text-disabled">
+                              Not present in the local clone.
+                            </span>
+                          </>
                         ) : (
-                          <span
-                            className="min-w-0 flex-1 truncate text-xs text-fg"
-                            title={commit.subject || undefined}
+                          <button
+                            type="button"
+                            onClick={() => openInCommitBrowser(audit.subsystemId, commit.sha)}
+                            title={`Open ${commit.shortSha} in the Commit Browser`}
+                            className="flex min-w-0 flex-1 cursor-pointer items-baseline gap-2 truncate rounded-md text-left transition-colors hover:bg-hover"
                           >
-                            {commit.subject || '—'}
-                          </span>
+                            <span className="mono shrink-0 text-fg tabular-nums" title={commit.sha}>
+                              {commit.shortSha}
+                            </span>
+                            <span
+                              className="min-w-0 flex-1 truncate text-xs text-fg"
+                              title={commit.subject || undefined}
+                            >
+                              {commit.subject || '—'}
+                            </span>
+                          </button>
                         )}
                       </div>
                       {!commit.unavailable && (commit.author || commit.authoredAt) ? (

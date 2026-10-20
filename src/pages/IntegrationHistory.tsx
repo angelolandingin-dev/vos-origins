@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { Fragment, useCallback, useState } from 'react';
 import { ExternalLink, History, RefreshCw, ShieldCheck, TriangleAlert } from 'lucide-react';
 
 import { api } from '../api/invoke';
@@ -52,6 +52,15 @@ export function IntegrationHistory() {
     () =>
       api.listIntegrationPrs(app.targetBranch, subsystemFilter === 'all' ? null : subsystemFilter),
     [app.targetBranch, subsystemFilter, app.dataVersion],
+  );
+
+  const openInCommitBrowser = useCallback(
+    (subsystemId: string, sha: string) => {
+      if (app.selectedSubsystemId !== subsystemId) app.selectSubsystem(subsystemId);
+      app.setFocusedSha(sha);
+      app.navigate('commit-browser');
+    },
+    [app],
   );
 
   const entries = history.data?.entries ?? [];
@@ -254,7 +263,24 @@ export function IntegrationHistory() {
                               className="mono truncate py-2.5 pr-3 text-muted tabular-nums"
                               title={entry.sourceShas.join('\n')}
                             >
-                              {entry.sourceShas.map((sha) => sha.slice(0, 7)).join(', ') || '—'}
+                              {entry.sourceShas.length === 0
+                                ? '—'
+                                : entry.sourceShas.map((sha, index) => (
+                                    <Fragment key={sha}>
+                                      {index > 0 ? ', ' : null}
+                                      <button
+                                        type="button"
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          openInCommitBrowser(entry.subsystemId, sha);
+                                        }}
+                                        title={`${sha} — open in the Commit Browser`}
+                                        className="cursor-pointer hover:text-fg hover:underline"
+                                      >
+                                        {sha.slice(0, 7)}
+                                      </button>
+                                    </Fragment>
+                                  ))}
                             </td>
                             <td className="py-2.5 pr-3">
                               {entry.mainCommitSha ? (
