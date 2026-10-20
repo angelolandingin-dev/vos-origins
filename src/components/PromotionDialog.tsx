@@ -219,13 +219,22 @@ function PromotionProgressView({
     const failedIndex = PROMOTION_STAGES.findIndex((stage) => stage.id === failedId);
     if (failedIndex >= 0) currentIndex = failedIndex;
   }
-  const current = currentIndex >= 0 ? byStage.get(PROMOTION_STAGES[currentIndex]!.id) : undefined;
+  // A successful run has finished, so its last stage is done rather than
+  // current: the engine emits nothing after `cleanup` to say it completed.
+  if (outcome === 'success') currentIndex = PROMOTION_STAGES.length;
+  const current =
+    currentIndex >= 0 && currentIndex < PROMOTION_STAGES.length
+      ? byStage.get(PROMOTION_STAGES[currentIndex]!.id)
+      : undefined;
   const currentFraction =
     current?.index != null && current?.total != null && current.total > 0
       ? Math.min(current.index / current.total, 1)
       : 0;
   const done = currentIndex < 0 ? 0 : currentIndex + currentFraction;
-  const detail = current?.detail ?? current?.label ?? 'Starting…';
+  const detail =
+    outcome === 'success'
+      ? 'Promotion complete.'
+      : (current?.detail ?? current?.label ?? 'Starting…');
   const counts =
     current?.index != null && current?.total != null ? `${current.index} / ${current.total}` : null;
 
