@@ -233,7 +233,11 @@ function PromotionProgressView({
     <section
       aria-label="Promotion progress"
       className={`space-y-2 rounded-md border border-line p-3 ${
-        outcome === 'success' ? 'bg-status-applied-soft' : 'bg-surface'
+        outcome === 'success'
+          ? 'bg-status-applied-soft animate-tint-done'
+          : outcome === 'failed'
+            ? 'bg-status-blocked-soft animate-tint-failed'
+            : 'bg-surface'
       }`}
     >
       <div className="flex h-[29px] items-center justify-between gap-2">
@@ -257,7 +261,16 @@ function PromotionProgressView({
           const state =
             isFailed || index === currentIndex ? 'current' : index < currentIndex ? 'done' : 'todo';
           return (
-            <li key={stage.id} className="flex h-[21px] items-center gap-2 px-2.5">
+            <li
+              key={stage.id}
+              className={`flex h-[21px] items-center gap-2 px-2.5 ${
+                isFailed
+                  ? 'bg-status-blocked-soft'
+                  : state === 'done'
+                    ? 'bg-status-applied-soft'
+                    : ''
+              }`}
+            >
               <span
                 aria-hidden="true"
                 className={`h-1.5 w-1.5 shrink-0 rounded-full ${

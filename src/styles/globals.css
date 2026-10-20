@@ -88,7 +88,19 @@
 
   --animate-fade-in: fade-in 140ms ease-out;
   --animate-pulse-dot: pulse-dot 1800ms ease-in-out infinite;
+  --animate-tint-done: tint-done 1200ms ease-out;
+  --animate-tint-failed: tint-failed 1200ms ease-out;
 
+  @keyframes tint-done {
+    from {
+      background-color: var(--status-applied-flash);
+    }
+  }
+  @keyframes tint-failed {
+    from {
+      background-color: var(--status-blocked-flash);
+    }
+  }
   @keyframes fade-in {
     from {
       opacity: 0;
@@ -147,6 +159,7 @@
   --status-applied: #1a7f37;
   --status-applied-soft: #dcffe4;
   --status-applied-ink: #165c26;
+  --status-applied-flash: #9be9a8;
   --status-superseded: #6a737d;
   --status-superseded-soft: #f6f8fa;
   --status-superseded-ink: #5b636c;
@@ -159,6 +172,7 @@
   --status-blocked: #d73a49;
   --status-blocked-soft: #ffdce0;
   --status-blocked-ink: #9e1c23;
+  --status-blocked-flash: #ffb3ba;
   --status-unknown: #dbab09;
   --status-unknown-soft: #fff5b1;
   --status-unknown-ink: #b08800;
@@ -207,6 +221,7 @@
   --status-applied: #28a745;
   --status-applied-soft: #0e2a1d;
   --status-applied-ink: #56d364;
+  --status-applied-flash: #1e6b3a;
   --status-superseded: #959da5;
   --status-superseded-soft: #2b3036;
   --status-superseded-ink: #959da5;
@@ -219,6 +234,7 @@
   --status-blocked: #d73a49;
   --status-blocked-soft: #3c1618;
   --status-blocked-ink: #ff7b72;
+  --status-blocked-flash: #6b1f24;
   --status-unknown: #dbab09;
   --status-unknown-soft: #2f2400;
   --status-unknown-ink: #e3b341;
@@ -268,6 +284,7 @@
     --status-applied: #28a745;
     --status-applied-soft: #0e2a1d;
     --status-applied-ink: #56d364;
+    --status-applied-flash: #1e6b3a;
     --status-superseded: #959da5;
     --status-superseded-soft: #2b3036;
     --status-superseded-ink: #959da5;
@@ -280,6 +297,7 @@
     --status-blocked: #d73a49;
     --status-blocked-soft: #3c1618;
     --status-blocked-ink: #ff7b72;
+    --status-blocked-flash: #6b1f24;
     --status-unknown: #dbab09;
     --status-unknown-soft: #2f2400;
     --status-unknown-ink: #e3b341;
