@@ -1,6 +1,5 @@
 import type { PromotionPreflight } from '../api/types';
 import { PathLabel } from './PathLabel';
-import { ChangeKindIcon } from './ChangeKindIcon';
 import { Checkbox } from './ui/primitives';
 
 export interface CommitFileListProps {
@@ -111,14 +110,7 @@ export function CommitFileList({
                     }
                   />
                   <PathLabel path={file.path} className="flex-1 text-[11px]" muted={!included} />
-                  {kind === 'changed' || kind === 'deleted' ? (
-                    <ChangeKindIcon
-                      change={kind === 'changed' ? 'modified' : 'deleted'}
-                      label={kind}
-                    />
-                  ) : (
-                    <span className="shrink-0 text-[11px] text-muted">{kind}</span>
-                  )}
+                  <span className="shrink-0 text-[11px] text-muted">{kind}</span>
                 </li>
               );
             })}
