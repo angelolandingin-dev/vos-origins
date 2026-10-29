@@ -11,6 +11,7 @@ import type {
 } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
 import { resolveDiffSelection } from '../components/diffResolve';
+import { ChangeKindIcon } from '../components/ChangeKindIcon';
 import { PathLabel } from '../components/PathLabel';
 import { RevertsNewerLine } from '../components/RevertsNewer';
 import { revertsNewerText } from '../components/revertsNewerText';
@@ -355,8 +356,8 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                       <span className="w-[110px] shrink-0">
                         <BucketMark bucket={entry.bucket} />
                       </span>
-                      <span className="w-[70px] shrink-0 truncate text-[11px] text-muted">
-                        {entry.change}
+                      <span className="flex w-[70px] shrink-0 items-center">
+                        <ChangeKindIcon change={entry.change} />
                       </span>
                       <span
                         className="flex w-[250px] min-w-0 shrink-0 items-center gap-1.5"
@@ -565,7 +566,7 @@ function FileDetail({
         <PathLabel path={entry.path} />
         <p className="mt-1 flex items-center gap-2">
           <BucketMark bucket={entry.bucket} />
-          <span className="text-[11px] text-muted">{entry.change}</span>
+          <ChangeKindIcon change={entry.change} />
         </p>
       </div>
 

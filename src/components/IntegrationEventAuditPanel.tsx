@@ -15,12 +15,9 @@ import {
 
 import { api } from '../api/invoke';
 import type { ApiError } from '../api/invoke';
-import type {
-  IntegrationEventAudit,
-  IntegrationEventChange,
-  IntegrationHistoryEntry,
-} from '../api/types';
+import type { IntegrationEventAudit, IntegrationHistoryEntry } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
+import { ChangeKindIcon } from './ChangeKindIcon';
 import { DiffViewer } from './DiffViewer';
 import { INTEGRATION_KIND_META } from './integrationKindMeta';
 import { PathLabel } from './PathLabel';
@@ -30,22 +27,6 @@ import { formatDateTime } from './ui/format';
 import { Button, EmptyState, ErrorState, KeyValue, LoadingState, Panel } from './ui/primitives';
 import { SPLIT_DEFAULT_WIDTH, splitWidthStyle } from './ui/split-pane';
 import { SplitResizer } from './ui/split-resizer';
-
-function changeGlyph(change: IntegrationEventChange['change']): {
-  glyph: string;
-  className: string;
-} {
-  switch (change) {
-    case 'added':
-      return { glyph: '+', className: 'text-status-applied' };
-    case 'deleted':
-      return { glyph: '−', className: 'text-status-blocked' };
-    case 'renamed':
-      return { glyph: '→', className: 'text-status-eligible' };
-    default:
-      return { glyph: '~', className: 'text-status-unknown-ink' };
-  }
-}
 
 function SectionTitle({ icon: Icon, children }: { icon: LucideIcon; children: string }) {
   return (
@@ -168,7 +149,6 @@ export function IntegrationEventAuditPage({
   const diffByPath = new Map((diff.data?.files ?? []).map((file) => [file.path, file]));
   const activeChange =
     listedChanges.find((change) => change.path === selectedPath) ?? listedChanges[0] ?? null;
-  const activeGlyph = activeChange ? changeGlyph(activeChange.change) : null;
   const activeDiff = activeChange ? (diffByPath.get(activeChange.path) ?? null) : null;
 
   return (
@@ -262,7 +242,6 @@ export function IntegrationEventAuditPage({
           ) : (
             <ul className="px-1 pb-2">
               {listedChanges.map((change) => {
-                const glyph = changeGlyph(change.change);
                 const active = activeChange?.path === change.path;
                 return (
                   <li key={change.path}>
@@ -276,15 +255,7 @@ export function IntegrationEventAuditPage({
                         active && 'bg-selection',
                       )}
                     >
-                      <span
-                        className={cx(
-                          'w-3 shrink-0 text-center text-sm font-bold',
-                          glyph.className,
-                        )}
-                        aria-hidden="true"
-                      >
-                        {glyph.glyph}
-                      </span>
+                      <ChangeKindIcon change={change.change} />
                       <PathLabel path={change.path} className="flex-1" />
                       <span className="mono w-11 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                         +{change.additions}
@@ -473,17 +444,11 @@ export function IntegrationEventAuditPage({
 
       {/* Selected file's diff — a file header and its hunks. */}
       <div className="scroll-area min-h-0 min-w-0 flex-1 overflow-y-auto bg-ground md:min-w-[320px]">
-        {activeChange && activeGlyph ? (
+        {activeChange ? (
           <>
             <div className="flex min-h-[29px] items-center gap-2 border-b border-line bg-raised px-2.5 py-1">
-              <span
-                className={cx('w-3 shrink-0 text-center text-sm font-bold', activeGlyph.className)}
-                aria-hidden="true"
-              >
-                {activeGlyph.glyph}
-              </span>
+              <ChangeKindIcon change={activeChange.change} />
               <PathLabel path={activeChange.path} className="flex-1" />
-              <span className="meta shrink-0">{activeChange.change}</span>
               <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                 +{activeChange.additions}
               </span>

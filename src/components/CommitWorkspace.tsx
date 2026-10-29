@@ -13,6 +13,7 @@ import type { CommitStatusKind } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
 import { CommitDiffView } from './CommitDiffView';
 import { CommitTable } from './CommitTable';
+import { ChangeKindIcon } from './ChangeKindIcon';
 import { PathLabel } from './PathLabel';
 import { cx } from './ui/cx';
 import { formatDateTime } from './ui/format';
@@ -379,7 +380,7 @@ function CommitWorkspacePanel({
                     >
                       <FileText className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
                       <PathLabel path={file.path} className="flex-1" />
-                      <span className="meta">{file.change}</span>
+                      <ChangeKindIcon change={file.change} />
                       <span className="mono w-12 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                         +{file.additions}
                       </span>

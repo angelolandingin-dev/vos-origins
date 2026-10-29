@@ -14,6 +14,7 @@ import type { ApiError } from '../api/invoke';
 import { api } from '../api/invoke';
 import type { ChangedFile, CommitDetails } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
+import { ChangeKindIcon } from './ChangeKindIcon';
 import { CommitDetailsContext } from './CommitDetails';
 import { DiffViewer } from './DiffViewer';
 import { PathLabel } from './PathLabel';
@@ -31,19 +32,6 @@ import {
 } from './ui/primitives';
 import { SPLIT_DEFAULT_WIDTH, splitWidthStyle } from './ui/split-pane';
 import { SplitResizer } from './ui/split-resizer';
-
-function fileGlyph(file: ChangedFile): { glyph: string; className: string } {
-  switch (file.change) {
-    case 'added':
-      return { glyph: '+', className: 'text-status-applied' };
-    case 'deleted':
-      return { glyph: '-', className: 'text-status-blocked' };
-    case 'renamed':
-      return { glyph: '→', className: 'text-status-eligible' };
-    default:
-      return { glyph: '~', className: 'text-status-unknown-ink' };
-  }
-}
 
 export interface CommitDiffViewProps {
   subsystemId: string;
@@ -257,7 +245,6 @@ export function CommitDiffView({
               ) : (
                 <ul className="px-1 pb-2">
                   {listedFiles.map((file) => {
-                    const glyph = fileGlyph(file);
                     const included = !activeExcluded.includes(file.path);
                     const active = activePath === file.path;
                     return (
@@ -285,15 +272,7 @@ export function CommitDiffView({
                           title={`${file.path} — show its diff`}
                           className="flex min-w-0 flex-1 items-start gap-2 rounded-[3px] text-left"
                         >
-                          <span
-                            className={cx(
-                              'w-3 shrink-0 text-center text-sm font-bold',
-                              glyph.className,
-                            )}
-                            aria-hidden="true"
-                          >
-                            {glyph.glyph}
-                          </span>
+                          <ChangeKindIcon change={file.change} />
                           <PathLabel path={file.path} className="flex-1" />
                           <span className="mono w-11 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                             +{file.additions}
@@ -340,17 +319,8 @@ export function CommitDiffView({
             {activeFile ? (
               <>
                 <div className="flex min-h-[29px] items-center gap-2 border-b border-line bg-raised px-2.5 py-1">
-                  <span
-                    className={cx(
-                      'w-3 shrink-0 text-center text-sm font-bold',
-                      fileGlyph(activeFile).className,
-                    )}
-                    aria-hidden="true"
-                  >
-                    {fileGlyph(activeFile).glyph}
-                  </span>
+                  <ChangeKindIcon change={activeFile.change} />
                   <PathLabel path={activeFile.path} className="flex-1" />
-                  <span className="meta shrink-0">{activeFile.change}</span>
                   <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
                     +{activeFile.additions}
                   </span>
