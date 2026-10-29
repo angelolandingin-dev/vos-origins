@@ -507,7 +507,7 @@ export function CommitTable({
               value={String(pageSize)}
               onValueChange={(next) => onPageSizeChange(Number(next))}
               ariaLabel="Rows per page"
-              options={[10, 25, 50, 100].map((size) => ({
+              options={[25, 50, 100].map((size) => ({
                 value: String(size),
                 label: String(size),
               }))}

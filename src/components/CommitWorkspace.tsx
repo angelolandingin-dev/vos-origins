@@ -45,7 +45,7 @@ function CommitWorkspaceView() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<CommitStatusKind | 'all'>('all');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(25);
   // The diff region sits beside the commit list as a permanent rail on wide
   // screens (and as a dismissible overlay below the compact breakpoint). Row
   // clicks only move focus; they never open or close the panel.

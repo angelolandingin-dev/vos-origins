@@ -51,7 +51,7 @@ function PromoteCommitsView({ subsystem }: { subsystem: SubsystemSummary }) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<CommitStatusKind | 'all'>('eligible');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(25);
   const [mode, setMode] = useState<PromotionMode>('individual');
 
   return (
