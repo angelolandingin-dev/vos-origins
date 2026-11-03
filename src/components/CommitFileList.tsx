@@ -53,9 +53,7 @@ export function CommitFileList({
 
   const toggleable = files.filter((file) => file.outcome !== 'skipped');
   const includedCount = toggleable.filter((file) => !excluded.has(file.path)).length;
-  const excludedInList = files.filter(
-    (file) => file.outcome !== 'skipped' && excluded.has(file.path),
-  ).length;
+  const excludedInList = files.filter((file) => excluded.has(file.path)).length;
 
   return (
     <div className="space-y-1.5">
@@ -89,18 +87,22 @@ export function CommitFileList({
             {files.map((file) => {
               const skipped = file.outcome === 'skipped';
               const isExcluded = excluded.has(file.path);
+              const operatorExcluded = excludedPaths.includes(file.path);
               const included = !skipped && !isExcluded;
-              const kind = changeKind(file.path, file.outcome, deleted, unchanged, replaced);
+              const kind =
+                skipped && isExcluded && !isLockfile(file.path)
+                  ? 'excluded'
+                  : changeKind(file.path, file.outcome, deleted, unchanged, replaced);
               return (
                 <li key={file.path} className="flex h-[29px] items-center gap-2 px-2.5">
                   <Checkbox
                     checked={included}
-                    disabled={skipped}
+                    disabled={skipped && !operatorExcluded}
                     onChange={() =>
                       isExcluded ? onRemoveExcludedPath(file.path) : onAddExcludedPath(file.path)
                     }
                     label={
-                      skipped
+                      skipped && !operatorExcluded
                         ? isLockfile(file.path)
                           ? `${file.path} is not copied by the promotion - the deployment regenerates it`
                           : `${file.path} is not copied by the promotion - the engine handles this path in the target`
