@@ -66,6 +66,7 @@ export interface PromotionDialogProps {
   excludedPaths: string[];
   onAddExcludedPath: (path: string) => void;
   onRemoveExcludedPath: (path: string) => void;
+  onSetExcludedPaths: (paths: string[]) => void;
   dependencies: DependencyChange[];
   dependenciesLoading: boolean;
   preflight: PromotionPreflight | null;
@@ -358,6 +359,7 @@ function PromotionDialogContent({
   excludedPaths,
   onAddExcludedPath,
   onRemoveExcludedPath,
+  onSetExcludedPaths,
   dependencies,
   dependenciesLoading,
   preflight,
@@ -391,6 +393,12 @@ function PromotionDialogContent({
   const revertsNewerFiles = (preflight?.files ?? []).filter((file) => file.revertsNewer);
   const isExcluded = (path: string) =>
     excludedPaths.includes(path) || preflightExcluded.includes(path);
+  const pendingReverts = revertsNewerFiles.filter((file) => !isExcluded(file.path));
+  const excludeAllRevertsNewer = () => {
+    onSetExcludedPaths(
+      Array.from(new Set([...excludedPaths, ...pendingReverts.map((file) => file.path)])),
+    );
+  };
   const isDirect = delivery === 'local_direct';
   const isWorktree = delivery === 'worktree';
   const isLocal = delivery === 'local';
@@ -755,6 +763,19 @@ function PromotionDialogContent({
                 <InlineAlert
                   tone="warning"
                   title={`Reverts newer work — ${revertsNewerFiles.length} path${revertsNewerFiles.length === 1 ? '' : 's'}`}
+                  actions={
+                    pendingReverts.length > 0 ? (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={excludeAllRevertsNewer}
+                        title="Exclude these paths from this promotion — they will not be promoted"
+                        aria-label={`Exclude all ${pendingReverts.length} reverts-newer path${pendingReverts.length === 1 ? '' : 's'} from this promotion`}
+                      >
+                        Exclude all {pendingReverts.length}
+                      </Button>
+                    ) : undefined
+                  }
                 >
                   <p>
                     Main already holds newer subsystem content here. Promoting moves it back —

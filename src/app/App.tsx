@@ -82,6 +82,7 @@ export default function App() {
         excludedPaths={app.promotion.excludedPaths}
         onAddExcludedPath={app.addPromotionExcludedPath}
         onRemoveExcludedPath={app.removePromotionExcludedPath}
+        onSetExcludedPaths={app.setPromotionExcludedPaths}
         dependencies={app.promotion.dependencies}
         dependenciesLoading={app.promotion.dependenciesLoading}
         preflight={app.promotion.preflight}
