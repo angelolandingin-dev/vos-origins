@@ -341,13 +341,6 @@ export interface PromotionRequest {
   excludedPaths?: string[] | null;
 }
 
-export interface SubsystemSummaryCounts {
-  subsystemId: string;
-  indexed: number;
-  total: number;
-  tally: Record<string, number>;
-}
-
 export type PreflightOutcome = 'clean' | 'merged' | 'conflict' | 'skipped';
 
 export interface PreflightFileResult {

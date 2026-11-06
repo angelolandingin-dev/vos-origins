@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { GitBranch, RefreshCw } from 'lucide-react';
 
 import { api, asApiError } from '../api/invoke';
-import { useApp, useAsyncData } from '../app/context';
+import { useApp } from '../app/context';
 import { CommitWorkspace } from '../components/CommitWorkspace';
 import { SubsystemSelector } from '../components/SubsystemSelector';
 import { Button, EmptyState, LoadingState, Select } from '../components/ui/primitives';
@@ -13,13 +13,6 @@ export function CommitBrowser() {
   const [pulling, setPulling] = useState(false);
   const subsystems = app.subsystems.data ?? [];
   const branches = (app.targetBranches.data?.branches ?? []).filter((branch) => branch.allowed);
-
-  const counts = useAsyncData(async () => {
-    const summaries = await api.getSubsystemSummaries();
-    const byId: Record<string, number> = {};
-    for (const summary of summaries) byId[summary.subsystemId] = summary.total;
-    return byId;
-  }, [app.dataVersion]);
 
   const pullLatest = () => {
     setPulling(true);
@@ -56,7 +49,6 @@ export function CommitBrowser() {
               subsystems={subsystems}
               selectedId={app.selectedSubsystemId}
               onSelect={(id) => app.selectSubsystem(id)}
-              counts={counts.data ?? undefined}
             />
           ) : null}
           <span className="flex items-center gap-2">

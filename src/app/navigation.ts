@@ -1,11 +1,6 @@
 /** Every screen required by the spec (section 3.3). */
 export type Route =
-  | 'dashboard'
-  | 'commit-browser'
-  | 'subsystem-diff'
-  | 'promote-commits'
-  | 'integration-history'
-  | 'settings';
+  'commit-browser' | 'subsystem-diff' | 'promote-commits' | 'integration-history' | 'settings';
 
 export interface NavItem {
   id: Route;
@@ -14,11 +9,6 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  {
-    id: 'dashboard',
-    label: 'Dashboard',
-    description: 'Status by branch and recent activity',
-  },
   {
     id: 'commit-browser',
     label: 'Commit Browser',
@@ -47,10 +37,6 @@ export const NAV_ITEMS: NavItem[] = [
 ];
 
 export const ROUTE_META: Record<Route, { title: string; subtitle: string }> = {
-  dashboard: {
-    title: 'Dashboard',
-    subtitle: 'Status by branch and recent activity',
-  },
   'commit-browser': {
     title: 'Commit Browser',
     subtitle: 'Browse source history and inspect commits',

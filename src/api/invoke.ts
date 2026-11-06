@@ -25,7 +25,6 @@ import type {
   SubsystemDiff,
   SubsystemRegistrationRequest,
   SubsystemSummary,
-  SubsystemSummaryCounts,
   TargetBranchList,
 } from './types';
 
@@ -119,8 +118,6 @@ export const api = {
   getAuthStatus: () => call<AuthStatus>('get_auth_status'),
 
   listSubsystems: () => call<SubsystemSummary[]>('list_subsystems'),
-
-  getSubsystemSummaries: () => call<SubsystemSummaryCounts[]>('get_subsystem_summaries'),
 
   listTargetBranches: () => call<TargetBranchList>('list_target_branches'),
 

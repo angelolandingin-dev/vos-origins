@@ -3,7 +3,6 @@ import { useEffect } from 'react';
 import { AppShell } from '../components/AppShell';
 import { PromotionDialog } from '../components/PromotionDialog';
 import { CommitBrowser } from '../pages/CommitBrowser';
-import { Dashboard } from '../pages/Dashboard';
 import { IntegrationHistory } from '../pages/IntegrationHistory';
 import { PromoteCommits } from '../pages/PromoteCommits';
 import { Settings } from '../pages/Settings';
@@ -52,7 +51,6 @@ export default function App() {
         notice={app.notice}
         onDismissNotice={app.dismissNotice}
       >
-        {route === 'dashboard' ? <Dashboard /> : null}
         {route === 'commit-browser' ? <CommitBrowser /> : null}
         {route === 'subsystem-diff' ? <SubsystemDiff /> : null}
         {route === 'promote-commits' ? <PromoteCommits /> : null}
