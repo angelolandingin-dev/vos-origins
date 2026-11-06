@@ -199,20 +199,6 @@ pub struct SubsystemSummary {
     pub allowed_target_branches: Vec<String>,
 }
 
-/// Per-subsystem counts for ALL registered subsystems in ONE call (§11).
-/// Wire shape is exact (the React agent consumes it):
-/// `SubsystemSummaryCounts { subsystemId, indexed, total, tally }`
-/// where `tally` keys are the existing status keys (snake_case
-/// `CommitStatusKind`: `eligible`, `integrated`, `pr_open`, …).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubsystemSummaryCounts {
-    pub subsystem_id: String,
-    pub indexed: u32,
-    pub total: u32,
-    pub tally: std::collections::HashMap<String, u32>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetBranch {

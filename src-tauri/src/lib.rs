@@ -49,7 +49,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::auth::get_auth_status,
             commands::registry::list_subsystems,
-            commands::registry::get_subsystem_summaries,
             commands::registry::get_registry,
             commands::registry::save_registry,
             commands::registry::list_target_branches,
