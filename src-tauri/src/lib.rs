@@ -70,6 +70,13 @@ pub fn run() {
             commands::system::clear_checkouts,
             commands::system::open_external_url,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run the Subsystem Integration Manager");
+        .build(tauri::generate_context!())
+        .expect("failed to run the Subsystem Integration Manager")
+        .run(|_, event| {
+            // Orphaned git children hold `tmp_pack_*` locks that poison the
+            // next launch, so reap them on the way out.
+            if matches!(event, tauri::RunEvent::Exit) {
+                crate::services::engine::git::kill_remaining_children();
+            }
+        });
 }

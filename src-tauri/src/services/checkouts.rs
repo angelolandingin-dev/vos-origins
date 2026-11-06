@@ -144,32 +144,77 @@ pub fn local_dir_for(raw: &str) -> Option<PathBuf> {
     None
 }
 
-fn clone_fresh(dir: &Path, remote: &str) -> AppResult<()> {
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(dir);
+// A failed clone leaves a partial directory behind; the probe showed the
+// first attempt can stall while an immediate redo succeeds, so retry.
+const CLONE_ATTEMPTS: u32 = 3;
+
+// Windows releases file handles with a delay, so one failed removal proves
+// nothing. Only after a short retry still fails is the directory treated as
+// held by another process — and it is reported, never silently handed to
+// `git clone` as a non-empty destination.
+fn remove_cached_dir(dir: &Path) -> AppResult<()> {
+    if !dir.exists() {
+        return Ok(());
     }
+    let mut last = String::new();
+    for _ in 0..3 {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last = err.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+        if !dir.exists() {
+            return Ok(());
+        }
+    }
+    Err(AppError::new(
+        ErrorCode::RepositoryInaccessible,
+        format!(
+            "The cached checkout is locked by another process ({}).",
+            dir.display()
+        ),
+    )
+    .with_remedy("Close any program holding files open in that directory, then retry.")
+    .with_details(git::sanitize(&last)))
+}
+
+fn clone_fresh(dir: &Path, remote: &str) -> AppResult<()> {
+    remove_cached_dir(dir)?;
     if let Some(parent) = dir.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     // `clone_no_tags` carries any `user:token@` credentials via
     // `-c http.extraHeader`, never in argv; errors are sanitized there.
-    git::clone_no_tags(remote, dir).map_err(|err| {
-        let _ = std::fs::remove_dir_all(dir);
-        AppError::new(
-            ErrorCode::RepositoryInaccessible,
-            format!(
-                "Could not clone into the checkout cache ({}).",
-                dir.display()
-            ),
-        )
-        .with_remedy(
-            "Check the network connection and that `gh` can read the repository, then retry.",
-        )
-        .with_details(git::sanitize(&err.to_string()))
-    })?;
-    #[cfg(test)]
-    clone_count_for_tests_inner().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(())
+    let mut last_err: Option<git::GitError> = None;
+    for attempt in 1..=CLONE_ATTEMPTS {
+        match git::clone_no_tags(remote, dir) {
+            Ok(()) => {
+                #[cfg(test)]
+                clone_count_for_tests_inner().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Ok(());
+            }
+            Err(err) => {
+                last_err = Some(err);
+                if attempt < CLONE_ATTEMPTS {
+                    remove_cached_dir(dir)?;
+                    std::thread::sleep(std::time::Duration::from_secs(u64::from(attempt)));
+                }
+            }
+        }
+    }
+    let err = last_err.expect("at least one clone attempt runs");
+    let _ = std::fs::remove_dir_all(dir);
+    Err(AppError::new(
+        ErrorCode::RepositoryInaccessible,
+        format!(
+            "Could not clone into the checkout cache ({}) after {CLONE_ATTEMPTS} attempts.",
+            dir.display()
+        ),
+    )
+    .with_remedy("Check the network connection and that `gh` can read the repository, then retry.")
+    .with_details(git::sanitize(&err.to_string())))
 }
 
 #[cfg(test)]
@@ -373,7 +418,7 @@ pub fn refresh_cached_checkout(
     let slot = lock_for(key);
     let _guard = slot.lock().unwrap_or_else(|err| err.into_inner());
     if !is_usable_checkout(&dir) {
-        let _ = std::fs::remove_dir_all(&dir);
+        remove_cached_dir(&dir)?;
         clone_fresh(&dir, remote)?;
         let tip = git::rev_parse(&dir, "HEAD").map(|sha| short_sha(&sha));
         return Ok(RefreshOutcome::Advanced(vec![format!(
@@ -397,7 +442,7 @@ pub fn ensure_remote_checkout(key: &str, remote: &str, token: Option<&str>) -> A
     let slot = lock_for(key);
     let _guard = slot.lock().unwrap_or_else(|err| err.into_inner());
     if force_refresh_requested() || (dir.exists() && !is_usable_checkout(&dir)) {
-        let _ = std::fs::remove_dir_all(&dir);
+        remove_cached_dir(&dir)?;
     }
     if is_usable_checkout(&dir) {
         if !fetch_is_recent(&dir) {
@@ -528,6 +573,29 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    #[test]
+    fn failed_clone_reports_the_last_error_after_three_attempts() {
+        let root = unique_dir("clone-retry");
+        let dir = root.join("dest");
+        // Unroutable port: fails fast without touching the network.
+        let err = clone_fresh(&dir, "https://127.0.0.1:1/ORG/nope.git")
+            .expect_err("a dead port must fail");
+        assert!(err.to_string().contains("3 attempts"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn checked_remove_clears_a_directory_and_ignores_a_missing_one() {
+        let root = unique_dir("checked-remove");
+        let dir = root.join("gone");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("f.txt"), "x").expect("write");
+        remove_cached_dir(&dir).expect("a removable dir clears");
+        assert!(!dir.exists());
+        remove_cached_dir(&dir).expect("a missing dir is fine");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     struct EnvRestore {

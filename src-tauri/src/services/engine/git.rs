@@ -63,6 +63,12 @@ fn base_command() -> Command {
         .arg("credential.helper=")
         .arg("-c")
         .arg("core.longpaths=true")
+        // Abort a stalled transfer instead of hanging forever: git fails
+        // after ~60s below 1 KB/s. Covers clone, fetch and push at once.
+        .arg("-c")
+        .arg("http.lowSpeedLimit=1000")
+        .arg("-c")
+        .arg("http.lowSpeedTime=60")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never");
     command
@@ -506,7 +512,7 @@ pub fn fetch_source_branch(
     let args = ["fetch", "--no-tags", "--force", &clean_url, &refspec];
     command.args(args);
     display.extend(args.iter().map(|s| s.to_string()));
-    run_authed(command, &display)
+    run_authed(command, &display, FETCH_TIMEOUT, "fetch")
         .map_err(|err| GitError {
             args: sanitize(&err.args),
             status: err.status,
@@ -598,7 +604,7 @@ pub fn clone_no_tags(url: &str, dest: &Path) -> Result<(), GitError> {
     ];
     command.args(args);
     display.extend(args.iter().map(|s| s.to_string()));
-    let out = run_authed(command, &display).map_err(|err| GitError {
+    let out = run_authed(command, &display, CLONE_TIMEOUT, "clone").map_err(|err| GitError {
         args: sanitize(&err.args),
         status: err.status,
         stderr: sanitize(&err.stderr),
@@ -671,7 +677,7 @@ pub fn push(repo_dir: &Path, url: &str, branch: &str) -> Result<(), GitError> {
     let args = ["push", &clean_url, &refspec];
     command.args(args);
     display.extend(args.iter().map(|s| s.to_string()));
-    let out = run_authed(command, &display).map_err(|err| GitError {
+    let out = run_authed(command, &display, PUSH_TIMEOUT, "push").map_err(|err| GitError {
         args: format!("push {branch}"),
         status: err.status,
         stderr: sanitize(&err.stderr),
@@ -705,7 +711,7 @@ pub fn fetch_cached(repo_dir: &Path, token: Option<&str>) -> Result<(), GitError
     let args = ["fetch", "--no-tags", "--prune", "origin"];
     command.args(args);
     display.extend(args.iter().map(|s| s.to_string()));
-    let out = run_authed(command, &display).map_err(|err| GitError {
+    let out = run_authed(command, &display, FETCH_TIMEOUT, "fetch").map_err(|err| GitError {
         args: sanitize(&err.args),
         status: err.status,
         stderr: sanitize(&err.stderr),
@@ -733,7 +739,7 @@ fn local_clone_fetch_command(repo_dir: &Path, token: Option<&str>) -> (Command, 
 
 pub fn fetch_local_clone(repo_dir: &Path, token: Option<&str>) -> Result<(), GitError> {
     let (command, display) = local_clone_fetch_command(repo_dir, token);
-    let out = run_authed(command, &display).map_err(|err| GitError {
+    let out = run_authed(command, &display, FETCH_TIMEOUT, "fetch").map_err(|err| GitError {
         args: sanitize(&err.args),
         status: err.status,
         stderr: sanitize(&err.stderr),
@@ -824,17 +830,140 @@ fn authed_command(repo_dir: Option<&Path>, token: Option<&str>) -> (Command, Vec
     (command, display)
 }
 
-fn run_authed(mut command: Command, display: &[String]) -> Result<GitOutput, GitError> {
-    let output = command.output().map_err(|err| GitError {
+// Hard deadlines for network git calls, so a transfer git's own low-speed
+// abort does not catch still ends instead of hanging the app. Clone gets a
+// generous cap (a large first fetch must be allowed to finish); fetch and
+// push are incremental and get the shorter one.
+pub const CLONE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+const PUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+fn timeout_message(op: &str, timeout: std::time::Duration) -> String {
+    format!(
+        "the {op} did not finish within {} minutes; the connection stalled",
+        timeout.as_secs() / 60
+    )
+}
+
+// PIDs of git children still running. Inserted at spawn, removed on reap,
+// so anything left here at exit is by definition unreaped (no stale PID can
+// linger to kill an unrelated process later).
+fn live_children() -> &'static std::sync::Mutex<std::collections::HashSet<u32>> {
+    static LIVE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<u32>>> =
+        std::sync::OnceLock::new();
+    LIVE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn track_child(pid: u32) {
+    if let Ok(mut live) = live_children().lock() {
+        live.insert(pid);
+    }
+}
+
+fn untrack_child(pid: u32) {
+    if let Ok(mut live) = live_children().lock() {
+        live.remove(&pid);
+    }
+}
+
+fn kill_by_pid(pid: u32) {
+    #[cfg(windows)]
+    let _ = crate::platform::hidden("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output();
+    #[cfg(not(windows))]
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output();
+}
+
+/// Kill any git children still running. Called from the app exit hook so an
+/// orphaned transfer cannot hold `tmp_pack_*` locks across a restart.
+pub fn kill_remaining_children() {
+    let pids: Vec<u32> = live_children()
+        .lock()
+        .map(|mut live| live.drain().collect())
+        .unwrap_or_default();
+    for pid in pids {
+        kill_by_pid(pid);
+    }
+}
+
+fn run_authed(
+    mut command: Command,
+    display: &[String],
+    timeout: std::time::Duration,
+    op: &str,
+) -> Result<GitOutput, GitError> {
+    use std::io::Read as _;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|err| GitError {
         args: display.join(" "),
         status: None,
         stderr: err.to_string(),
     })?;
-    Ok(GitOutput {
-        status: output.status.code().unwrap_or(-1),
-        stdout: output.stdout,
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    })
+    track_child(child.id());
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = stdout_pipe.take() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = stderr_pipe.take() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                untrack_child(child.id());
+                let stdout = stdout_thread.join().unwrap_or_default();
+                let stderr = stderr_thread.join().unwrap_or_default();
+                return Ok(GitOutput {
+                    status: status.code().unwrap_or(-1),
+                    stdout,
+                    stderr: String::from_utf8_lossy(&stderr).to_string(),
+                });
+            }
+            Ok(None) => {
+                if start.elapsed() < timeout {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    continue;
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                untrack_child(child.id());
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(GitError {
+                    args: display.join(" "),
+                    status: None,
+                    stderr: timeout_message(op, timeout),
+                });
+            }
+            Err(err) => {
+                let _ = child.kill();
+                untrack_child(child.id());
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(GitError {
+                    args: display.join(" "),
+                    status: None,
+                    stderr: err.to_string(),
+                });
+            }
+        }
+    }
 }
 
 /// Redacts `https://user:token@host` and `Authorization: Bearer <token>`
@@ -1205,5 +1334,58 @@ mod tests {
                 "user.email=1+octocat@users.noreply.github.com".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn every_network_call_carries_a_low_speed_abort() {
+        for command in [
+            base_command(),
+            authed_command(None, Some("gho_probe")).0,
+            authed_command(Some(Path::new("C:/repos/main-system")), None).0,
+        ] {
+            let args: Vec<String> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().to_string())
+                .collect();
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair[0] == "-c" && pair[1] == "http.lowSpeedLimit=1000"),
+                "a stalled transfer must abort instead of hanging: {args:?}"
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair[0] == "-c" && pair[1] == "http.lowSpeedTime=60"),
+                "a stalled transfer must abort instead of hanging: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clone_gets_the_generous_deadline_and_fetch_and_push_the_short_one() {
+        assert!(CLONE_TIMEOUT > FETCH_TIMEOUT);
+        assert!(CLONE_TIMEOUT > PUSH_TIMEOUT);
+    }
+
+    #[test]
+    fn timeout_reports_a_stalled_connection_not_a_generic_failure() {
+        let message = timeout_message("clone", CLONE_TIMEOUT);
+        assert!(message.contains("clone"), "{message}");
+        assert!(message.contains("15 minutes"), "{message}");
+        assert!(message.contains("connection stalled"), "{message}");
+    }
+
+    #[test]
+    fn child_tracking_removes_reaped_pids_so_exit_kills_only_the_live() {
+        // u32::MAX is never a real PID; untracked before any kill can run.
+        track_child(u32::MAX);
+        assert!(live_children()
+            .lock()
+            .map(|live| live.contains(&u32::MAX))
+            .unwrap_or(false));
+        untrack_child(u32::MAX);
+        assert!(live_children()
+            .lock()
+            .map(|live| !live.contains(&u32::MAX))
+            .unwrap_or(true));
     }
 }
