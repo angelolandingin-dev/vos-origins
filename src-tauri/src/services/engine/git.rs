@@ -953,6 +953,7 @@ fn run_authed(
             }
             Err(err) => {
                 let _ = child.kill();
+                let _ = child.wait();
                 untrack_child(child.id());
                 let _ = stdout_thread.join();
                 let _ = stderr_thread.join();
