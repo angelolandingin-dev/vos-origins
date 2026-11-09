@@ -99,6 +99,11 @@ const NODE_BUILTINS: [&str; 45] = [
     "fs/promises",
 ];
 
+// Real packages whose only job is to fail the build when bundled on the wrong
+// side. Next resolves them from its own compiled copies, so an app can import
+// them without declaring the dependency, and the manifest is main-owned here.
+const MARKER_PACKAGES: [&str; 2] = ["server-only", "client-only"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DepAdd {
     pub section: String,
@@ -871,6 +876,9 @@ pub fn check_import_prerequisites(
             if NODE_BUILTINS.contains(&bare) {
                 continue;
             }
+            if MARKER_PACKAGES.contains(&name.as_str()) {
+                continue;
+            }
             if available.contains(&name) {
                 continue;
             }
@@ -1164,5 +1172,26 @@ import area from '../utils/area-match';
         let mut paths: Vec<&str> = missing[0].refs.iter().map(|r| r.path.as_str()).collect();
         paths.sort_unstable();
         assert_eq!(paths, vec!["src/a.ts", "src/b.ts"]);
+    }
+
+    #[test]
+    fn marker_packages_need_no_manifest_entry() {
+        let files = vec![CodeFile {
+            path: "src/svc.ts".to_string(),
+            content: "import 'server-only';\nimport 'client-only';\n".to_string(),
+        }];
+        let missing = check_import_prerequisites(&files, &json!({ "dependencies": {} }), &[]);
+        assert!(missing.is_empty(), "{missing:?}");
+    }
+
+    #[test]
+    fn marker_exemption_does_not_widen() {
+        let files = vec![CodeFile {
+            path: "src/svc.ts".to_string(),
+            content: "import x from 'left-pad';\n".to_string(),
+        }];
+        let missing = check_import_prerequisites(&files, &json!({ "dependencies": {} }), &[]);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].name, "left-pad");
     }
 }
