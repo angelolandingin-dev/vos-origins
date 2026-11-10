@@ -308,13 +308,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  const removePromotionExcludedPath = useCallback((path: string) => {
-    setPromotion((current) => ({
-      ...current,
-      excludedPaths: current.excludedPaths.filter((entry) => entry !== path),
-    }));
-  }, []);
-
   const dispatchPromotion = useCallback(() => {
     if (!selectedSubsystemId) return;
     setPromotion((current) => ({ ...current, dispatching: true, progress: [], error: null }));
@@ -446,7 +439,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionMessage,
       setPromotionExcludedPaths,
       addPromotionExcludedPath,
-      removePromotionExcludedPath,
       dispatchPromotion,
     }),
     [
@@ -484,7 +476,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setPromotionMessage,
       setPromotionExcludedPaths,
       addPromotionExcludedPath,
-      removePromotionExcludedPath,
       dispatchPromotion,
     ],
   );

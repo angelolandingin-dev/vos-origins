@@ -1,13 +1,13 @@
+import { useRef } from 'react';
 import type { PromotionPreflight } from '../api/types';
 import { PathLabel } from './PathLabel';
-import { Checkbox } from './ui/primitives';
+import { Button, Checkbox } from './ui/primitives';
 
 export interface CommitFileListProps {
   preflight: PromotionPreflight | null;
   preflightLoading: boolean;
   excludedPaths: string[];
-  onAddExcludedPath: (path: string) => void;
-  onRemoveExcludedPath: (path: string) => void;
+  onSetExcludedPaths: (paths: string[]) => void;
 }
 
 function isLockfile(path: string): boolean {
@@ -42,9 +42,9 @@ export function CommitFileList({
   preflight,
   preflightLoading,
   excludedPaths,
-  onAddExcludedPath,
-  onRemoveExcludedPath,
+  onSetExcludedPaths,
 }: CommitFileListProps) {
+  const anchorRef = useRef<number | null>(null);
   const files = preflight?.files ?? [];
   const deleted = new Set(preflight?.deleted ?? []);
   const unchanged = new Set(preflight?.unchanged ?? []);
@@ -54,6 +54,42 @@ export function CommitFileList({
   const toggleable = files.filter((file) => file.outcome !== 'skipped');
   const includedCount = toggleable.filter((file) => !excluded.has(file.path)).length;
   const excludedInList = files.filter((file) => excluded.has(file.path)).length;
+  const canExclude = toggleable.some((file) => !excluded.has(file.path));
+  const canInclude = toggleable.some((file) => excludedPaths.includes(file.path));
+
+  const excludeAll = () => {
+    const paths = toggleable.filter((file) => !excluded.has(file.path)).map((file) => file.path);
+    onSetExcludedPaths(Array.from(new Set([...excludedPaths, ...paths])));
+  };
+
+  const includeAll = () => {
+    const restored = new Set(
+      toggleable.filter((file) => excludedPaths.includes(file.path)).map((file) => file.path),
+    );
+    onSetExcludedPaths(excludedPaths.filter((path) => !restored.has(path)));
+  };
+
+  const toggleAt = (index: number, shiftKey: boolean) => {
+    const file = files[index];
+    if (!file) return;
+    const include = excluded.has(file.path);
+    const anchor = anchorRef.current;
+    anchorRef.current = index;
+    const [from, to] =
+      shiftKey && anchor !== null
+        ? [Math.min(anchor, index), Math.max(anchor, index)]
+        : [index, index];
+    const paths = files
+      .slice(from, to + 1)
+      .filter((candidate) => candidate.outcome !== 'skipped')
+      .map((candidate) => candidate.path);
+    if (paths.length === 0) return;
+    onSetExcludedPaths(
+      include
+        ? excludedPaths.filter((path) => !paths.includes(path))
+        : Array.from(new Set([...excludedPaths, ...paths])),
+    );
+  };
 
   return (
     <div className="space-y-1.5">
@@ -62,9 +98,31 @@ export function CommitFileList({
           Files to commit
         </h3>
         {files.length > 0 ? (
-          <span className="mono text-right text-muted tabular-nums">
-            {includedCount} of {files.length} included
-          </span>
+          <div className="flex items-center gap-2">
+            {canExclude ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={excludeAll}
+                aria-label="Exclude every excludable file from this promotion"
+              >
+                Exclude all
+              </Button>
+            ) : null}
+            {canInclude ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={includeAll}
+                aria-label="Include every excludable file in this promotion"
+              >
+                Include all
+              </Button>
+            ) : null}
+            <span className="mono text-right text-muted tabular-nums">
+              {includedCount} of {files.length} included
+            </span>
+          </div>
         ) : null}
       </div>
 
@@ -80,11 +138,11 @@ export function CommitFileList({
         <>
           <p className="text-[11px] leading-relaxed text-muted">
             {excludedInList === 0
-              ? 'All files included — uncheck any path to skip it.'
+              ? 'All files included — uncheck any path to skip it, or shift-click to skip a range.'
               : 'Unchecked paths are skipped.'}
           </p>
           <ul className="scroll-area max-h-[348px] divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
-            {files.map((file) => {
+            {files.map((file, index) => {
               const skipped = file.outcome === 'skipped';
               const isExcluded = excluded.has(file.path);
               const operatorExcluded = excludedPaths.includes(file.path);
@@ -98,8 +156,8 @@ export function CommitFileList({
                   <Checkbox
                     checked={included}
                     disabled={skipped && !operatorExcluded}
-                    onChange={() =>
-                      isExcluded ? onRemoveExcludedPath(file.path) : onAddExcludedPath(file.path)
+                    onChange={(event) =>
+                      toggleAt(index, (event.nativeEvent as MouseEvent).shiftKey)
                     }
                     label={
                       skipped && !operatorExcluded

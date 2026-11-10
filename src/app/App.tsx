@@ -79,7 +79,6 @@ export default function App() {
         onMessageChange={app.setPromotionMessage}
         excludedPaths={app.promotion.excludedPaths}
         onAddExcludedPath={app.addPromotionExcludedPath}
-        onRemoveExcludedPath={app.removePromotionExcludedPath}
         onSetExcludedPaths={app.setPromotionExcludedPaths}
         dependencies={app.promotion.dependencies}
         dependenciesLoading={app.promotion.dependenciesLoading}

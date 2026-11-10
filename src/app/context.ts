@@ -151,7 +151,6 @@ export interface AppContextValue {
   setPromotionMessage: (message: string) => void;
   setPromotionExcludedPaths: (paths: string[]) => void;
   addPromotionExcludedPath: (path: string) => void;
-  removePromotionExcludedPath: (path: string) => void;
   dispatchPromotion: () => void;
 }
 

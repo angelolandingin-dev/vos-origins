@@ -65,7 +65,6 @@ export interface PromotionDialogProps {
   onMessageChange: (message: string) => void;
   excludedPaths: string[];
   onAddExcludedPath: (path: string) => void;
-  onRemoveExcludedPath: (path: string) => void;
   onSetExcludedPaths: (paths: string[]) => void;
   dependencies: DependencyChange[];
   dependenciesLoading: boolean;
@@ -358,7 +357,6 @@ function PromotionDialogContent({
   onMessageChange,
   excludedPaths,
   onAddExcludedPath,
-  onRemoveExcludedPath,
   onSetExcludedPaths,
   dependencies,
   dependenciesLoading,
@@ -600,8 +598,7 @@ function PromotionDialogContent({
               preflight={preflight}
               preflightLoading={preflightLoading}
               excludedPaths={excludedPaths}
-              onAddExcludedPath={onAddExcludedPath}
-              onRemoveExcludedPath={onRemoveExcludedPath}
+              onSetExcludedPaths={onSetExcludedPaths}
             />
           </section>
 
