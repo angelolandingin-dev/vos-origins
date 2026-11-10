@@ -397,6 +397,10 @@ function PromotionDialogContent({
       Array.from(new Set([...excludedPaths, ...pendingReverts.map((file) => file.path)])),
     );
   };
+  const pendingConflicts = refusedPaths.filter((path) => !isExcluded(path));
+  const excludeAllConflicts = () => {
+    onSetExcludedPaths(Array.from(new Set([...excludedPaths, ...pendingConflicts])));
+  };
   const isDirect = delivery === 'local_direct';
   const isWorktree = delivery === 'worktree';
   const isLocal = delivery === 'local';
@@ -808,28 +812,46 @@ function PromotionDialogContent({
                 </ul>
               ) : null}
               {refusedPaths.length > 0 ? (
-                <ul className="divide-y divide-line overflow-hidden overflow-y-auto rounded-md border border-line bg-surface max-h-40">
-                  {refusedPaths.map((path) => (
-                    <li key={path} className="flex h-[29px] items-center gap-2 px-2.5">
-                      <TriangleAlert
-                        className="h-3 w-3 shrink-0 text-status-blocked"
-                        aria-hidden="true"
-                      />
-                      <PathLabel path={path} className="flex-1 text-[11px]" />
-                      {isExcluded(path) ? (
-                        <span className="shrink-0 text-[11px] text-muted">excluded</span>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => onAddExcludedPath(path)}
-                        >
-                          Exclude
-                        </Button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                <div className="space-y-1.5">
+                  <div className="flex h-[29px] items-center justify-between gap-2">
+                    <h4 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                      Conflicting paths
+                    </h4>
+                    {pendingConflicts.length > 0 ? (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={excludeAllConflicts}
+                        title="Exclude these paths from this promotion — they will not be promoted"
+                        aria-label={`Exclude all ${pendingConflicts.length} conflicting path${pendingConflicts.length === 1 ? '' : 's'} from this promotion`}
+                      >
+                        Exclude all {pendingConflicts.length}
+                      </Button>
+                    ) : null}
+                  </div>
+                  <ul className="divide-y divide-line overflow-hidden overflow-y-auto rounded-md border border-line bg-surface max-h-40">
+                    {refusedPaths.map((path) => (
+                      <li key={path} className="flex h-[29px] items-center gap-2 px-2.5">
+                        <TriangleAlert
+                          className="h-3 w-3 shrink-0 text-status-blocked"
+                          aria-hidden="true"
+                        />
+                        <PathLabel path={path} className="flex-1 text-[11px]" />
+                        {isExcluded(path) ? (
+                          <span className="shrink-0 text-[11px] text-muted">excluded</span>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => onAddExcludedPath(path)}
+                          >
+                            Exclude
+                          </Button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : null}
               <ExpandablePathList title="Excluded" paths={preflightExcluded} />
             </section>
