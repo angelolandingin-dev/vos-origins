@@ -422,6 +422,23 @@ function PromotionDialogContent({
     Boolean(selectedBranch?.allowed) &&
     (!cumulative || baseSha.trim().length > 0);
 
+  // A disabled primary button with no stated reason reads as a broken click.
+  const blockedReason = dispatching
+    ? null
+    : !acknowledged
+      ? 'Acknowledge the delivery above to enable the button.'
+      : sourceShas.length === 0
+        ? 'Select at least one commit to promote.'
+        : message.trim().length === 0
+          ? 'Enter a commit message to enable the button.'
+          : !subsystem
+            ? 'Select a subsystem first.'
+            : !selectedBranch?.allowed
+              ? `The target branch ${targetBranch} is not permitted by registry policy.`
+              : cumulative && baseSha.trim().length === 0
+                ? 'Enter the cumulative baseline SHA.'
+                : null;
+
   const copyNextCommands = () => {
     const text = (result?.nextCommands ?? []).join('\n');
     if (!text) return;
@@ -933,6 +950,9 @@ function PromotionDialogContent({
                 <Check className="h-3.5 w-3.5" aria-hidden="true" />
                 Confirmation recorded for this request.
               </p>
+            ) : null}
+            {blockedReason ? (
+              <p className="text-[11px] leading-relaxed text-status-unknown-ink">{blockedReason}</p>
             ) : null}
             {error ? (
               <div ref={outcomeRef}>
