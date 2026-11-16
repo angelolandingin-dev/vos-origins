@@ -1,6 +1,11 @@
 /** Every screen required by the spec (section 3.3). */
 export type Route =
-  'commit-browser' | 'subsystem-diff' | 'promote-commits' | 'integration-history' | 'settings';
+  | 'commit-browser'
+  | 'subsystem-diff'
+  | 'promote-commits'
+  | 'migrate'
+  | 'integration-history'
+  | 'settings';
 
 export interface NavItem {
   id: Route;
@@ -23,6 +28,11 @@ export const NAV_ITEMS: NavItem[] = [
     id: 'promote-commits',
     label: 'Promote Commits',
     description: 'Confirm SHAs and target branch, then dispatch',
+  },
+  {
+    id: 'migrate',
+    label: 'Migrate',
+    description: 'Push main-branch changes into subsystems as pull requests',
   },
   {
     id: 'integration-history',
@@ -48,6 +58,10 @@ export const ROUTE_META: Record<Route, { title: string; subtitle: string }> = {
   'promote-commits': {
     title: 'Promote Commits',
     subtitle: 'Confirm SHAs and target branch, then dispatch',
+  },
+  migrate: {
+    title: 'Migrate',
+    subtitle: 'Push main-branch changes into subsystems as pull requests',
   },
   'integration-history': {
     title: 'Integration History',

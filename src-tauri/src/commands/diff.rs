@@ -10,17 +10,7 @@ use crate::services::registry::SubsystemEntry;
 use crate::services::{live_read, subsystem_diff};
 use crate::AppState;
 
-use super::cached_json;
-
-fn live_token() -> AppResult<String> {
-    crate::github::gh_cli::auth_token().ok_or_else(|| {
-        AppError::new(
-            ErrorCode::Unauthenticated,
-            "No GitHub token is available (checked GH_TOKEN, GITHUB_TOKEN and `gh auth token`).",
-        )
-        .with_remedy("Run `gh auth login --hostname github.com` or set GH_TOKEN, then retry.")
-    })
-}
+use super::{cached_json, live_token};
 
 pub(crate) fn diff_cache_key(mode: &str, subsystem_id: &str, target_branch: &str) -> String {
     format!("{mode}::subsystem-diff::{subsystem_id}::{target_branch}")

@@ -16,6 +16,10 @@ import type {
   IntegrationPr,
   IntegrationStatus,
   MainCommitDiff,
+  MigratePreview,
+  MigratePreviewRequest,
+  MigrateRunRequest,
+  MigrateRunResult,
   PromotionDispatchResult,
   PromotionPreflight,
   PromotionRequest,
@@ -149,6 +153,12 @@ export const api = {
 
   preflightPromotion: (request: PromotionRequest) =>
     call<PromotionPreflight>('preflight_promotion', { request }),
+
+  previewMigration: (request: MigratePreviewRequest) =>
+    call<MigratePreview>('preview_migration', { request }),
+
+  runMigration: (request: MigrateRunRequest) =>
+    call<MigrateRunResult>('run_migration', { request }),
 
   listIntegrationPrs: (targetBranch: string, subsystemId: string | null) =>
     call<IntegrationPr[]>('list_integration_prs', { targetBranch, subsystemId }),

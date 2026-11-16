@@ -610,3 +610,93 @@ export interface SubsystemDiff {
   fetchedAt: string;
   dataSource: DataSource;
 }
+
+/** Reverse migration: main branch ? one subsystem, delivered as a pull request. */
+export type MigratePathState = 'changed' | 'diverged' | 'mainOnly';
+
+export interface MigratePath {
+  path: string;
+  state: MigratePathState;
+}
+
+export type MigrateDepAction = 'add' | 'update' | 'move';
+
+export interface MigrateDependency {
+  name: string;
+  action: MigrateDepAction;
+  fromSection?: string;
+  fromSpec?: string;
+  section: string;
+  spec: string;
+}
+
+export interface MigrationBlocker {
+  code: string;
+  message: string;
+  details: string | null;
+}
+
+export interface MigratePlan {
+  subsystemId: string;
+  name: string;
+  sourceBranch: string;
+  branch: string;
+  mainSha: string;
+  sourceSha: string;
+  paths: MigratePath[];
+  mainOnly: string[];
+  dependencies: MigrateDependency[];
+  excluded: string[];
+  blockers: MigrationBlocker[];
+  warnings: string[];
+}
+
+export interface MigratePreview {
+  mainBranch: string;
+  mainSha: string;
+  subsystems: MigratePlan[];
+}
+
+export interface MigratePullRequest {
+  number: number | null;
+  url: string | null;
+  state: string;
+  base: string;
+  head: string;
+}
+
+export interface MigrateOutcome {
+  subsystemId: string;
+  ok: boolean;
+  branch: string;
+  commitSha: string | null;
+  pullRequest: MigratePullRequest | null;
+  applied: string[];
+  dependencies: MigrateDependency[];
+  blockers: MigrationBlocker[];
+  warnings: string[];
+  message: string | null;
+}
+
+export interface MigrateRunResult {
+  mainBranch: string;
+  mainSha: string;
+  outcomes: MigrateOutcome[];
+}
+
+export interface MigrateSelection {
+  subsystemId: string;
+  excludedPaths?: string[];
+  includePaths?: string[];
+}
+
+export interface MigratePreviewRequest {
+  mainBranch: string;
+  subsystemIds: string[];
+}
+
+export interface MigrateRunRequest {
+  mainBranch: string;
+  message?: string | null;
+  subsystems: MigrateSelection[];
+}

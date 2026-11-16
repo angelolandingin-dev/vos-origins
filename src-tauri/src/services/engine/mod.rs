@@ -10,6 +10,7 @@ pub mod git;
 pub mod github_ops;
 pub mod history;
 pub mod lockfile;
+pub mod migrate;
 pub mod preflight;
 pub mod provenance;
 pub mod semver;
@@ -30,7 +31,7 @@ use deps::{DepAdd, DepUpdate, MovedDep, RemovedDep, ReviewNote};
 use github_ops::{CreatePrRequest, GitHubOps, PullRequestInfo, PushOutcome};
 use lockfile::{LockfileGenerator, LockfileOutcome};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Blocker {
     pub code: String,
     pub message: String,
@@ -2084,7 +2085,10 @@ fn read_manifest(repo_dir: &Path, sha: &str) -> serde_json::Value {
         .unwrap_or_else(|| serde_json::json!({}))
 }
 
-fn stringify_manifest(manifest: &serde_json::Value, original_text: Option<&str>) -> String {
+pub(crate) fn stringify_manifest(
+    manifest: &serde_json::Value,
+    original_text: Option<&str>,
+) -> String {
     let indent = original_text
         .and_then(|text| {
             let idx = text.find('\n')?;

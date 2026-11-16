@@ -60,6 +60,8 @@ pub fn run() {
             commands::diff::get_subsystem_diff,
             commands::promotion::dispatch_promotion,
             commands::promotion::preflight_promotion,
+            commands::migration::preview_migration,
+            commands::migration::run_migration,
             commands::history::list_integration_prs,
             commands::history::list_integration_history,
             commands::history::get_integration_event,

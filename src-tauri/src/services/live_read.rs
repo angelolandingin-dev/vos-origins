@@ -1536,6 +1536,11 @@ pub(crate) fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<S
             &format!("--max-count={MAX_SOURCE_COMMITS}"),
             &fmt,
             "--raw",
+            // Full blob ids: `history_of` compares content identity across repos.
+            "--no-abbrev",
+            // Rename rows carry two paths after one tab, which the row parser
+            // cannot split; as A+D pairs every consumer sees real paths.
+            "--no-renames",
             branch,
         ],
     )

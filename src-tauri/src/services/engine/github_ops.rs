@@ -14,7 +14,8 @@ pub enum GitHubMode {
     Stub,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PullRequestInfo {
     pub number: Option<u64>,
     pub url: Option<String>,

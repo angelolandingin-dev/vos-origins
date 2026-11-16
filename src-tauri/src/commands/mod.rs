@@ -4,6 +4,7 @@ pub mod auth;
 pub mod commits;
 pub mod diff;
 pub mod history;
+pub mod migration;
 pub mod promotion;
 pub mod registry;
 pub mod system;
@@ -13,6 +14,16 @@ use crate::fixtures::FixtureWorld;
 use crate::AppState;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+
+pub(crate) fn live_token() -> AppResult<String> {
+    crate::github::gh_cli::auth_token().ok_or_else(|| {
+        AppError::new(
+            ErrorCode::Unauthenticated,
+            "No GitHub token is available (checked GH_TOKEN, GITHUB_TOKEN and `gh auth token`).",
+        )
+        .with_remedy("Run `gh auth login --hostname github.com` or set GH_TOKEN, then retry.")
+    })
+}
 
 pub(crate) fn read_world<T>(
     state: &AppState,
