@@ -1,14 +1,15 @@
-//! End-to-end reverse migration: main branch → subsystem branch → pushed PR,
+//! End-to-end distribution: trunk branch → subsystem branch → pushed PR,
 //! against disposable local git repositories so the suite stays offline.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
+use vos_origins_lib::services::engine::distribute::{self, MainSnapshot, Selection};
 use vos_origins_lib::services::engine::github_ops::{
     BranchInfo, CreatePrRequest, GitHubMode, GitHubOps, PullRequestInfo, PushOutcome,
 };
-use vos_origins_lib::services::engine::migrate::{self, MainSnapshot, MigratePathState, Selection};
 use vos_origins_lib::services::registry::SubsystemEntry;
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -145,8 +146,8 @@ fn entry() -> SubsystemEntry {
 }
 
 #[test]
-fn migrates_main_changes_into_a_subsystem_pull_request() {
-    let root = sandbox("migrate-e2e");
+fn distributes_trunk_commit_paths_into_a_subsystem_pull_request() {
+    let root = sandbox("distribute-e2e");
 
     let main_dir = root.join("main");
     init(&main_dir, "master");
@@ -192,22 +193,32 @@ fn migrates_main_changes_into_a_subsystem_pull_request() {
     git(&root, &["clone", "-q", &remote, "hr"]);
 
     write(&main_dir, "src/shared.ts", "export const shared = 2;\n");
-    commit(&main_dir, "main moves ahead");
+    let trunk_sha = commit(&main_dir, "main moves ahead");
 
     let main = MainSnapshot::load(&main_dir, "master").expect("load main snapshot");
+    let commits = distribute::trunk_commits(&main).expect("trunk commits");
+    let selected = commits
+        .iter()
+        .find(|commit| commit.sha == trunk_sha)
+        .expect("the new trunk commit is listed");
+    assert_eq!(selected.paths, vec!["src/shared.ts".to_string()]);
+    let wanted: HashSet<String> = selected.paths.iter().cloned().collect();
+
     let ops = PrRecorder::default();
     let subsystem = entry();
-    let plan = migrate::plan(&main, &child_dir, &subsystem, &ops);
+    let plan = distribute::plan(&main, &child_dir, &subsystem, &ops, &wanted);
 
     assert!(
         plan.blockers.is_empty(),
         "unexpected blockers: {:?}",
         plan.blockers
     );
-    assert_eq!(plan.paths.len(), 1, "plan: {plan:?}");
-    assert_eq!(plan.paths[0].path, "src/shared.ts");
-    assert_eq!(plan.paths[0].state, MigratePathState::Changed);
-    assert_eq!(plan.branch, "migrate-master");
+    assert_eq!(
+        plan.paths,
+        vec!["src/shared.ts".to_string()],
+        "plan: {plan:?}"
+    );
+    assert_eq!(plan.branch, "distribute-master");
     assert_eq!(plan.dependencies.len(), 2, "deps: {:?}", plan.dependencies);
     assert!(plan
         .dependencies
@@ -218,23 +229,23 @@ fn migrates_main_changes_into_a_subsystem_pull_request() {
     }));
 
     let temp_root = root.join("tmp");
-    let outcome = migrate::run(migrate::RunInput {
+    let outcome = distribute::run(distribute::RunInput {
         main: &main,
         child_dir: &child_dir,
         entry: &subsystem,
         main_repo: "ORG/main-system",
         plan: &plan,
         selection: &Selection::default(),
-        message: Some("sync from master"),
+        message: Some("distribute from master"),
         temp_root: &temp_root,
         remote_url: &remote,
         github: &ops,
     });
 
-    assert!(outcome.ok, "migration blockers: {:?}", outcome.blockers);
+    assert!(outcome.ok, "distribution blockers: {:?}", outcome.blockers);
     assert_eq!(outcome.applied, vec!["src/shared.ts".to_string()]);
     let pull_request = outcome.pull_request.expect("pull request opened");
-    assert_eq!(pull_request.head, "migrate-master");
+    assert_eq!(pull_request.head, "distribute-master");
     assert_eq!(pull_request.base, "master");
     assert_eq!(
         ops.requests.lock().expect("pr lock").len(),
@@ -242,21 +253,24 @@ fn migrates_main_changes_into_a_subsystem_pull_request() {
         "exactly one pull request"
     );
 
-    let branch_tip = git(&bare, &["rev-parse", "migrate-master"]);
+    let branch_tip = git(&bare, &["rev-parse", "distribute-master"]);
     assert_eq!(Some(branch_tip), outcome.commit_sha);
     assert_eq!(
-        git(&bare, &["show", "migrate-master:src/shared.ts"]),
+        git(&bare, &["show", "distribute-master:src/shared.ts"]),
         "export const shared = 2;"
     );
     let manifest: serde_json::Value =
-        serde_json::from_str(&git(&bare, &["show", "migrate-master:package.json"]))
+        serde_json::from_str(&git(&bare, &["show", "distribute-master:package.json"]))
             .expect("manifest is json");
     assert_eq!(manifest["dependencies"]["react"], "^18.2.0");
     assert_eq!(manifest["dependencies"]["zod"], "^3.23.0");
-    let message = git(&bare, &["log", "-1", "--format=%B", "migrate-master"]);
-    assert!(message.contains("sync from master"), "message: {message}");
+    let message = git(&bare, &["log", "-1", "--format=%B", "distribute-master"]);
     assert!(
-        message.contains("Promotion-Mode: migrate"),
+        message.contains("distribute from master"),
+        "message: {message}"
+    );
+    assert!(
+        message.contains("Promotion-Mode: distribute"),
         "message: {message}"
     );
 }

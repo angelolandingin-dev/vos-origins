@@ -3,8 +3,8 @@
 pub mod auth;
 pub mod commits;
 pub mod diff;
+pub mod distribution;
 pub mod history;
-pub mod migration;
 pub mod promotion;
 pub mod registry;
 pub mod system;

@@ -1,6 +1,6 @@
-//! Reverse migration: main branch → one subsystem, delivered as a pull request
-//! on `migrate-<main-branch>`. Ownership is the subsystem's own tree; main
-//! supplies the bytes. Never writes a lockfile, never deletes a path.
+//! Trunk ? subsystem distribution: the operator picks trunk commits, the paths
+//! those commits touch are offered per subsystem and delivered as a pull request
+//! on `distribute-<trunk-branch>`. Never writes a lockfile, never deletes a path.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -19,33 +19,34 @@ use crate::error::{AppError, AppResult, ErrorCode};
 use crate::services::live_read;
 use crate::services::registry::SubsystemEntry;
 
-pub const MIGRATION_PROGRESS_EVENT: &str = "migration-progress";
-pub const MIGRATE_MODE: &str = "migrate";
+pub const DISTRIBUTION_PROGRESS_EVENT: &str = "distribution-progress";
+pub const DISTRIBUTE_MODE: &str = "distribute";
 
 const MAX_BLOB_BYTES: usize = 1024 * 1024;
 const MAX_LISTED_PATHS: usize = 200;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum MigratePathState {
-    /// The subsystem's own history never contained main's current content.
-    Changed,
-    /// Both sides changed the path independently; main was touched last.
-    Diverged,
-    /// Absent from the subsystem tree; offered only when explicitly ticked.
-    MainOnly,
+pub struct TrunkCommit {
+    pub sha: String,
+    pub short_sha: String,
+    pub subject: String,
+    pub author_name: String,
+    pub committed_at: String,
+    pub committed_unix: i64,
+    pub files_changed: u32,
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MigratePath {
+pub struct DistributionSkip {
     pub path: String,
-    pub state: MigratePathState,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum MigrateDepAction {
+pub enum DistributionDepAction {
     Add,
     Update,
     Move,
@@ -53,9 +54,9 @@ pub enum MigrateDepAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MigrateDependency {
+pub struct DistributionDependency {
     pub name: String,
-    pub action: MigrateDepAction,
+    pub action: DistributionDepAction,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from_section: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,45 +67,43 @@ pub struct MigrateDependency {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MigratePlan {
+pub struct DistributionPlan {
     pub subsystem_id: String,
     pub name: String,
     pub source_branch: String,
     pub branch: String,
     pub main_sha: String,
     pub source_sha: String,
-    pub paths: Vec<MigratePath>,
-    pub main_only: Vec<String>,
-    pub dependencies: Vec<MigrateDependency>,
-    pub excluded: Vec<String>,
+    pub paths: Vec<String>,
+    pub skipped: Vec<DistributionSkip>,
+    pub dependencies: Vec<DistributionDependency>,
     pub blockers: Vec<Blocker>,
     pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MigratePreview {
+pub struct DistributionPreview {
     pub main_branch: String,
     pub main_sha: String,
-    pub subsystems: Vec<MigratePlan>,
+    pub subsystems: Vec<DistributionPlan>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Selection {
     pub excluded_paths: Vec<String>,
-    pub include_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MigrateOutcome {
+pub struct DistributionOutcome {
     pub subsystem_id: String,
     pub ok: bool,
     pub branch: String,
     pub commit_sha: Option<String>,
     pub pull_request: Option<PullRequestInfo>,
     pub applied: Vec<String>,
-    pub dependencies: Vec<MigrateDependency>,
+    pub dependencies: Vec<DistributionDependency>,
     pub blockers: Vec<Blocker>,
     pub warnings: Vec<String>,
     pub message: Option<String>,
@@ -112,10 +111,10 @@ pub struct MigrateOutcome {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MigrateRunResult {
+pub struct DistributionRunResult {
     pub main_branch: String,
     pub main_sha: String,
-    pub outcomes: Vec<MigrateOutcome>,
+    pub outcomes: Vec<DistributionOutcome>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,18 +123,11 @@ pub struct TreeEntry {
     pub blob: String,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct PathHistory {
-    pub blobs: HashSet<String>,
-    pub last_epoch: i64,
-}
-
 pub struct MainSnapshot {
     pub dir: std::path::PathBuf,
     pub branch: String,
     pub sha: String,
     pub index: HashMap<String, TreeEntry>,
-    pub history: HashMap<String, PathHistory>,
     pub manifest: Value,
 }
 
@@ -144,7 +136,7 @@ impl MainSnapshot {
         let branch = main_branch.trim();
         if branch.is_empty() {
             return Err(
-                AppError::invalid_request("Choose a main branch to migrate from.")
+                AppError::invalid_request("Choose a main branch to distribute from.")
                     .with_remedy("Pick one of the main repository's branches."),
             );
         }
@@ -175,15 +167,36 @@ impl MainSnapshot {
             branch: branch.to_string(),
             sha: sha.clone(),
             index,
-            history: history_of(main_dir, &sha),
             manifest: read_manifest(main_dir, &sha),
         })
     }
 }
 
-/// `migrate-<main branch>` with everything git refuses in a ref name flattened,
+/// Commits on the trunk branch, newest first, with the paths each one touched.
+pub fn trunk_commits(main: &MainSnapshot) -> AppResult<Vec<TrunkCommit>> {
+    let commits = live_read::parse_source_log(&main.dir, &main.branch)?;
+    Ok(commits
+        .into_iter()
+        .map(|commit| TrunkCommit {
+            short_sha: commit.sha.chars().take(7).collect(),
+            sha: commit.sha,
+            subject: commit.subject,
+            author_name: commit.author_name,
+            committed_at: commit.committed_at,
+            committed_unix: commit.committed_unix,
+            files_changed: commit.files_changed,
+            paths: commit
+                .deltas
+                .into_iter()
+                .map(|(path, _blob, _status)| path)
+                .collect(),
+        })
+        .collect())
+}
+
+/// `distribute-<main branch>` with everything git refuses in a ref name flattened,
 /// mirroring how integration branches are named on the forward path.
-pub fn migration_branch(main_branch: &str) -> String {
+pub fn distribution_branch(main_branch: &str) -> String {
     let safe: String = main_branch
         .chars()
         .map(|c| {
@@ -194,7 +207,7 @@ pub fn migration_branch(main_branch: &str) -> String {
             }
         })
         .collect();
-    format!("migrate-{safe}")
+    format!("distribute-{safe}")
 }
 
 pub fn plan(
@@ -202,9 +215,10 @@ pub fn plan(
     child_dir: &Path,
     entry: &SubsystemEntry,
     github: &dyn GitHubOps,
-) -> MigratePlan {
-    let branch = migration_branch(&main.branch);
-    let mut plan = MigratePlan {
+    wanted: &HashSet<String>,
+) -> DistributionPlan {
+    let branch = distribution_branch(&main.branch);
+    let mut plan = DistributionPlan {
         subsystem_id: entry.id.clone(),
         name: entry.name.clone(),
         source_branch: entry.source_branch.clone(),
@@ -212,9 +226,8 @@ pub fn plan(
         main_sha: main.sha.clone(),
         source_sha: String::new(),
         paths: Vec::new(),
-        main_only: Vec::new(),
+        skipped: Vec::new(),
         dependencies: Vec::new(),
-        excluded: Vec::new(),
         blockers: Vec::new(),
         warnings: Vec::new(),
     };
@@ -247,7 +260,7 @@ pub fn plan(
     {
         plan.blockers.push(Blocker::new(
             "BRANCH_NAME_REJECTED",
-            format!("Git refuses the migration branch name '{branch}'."),
+            format!("Git refuses the distribution branch name '{branch}'."),
         ));
         return plan;
     }
@@ -268,10 +281,10 @@ pub fn plan(
         Ok(branches) => {
             if let Some(existing) = branches.iter().find(|b| b.name == branch) {
                 plan.blockers.push(Blocker {
-                    code: "MIGRATION_BRANCH_EXISTS".to_string(),
+                    code: "DISTRIBUTION_BRANCH_EXISTS".to_string(),
                     message: format!("Branch '{branch}' already exists on {}.", entry.repository),
                     details: Some(format!(
-                        "Merge or delete it first, or push the existing branch. It points at {}.",
+                        "Merge or delete it first. It points at {}.",
                         existing.sha
                     )),
                 });
@@ -283,37 +296,41 @@ pub fn plan(
         )),
     }
 
-    let child_history = history_of(child_dir, &child_sha);
-    if child_history.is_empty() {
-        plan.warnings.push(
-            "The subsystem history could not be read; direction is decided by last-touch time only."
-                .to_string(),
-        );
-    }
     // A leftover local branch would make `worktree_add` fail, and cleanup only
     // deletes branches this run created, so refuse before anything is written.
     if git::local_branch_exists(child_dir, &branch) {
         plan.blockers.push(Blocker {
-            code: "MIGRATION_BRANCH_EXISTS".to_string(),
+            code: "DISTRIBUTION_BRANCH_EXISTS".to_string(),
             message: format!("A local branch '{branch}' already exists in the subsystem checkout."),
             details: Some(format!(
-                "Delete it in {} (or push it to {}) before migrating again.",
+                "Delete it in {} (or push it to {}) before distributing again.",
                 child_dir.display(),
                 entry.repository
             )),
         });
     }
 
+    let mut missing = 0usize;
+    let mut identical = 0usize;
     let mut lockfile_seen = false;
-    for (path, child_entry) in &child_index {
-        if is_deferred(path) {
-            lockfile_seen |= is_lockfile(path);
-            continue;
-        }
+    for path in wanted {
         let Some(main_entry) = main.index.get(path) else {
+            missing += 1;
             continue;
         };
-        if main_entry.blob == child_entry.blob {
+        if is_deferred(path) {
+            if is_lockfile(path) {
+                lockfile_seen = true;
+                plan.skipped.push(DistributionSkip {
+                    path: path.clone(),
+                    reason: "lockfile: never written, commit it after `npm install`".to_string(),
+                });
+            } else {
+                plan.skipped.push(DistributionSkip {
+                    path: path.clone(),
+                    reason: "package.json: dependencies are merged by the distribution".to_string(),
+                });
+            }
             continue;
         }
         let classification =
@@ -322,45 +339,35 @@ pub fn plan(
             classification.status,
             PathStatus::Apply | PathStatus::ExplicitReview
         ) {
-            plan.excluded.push(path.clone());
-            continue;
-        }
-        let state = direction(
-            &main_entry.blob,
-            &child_entry.blob,
-            child_history.get(path),
-            main.history.get(path),
-        );
-        if let Some(state) = state {
-            plan.paths.push(MigratePath {
+            plan.skipped.push(DistributionSkip {
                 path: path.clone(),
-                state,
+                reason: classification.reason.clone(),
             });
+            continue;
         }
+        if child_index
+            .get(path)
+            .map(|child| child.blob == main_entry.blob)
+            .unwrap_or(false)
+        {
+            identical += 1;
+            continue;
+        }
+        plan.paths.push(path.clone());
     }
-    plan.paths.sort_by(|a, b| a.path.cmp(&b.path));
-    plan.excluded.sort();
-
-    let child_dirs: HashSet<&str> = child_index
-        .keys()
-        .filter_map(|path| path.rsplit_once('/').map(|(dir, _)| dir))
-        .collect();
-    for (path, main_entry) in &main.index {
-        if child_index.contains_key(path) || is_deferred(path) {
-            continue;
-        }
-        let parent = path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
-        if !parent.is_empty() && !child_dirs.contains(parent) {
-            continue;
-        }
-        let classification =
-            classify::classify_path(path, &entry.integration_policy, Some(&main_entry.mode));
-        if classification.status != PathStatus::Apply {
-            continue;
-        }
-        plan.main_only.push(path.clone());
+    plan.paths.sort();
+    plan.skipped.sort_by(|a, b| a.path.cmp(&b.path));
+    if missing > 0 {
+        plan.warnings.push(format!(
+            "{missing} selected path(s) no longer exist on '{}' and were skipped.",
+            main.branch
+        ));
     }
-    plan.main_only.sort();
+    if identical > 0 {
+        plan.warnings.push(format!(
+            "{identical} selected path(s) already match the subsystem and were skipped."
+        ));
+    }
 
     let child_manifest = read_manifest(child_dir, &child_sha);
     if child_manifest
@@ -379,17 +386,17 @@ pub fn plan(
     }
 
     let mut imported = imported_packages(child_dir, &child_index);
-    // Migrated main files bring their own imports; without them a package the
+    // Distributed trunk files bring their own imports; without them a package the
     // subsystem never imported would block the run instead of being added.
     imported.extend(imported_names(&read_code_files(main, &plan.paths)));
     plan.dependencies = dependency_plan(&main.manifest, &child_manifest, &imported);
     let overrides: Vec<String> = plan
         .dependencies
         .iter()
-        .filter(|dep| dep.action == MigrateDepAction::Update)
+        .filter(|dep| dep.action == DistributionDepAction::Update)
         .map(|dep| {
             format!(
-                "Overrides the subsystem's {} {} with main's {}; the subsystem's code may need changes.",
+                "Overrides the subsystem's {} {} with trunk's {}; the subsystem's code may need changes.",
                 dep.name,
                 dep.from_spec.clone().unwrap_or_default(),
                 dep.spec
@@ -404,9 +411,9 @@ pub fn plan(
             .extend(prerequisite_blockers(&files, &updated, &plan.dependencies));
     }
 
-    if plan.paths.is_empty() && plan.dependencies.is_empty() && plan.main_only.is_empty() {
+    if plan.paths.is_empty() && plan.dependencies.is_empty() {
         plan.warnings
-            .push("Main and this subsystem already agree; nothing to migrate.".to_string());
+            .push("The selected commits change nothing this subsystem still lacks.".to_string());
     }
     if lockfile_seen {
         plan.warnings.push(
@@ -422,7 +429,7 @@ pub struct RunInput<'a> {
     pub child_dir: &'a Path,
     pub entry: &'a SubsystemEntry,
     pub main_repo: &'a str,
-    pub plan: &'a MigratePlan,
+    pub plan: &'a DistributionPlan,
     pub selection: &'a Selection,
     pub message: Option<&'a str>,
     pub temp_root: &'a Path,
@@ -430,9 +437,9 @@ pub struct RunInput<'a> {
     pub github: &'a dyn GitHubOps,
 }
 
-pub fn run(input: RunInput<'_>) -> MigrateOutcome {
+pub fn run(input: RunInput<'_>) -> DistributionOutcome {
     let plan = input.plan;
-    let mut outcome = MigrateOutcome {
+    let mut outcome = DistributionOutcome {
         subsystem_id: plan.subsystem_id.clone(),
         ok: false,
         branch: plan.branch.clone(),
@@ -454,30 +461,16 @@ pub fn run(input: RunInput<'_>) -> MigrateOutcome {
         .iter()
         .map(String::as_str)
         .collect();
-    let mut selected: Vec<MigratePath> = plan
+    let selected: Vec<String> = plan
         .paths
         .iter()
-        .filter(|p| !excluded.contains(p.path.as_str()))
+        .filter(|path| !excluded.contains(path.as_str()))
         .cloned()
         .collect();
-    let include: HashSet<&str> = input
-        .selection
-        .include_paths
-        .iter()
-        .map(String::as_str)
-        .collect();
-    for path in &plan.main_only {
-        if include.contains(path.as_str()) {
-            selected.push(MigratePath {
-                path: path.clone(),
-                state: MigratePathState::MainOnly,
-            });
-        }
-    }
     if selected.is_empty() && plan.dependencies.is_empty() {
         outcome.blockers.push(Blocker::new(
             "NO_CHANGES",
-            "Nothing is selected to migrate.",
+            "Nothing is selected to distribute.",
         ));
         return outcome;
     }
@@ -487,7 +480,7 @@ pub fn run(input: RunInput<'_>) -> MigrateOutcome {
             outcome.ok = true;
             outcome.commit_sha = Some(commit_sha);
             outcome.pull_request = pull_request;
-            outcome.applied = selected.iter().map(|p| p.path.clone()).collect();
+            outcome.applied = selected.clone();
         }
         Err(err) => {
             outcome.blockers.push(Blocker {
@@ -502,7 +495,7 @@ pub fn run(input: RunInput<'_>) -> MigrateOutcome {
 
 type Published = (String, Option<PullRequestInfo>);
 
-fn apply_and_publish(input: &RunInput<'_>, selected: &[MigratePath]) -> AppResult<Published> {
+fn apply_and_publish(input: &RunInput<'_>, selected: &[String]) -> AppResult<Published> {
     let branch = input.plan.branch.clone();
     let nonce = format!(
         "{}-{}",
@@ -511,9 +504,9 @@ fn apply_and_publish(input: &RunInput<'_>, selected: &[MigratePath]) -> AppResul
     );
     let worktree = input
         .temp_root
-        .join(format!("migrate-{}-{nonce}", input.entry.id));
+        .join(format!("distribute-{}-{nonce}", input.entry.id));
     std::fs::create_dir_all(input.temp_root).ok();
-    let applied: Vec<String> = selected.iter().map(|path| path.path.clone()).collect();
+    let applied: Vec<String> = selected.to_vec();
     let branch_existed = git::local_branch_exists(input.child_dir, &branch);
 
     let result = populate_worktree(input, selected, &worktree).and_then(|commit_sha| {
@@ -530,7 +523,7 @@ fn apply_and_publish(input: &RunInput<'_>, selected: &[MigratePath]) -> AppResul
 
 fn populate_worktree(
     input: &RunInput<'_>,
-    selected: &[MigratePath],
+    selected: &[String],
     worktree: &Path,
 ) -> AppResult<String> {
     git::worktree_add(
@@ -543,34 +536,33 @@ fn populate_worktree(
         AppError::new(
             ErrorCode::Internal,
             format!(
-                "Could not create a migration worktree: {}",
+                "Could not create a distribution worktree: {}",
                 git::sanitize(&err.to_string())
             ),
         )
-        .with_remedy("Check that no other migration is running for this subsystem, then retry.")
+        .with_remedy("Check that no other distribution is running for this subsystem, then retry.")
     })?;
 
     let mut code_files: Vec<CodeFile> = Vec::new();
     for item in selected {
-        let path = classify::inspect_path_safety(&item.path).map_err(|reason| {
-            AppError::invalid_request(format!("'{}' is not a safe path: {reason}", item.path))
+        let path = classify::inspect_path_safety(item).map_err(|reason| {
+            AppError::invalid_request(format!("'{item}' is not a safe path: {reason}"))
         })?;
         let mode = input
             .main
             .index
-            .get(&item.path)
+            .get(item)
             .map(|entry| entry.mode.clone())
             .unwrap_or_else(|| "100644".to_string());
         if mode == "120000" || mode == "160000" {
             return Err(AppError::invalid_request(format!(
-                "'{}' is a symlink or submodule entry; migration only copies regular files.",
-                item.path
+                "'{item}' is a symlink or submodule entry; distribution only copies regular files."
             )));
         }
         let bytes = git::read_blob(&input.main.dir, &input.main.sha, &path).ok_or_else(|| {
             AppError::new(
                 ErrorCode::RepositoryInaccessible,
-                format!("Could not read '{}' from the main checkout.", item.path),
+                format!("Could not read '{item}' from the main checkout."),
             )
             .with_remedy("Fetch the main branch again and retry.")
         })?;
@@ -586,7 +578,7 @@ fn populate_worktree(
         std::fs::write(&target, &bytes).map_err(|err| {
             AppError::new(
                 ErrorCode::Internal,
-                format!("Could not write '{}': {err}", item.path),
+                format!("Could not write '{item}': {err}"),
             )
         })?;
         if deps::is_code_path(&path) && bytes.len() <= MAX_BLOB_BYTES {
@@ -601,7 +593,7 @@ fn populate_worktree(
         AppError::new(
             ErrorCode::Internal,
             format!(
-                "Could not stage the migrated files: {}",
+                "Could not stage the distributed files: {}",
                 git::sanitize(&err.to_string())
             ),
         )
@@ -610,10 +602,10 @@ fn populate_worktree(
         let executable = input
             .main
             .index
-            .get(&item.path)
+            .get(item)
             .map(|entry| entry.mode == "100755")
             .unwrap_or(false);
-        git::update_index_chmod(worktree, &item.path, executable);
+        git::update_index_chmod(worktree, item, executable);
     }
 
     if !input.plan.dependencies.is_empty() {
@@ -668,7 +660,7 @@ fn populate_worktree(
         subsystem_id: &input.entry.id,
         source_repo: input.main_repo,
         source_commits: std::slice::from_ref(&input.main.sha),
-        mode: MIGRATE_MODE,
+        mode: DISTRIBUTE_MODE,
         target: &input.entry.source_branch,
         subject: &subject,
     });
@@ -685,7 +677,7 @@ fn populate_worktree(
     std::fs::write(&message_file, message.as_bytes()).map_err(|err| {
         AppError::new(
             ErrorCode::Internal,
-            format!("Could not stage the migration commit message: {err}"),
+            format!("Could not stage the distribution commit message: {err}"),
         )
     })?;
     let commit_sha = git::commit_with_message(worktree, &message_file, &author.name, &author.email)
@@ -693,7 +685,7 @@ fn populate_worktree(
             AppError::new(
                 ErrorCode::Internal,
                 format!(
-                    "Could not commit the migration: {}",
+                    "Could not commit the distribution: {}",
                     git::sanitize(&err.to_string())
                 ),
             )
@@ -703,7 +695,7 @@ fn populate_worktree(
 
     // `git add -A` skips ignored paths, and the worktree is about to be
     // destroyed, so a selected path missing from the commit must fail loudly.
-    let mut expected: HashSet<&str> = selected.iter().map(|item| item.path.as_str()).collect();
+    let mut expected: HashSet<&str> = selected.iter().map(String::as_str).collect();
     if !input.plan.dependencies.is_empty() {
         expected.insert("package.json");
     }
@@ -719,7 +711,7 @@ fn populate_worktree(
         return Err(AppError::new(
             ErrorCode::Internal,
             format!(
-                "The migration commit is missing {} selected path(s): {}.",
+                "The distribution commit is missing {} selected path(s): {}.",
                 missing.len(),
                 missing.join(", ")
             ),
@@ -772,7 +764,7 @@ fn publish(
         .with_remedy("Check the token's push permission on the subsystem repository, then retry.")
     })?;
 
-    let body = migration_body(input, applied);
+    let body = distribution_body(input, applied);
     let title = format!(
         "migrate({}): {} → {}",
         input.entry.id, input.main.branch, input.entry.source_branch
@@ -799,17 +791,17 @@ fn publish(
     Ok(Some(pull_request))
 }
 
-fn migration_body(input: &RunInput<'_>, applied: &[String]) -> String {
+fn distribution_body(input: &RunInput<'_>, applied: &[String]) -> String {
     let mut body = String::new();
     body.push_str(&format!(
-        "Reverse migration of `{}` into `{}` for subsystem `{}`.\n\n",
+        "Distribution of `{}` into `{}` for subsystem `{}`.\n\n",
         input.main.branch, input.entry.source_branch, input.entry.id
     ));
-    body.push_str(&format!("- Main commit: `{}`\n", input.main.sha));
+    body.push_str(&format!("- Trunk commit: `{}`\n", input.main.sha));
     if !input.plan.source_sha.is_empty() {
         body.push_str(&format!("- Subsystem base: `{}`\n", input.plan.source_sha));
     }
-    body.push_str(&format!("- Paths migrated: {}\n", applied.len()));
+    body.push_str(&format!("- Paths distributed: {}\n", applied.len()));
     if !input.plan.dependencies.is_empty() {
         body.push_str(&format!(
             "- Dependencies changed: {}\n",
@@ -834,18 +826,18 @@ fn migration_body(input: &RunInput<'_>, applied: &[String]) -> String {
         body.push_str("Dependencies:\n");
         for dep in &input.plan.dependencies {
             match dep.action {
-                MigrateDepAction::Add => body.push_str(&format!(
+                DistributionDepAction::Add => body.push_str(&format!(
                     "- add `{}` {} to {}\n",
                     dep.name, dep.spec, dep.section
                 )),
-                MigrateDepAction::Update => body.push_str(&format!(
+                DistributionDepAction::Update => body.push_str(&format!(
                     "- update `{}` {} → {} ({})\n",
                     dep.name,
                     dep.from_spec.clone().unwrap_or_default(),
                     dep.spec,
                     dep.section
                 )),
-                MigrateDepAction::Move => body.push_str(&format!(
+                DistributionDepAction::Move => body.push_str(&format!(
                     "- move `{}` {} from {} to {} ({})\n",
                     dep.name,
                     dep.spec,
@@ -857,35 +849,8 @@ fn migration_body(input: &RunInput<'_>, applied: &[String]) -> String {
         }
         body.push('\n');
     }
-    body.push_str("The lockfile is not written by this migration: run `npm install` and commit the lockfile before merging.\n");
+    body.push_str("The lockfile is not written by this distribution: run `npm install` and commit the lockfile before merging.\n");
     body
-}
-
-fn direction(
-    main_blob: &str,
-    child_blob: &str,
-    child_history: Option<&PathHistory>,
-    main_history: Option<&PathHistory>,
-) -> Option<MigratePathState> {
-    if let Some(history) = child_history {
-        if history.blobs.contains(main_blob) {
-            // Main's current bytes are bytes the subsystem itself had before:
-            // the subsystem moved on, so there is nothing to migrate backwards.
-            return None;
-        }
-    }
-    if let Some(history) = main_history {
-        if history.blobs.contains(child_blob) {
-            return Some(MigratePathState::Changed);
-        }
-    }
-    let child_epoch = child_history.map(|h| h.last_epoch).unwrap_or(0);
-    let main_epoch = main_history.map(|h| h.last_epoch).unwrap_or(0);
-    if main_epoch > child_epoch {
-        Some(MigratePathState::Diverged)
-    } else {
-        None
-    }
 }
 
 fn is_lockfile(path: &str) -> bool {
@@ -939,28 +904,6 @@ pub fn tree_index(repo_dir: &Path, rev: &str) -> HashMap<String, TreeEntry> {
     index
 }
 
-fn history_of(repo_dir: &Path, rev: &str) -> HashMap<String, PathHistory> {
-    let mut history: HashMap<String, PathHistory> = HashMap::new();
-    let Ok(commits) = live_read::parse_source_log(repo_dir, rev) else {
-        return history;
-    };
-    for commit in &commits {
-        for (path, blob, kind) in &commit.deltas {
-            if *kind == 'D' || !is_blob_id(blob) || blob.bytes().all(|b| b == b'0') {
-                continue;
-            }
-            let entry = history.entry(path.clone()).or_default();
-            entry.blobs.insert(blob.clone());
-            entry.last_epoch = entry.last_epoch.max(commit.committed_unix);
-        }
-    }
-    history
-}
-
-fn is_blob_id(value: &str) -> bool {
-    (value.len() == 40 || value.len() == 64) && value.chars().all(|c| c.is_ascii_hexdigit())
-}
-
 fn read_manifest(repo_dir: &Path, rev: &str) -> Value {
     git::read_blob(repo_dir, rev, "package.json")
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -1003,16 +946,16 @@ fn imported_packages(repo_dir: &Path, index: &HashMap<String, TreeEntry>) -> Has
     imported_names(&files)
 }
 
-fn read_code_files(main: &MainSnapshot, paths: &[MigratePath]) -> Vec<CodeFile> {
+fn read_code_files(main: &MainSnapshot, paths: &[String]) -> Vec<CodeFile> {
     let mut files = Vec::new();
-    for item in paths {
-        if !deps::is_code_path(&item.path) {
+    for path in paths {
+        if !deps::is_code_path(path) {
             continue;
         }
-        if let Some(bytes) = git::read_blob(&main.dir, &main.sha, &item.path) {
+        if let Some(bytes) = git::read_blob(&main.dir, &main.sha, path) {
             if bytes.len() <= MAX_BLOB_BYTES {
                 files.push(CodeFile {
-                    path: item.path.clone(),
+                    path: path.clone(),
                     content: String::from_utf8_lossy(&bytes).to_string(),
                 });
             }
@@ -1081,7 +1024,7 @@ fn dependency_plan(
     main: &Value,
     child: &Value,
     imported: &HashSet<String>,
-) -> Vec<MigrateDependency> {
+) -> Vec<DistributionDependency> {
     let mut names: Vec<&String> = imported.iter().collect();
     names.sort();
     let mut plan = Vec::new();
@@ -1090,9 +1033,9 @@ fn dependency_plan(
             continue;
         };
         match declared(child, name) {
-            None => plan.push(MigrateDependency {
+            None => plan.push(DistributionDependency {
                 name: name.clone(),
-                action: MigrateDepAction::Add,
+                action: DistributionDepAction::Add,
                 from_section: None,
                 from_spec: None,
                 section: main_section,
@@ -1109,18 +1052,18 @@ fn dependency_plan(
                     if matches!(kind, ComparisonKind::Identical | ComparisonKind::Compatible) {
                         continue;
                     }
-                    plan.push(MigrateDependency {
+                    plan.push(DistributionDependency {
                         name: name.clone(),
-                        action: MigrateDepAction::Update,
+                        action: DistributionDepAction::Update,
                         from_section: Some(child_section),
                         from_spec: Some(child_spec),
                         section: main_section,
                         spec: main_spec,
                     });
                 } else {
-                    plan.push(MigrateDependency {
+                    plan.push(DistributionDependency {
                         name: name.clone(),
-                        action: MigrateDepAction::Move,
+                        action: DistributionDepAction::Move,
                         from_section: Some(child_section),
                         from_spec: Some(child_spec),
                         section: main_section,
@@ -1136,7 +1079,7 @@ fn dependency_plan(
 // Main's manifest is the source of truth on the reverse path, so ranges are
 // written as-is instead of going through the forward path's fail-closed
 // reconciliation; the plan reports every override as a warning.
-fn reconciled_manifest(child: &Value, plan: &[MigrateDependency]) -> AppResult<Value> {
+fn reconciled_manifest(child: &Value, plan: &[DistributionDependency]) -> AppResult<Value> {
     let mut manifest = child.clone();
     let Some(root) = manifest.as_object_mut() else {
         return Err(AppError::invalid_request(
@@ -1144,7 +1087,7 @@ fn reconciled_manifest(child: &Value, plan: &[MigrateDependency]) -> AppResult<V
         ));
     };
     for dep in plan {
-        if dep.action == MigrateDepAction::Move {
+        if dep.action == DistributionDepAction::Move {
             for section in deps::DEP_SECTIONS {
                 if let Some(obj) = root.get_mut(section).and_then(Value::as_object_mut) {
                     obj.remove(&dep.name);
@@ -1171,11 +1114,11 @@ fn reconciled_manifest(child: &Value, plan: &[MigrateDependency]) -> AppResult<V
 fn prerequisite_blockers(
     files: &[CodeFile],
     manifest: &Value,
-    plan: &[MigrateDependency],
+    plan: &[DistributionDependency],
 ) -> Vec<Blocker> {
     let added: Vec<String> = plan
         .iter()
-        .filter(|dep| dep.action != MigrateDepAction::Update)
+        .filter(|dep| dep.action != DistributionDepAction::Update)
         .map(|dep| dep.name.clone())
         .collect();
     deps::check_import_prerequisites(files, manifest, &added)
@@ -1256,10 +1199,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
-    fn migration_branch_flattens_unsafe_characters() {
-        assert_eq!(migration_branch("master"), "migrate-master");
-        assert_eq!(migration_branch("release/1.2"), "migrate-release-1.2");
-        assert_eq!(migration_branch("feat x"), "migrate-feat-x");
+    fn distribution_branch_flattens_unsafe_characters() {
+        assert_eq!(distribution_branch("master"), "distribute-master");
+        assert_eq!(distribution_branch("release/1.2"), "distribute-release-1.2");
+        assert_eq!(distribution_branch("feat x"), "distribute-feat-x");
     }
 
     #[test]
@@ -1268,52 +1211,6 @@ mod tests {
         assert!(is_deferred("src/modules/hr/package.json"));
         assert!(is_deferred("package-lock.json"));
         assert!(!is_deferred("src/package.json.bak"));
-    }
-
-    #[test]
-    fn direction_prefers_blob_history_over_clock() {
-        let mut child = PathHistory::default();
-        child.blobs.insert("main-blob".to_string());
-        child.last_epoch = 100;
-        assert_eq!(
-            direction("main-blob", "child-blob", Some(&child), None),
-            None,
-            "main's bytes are bytes the subsystem already had: nothing to migrate"
-        );
-
-        let mut main_history = PathHistory::default();
-        main_history.blobs.insert("child-blob".to_string());
-        assert_eq!(
-            direction("main-blob", "child-blob", None, Some(&main_history)),
-            Some(MigratePathState::Changed)
-        );
-
-        let main_newer = PathHistory {
-            last_epoch: 200,
-            ..PathHistory::default()
-        };
-        let child_older = PathHistory {
-            last_epoch: 100,
-            ..PathHistory::default()
-        };
-        assert_eq!(
-            direction(
-                "main-blob",
-                "child-blob",
-                Some(&child_older),
-                Some(&main_newer)
-            ),
-            Some(MigratePathState::Diverged)
-        );
-        assert_eq!(
-            direction(
-                "main-blob",
-                "child-blob",
-                Some(&main_newer),
-                Some(&child_older)
-            ),
-            None
-        );
     }
 
     #[test]
@@ -1331,13 +1228,13 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         let plan = dependency_plan(&main, &child, &imported);
-        let names: Vec<(&str, MigrateDepAction)> =
+        let names: Vec<(&str, DistributionDepAction)> =
             plan.iter().map(|d| (d.name.as_str(), d.action)).collect();
         assert_eq!(
             names,
             vec![
-                ("react", MigrateDepAction::Update),
-                ("zod", MigrateDepAction::Move),
+                ("react", DistributionDepAction::Update),
+                ("zod", DistributionDepAction::Move),
             ],
             "imported but unchanged deps are skipped and unimported main-only deps are never added"
         );
@@ -1358,9 +1255,9 @@ mod tests {
     #[test]
     fn reconciled_manifest_writes_planned_dependencies() {
         let child = json!({ "name": "hr", "dependencies": { "react": "^19.0.0" } });
-        let plan = vec![MigrateDependency {
+        let plan = vec![DistributionDependency {
             name: "zod".to_string(),
-            action: MigrateDepAction::Add,
+            action: DistributionDepAction::Add,
             from_section: None,
             from_spec: None,
             section: "dependencies".to_string(),

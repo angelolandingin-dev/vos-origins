@@ -4,7 +4,7 @@ import { AppShell } from '../components/AppShell';
 import { PromotionDialog } from '../components/PromotionDialog';
 import { CommitBrowser } from '../pages/CommitBrowser';
 import { IntegrationHistory } from '../pages/IntegrationHistory';
-import { Migrate } from '../pages/Migrate';
+import { Distribute } from '../pages/Distribute';
 import { PromoteCommits } from '../pages/PromoteCommits';
 import { Settings } from '../pages/Settings';
 import { SubsystemDiff } from '../pages/SubsystemDiff';
@@ -55,7 +55,7 @@ export default function App() {
         {route === 'commit-browser' ? <CommitBrowser /> : null}
         {route === 'subsystem-diff' ? <SubsystemDiff /> : null}
         {route === 'promote-commits' ? <PromoteCommits /> : null}
-        {route === 'migrate' ? <Migrate /> : null}
+        {route === 'distribute' ? <Distribute /> : null}
         {route === 'integration-history' ? <IntegrationHistory /> : null}
         {route === 'settings' ? <Settings /> : null}
       </AppShell>

@@ -611,53 +611,61 @@ export interface SubsystemDiff {
   dataSource: DataSource;
 }
 
-/** Reverse migration: main branch ? one subsystem, delivered as a pull request. */
-export type MigratePathState = 'changed' | 'diverged' | 'mainOnly';
-
-export interface MigratePath {
-  path: string;
-  state: MigratePathState;
+/** Distribution: selected trunk commits ? subsystem branches, delivered as pull requests. */
+export interface TrunkCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  authorName: string;
+  committedAt: string;
+  committedUnix: number;
+  filesChanged: number;
+  paths: string[];
 }
 
-export type MigrateDepAction = 'add' | 'update' | 'move';
+export interface DistributionSkip {
+  path: string;
+  reason: string;
+}
 
-export interface MigrateDependency {
+export type DistributionDepAction = 'add' | 'update' | 'move';
+
+export interface DistributionDependency {
   name: string;
-  action: MigrateDepAction;
+  action: DistributionDepAction;
   fromSection?: string;
   fromSpec?: string;
   section: string;
   spec: string;
 }
 
-export interface MigrationBlocker {
+export interface DistributionBlocker {
   code: string;
   message: string;
   details: string | null;
 }
 
-export interface MigratePlan {
+export interface DistributionPlan {
   subsystemId: string;
   name: string;
   sourceBranch: string;
   branch: string;
   mainSha: string;
   sourceSha: string;
-  paths: MigratePath[];
-  mainOnly: string[];
-  dependencies: MigrateDependency[];
-  excluded: string[];
-  blockers: MigrationBlocker[];
+  paths: string[];
+  skipped: DistributionSkip[];
+  dependencies: DistributionDependency[];
+  blockers: DistributionBlocker[];
   warnings: string[];
 }
 
-export interface MigratePreview {
+export interface DistributionPreview {
   mainBranch: string;
   mainSha: string;
-  subsystems: MigratePlan[];
+  subsystems: DistributionPlan[];
 }
 
-export interface MigratePullRequest {
+export interface DistributionPullRequest {
   number: number | null;
   url: string | null;
   state: string;
@@ -665,38 +673,39 @@ export interface MigratePullRequest {
   head: string;
 }
 
-export interface MigrateOutcome {
+export interface DistributionOutcome {
   subsystemId: string;
   ok: boolean;
   branch: string;
   commitSha: string | null;
-  pullRequest: MigratePullRequest | null;
+  pullRequest: DistributionPullRequest | null;
   applied: string[];
-  dependencies: MigrateDependency[];
-  blockers: MigrationBlocker[];
+  dependencies: DistributionDependency[];
+  blockers: DistributionBlocker[];
   warnings: string[];
   message: string | null;
 }
 
-export interface MigrateRunResult {
+export interface DistributionRunResult {
   mainBranch: string;
   mainSha: string;
-  outcomes: MigrateOutcome[];
+  outcomes: DistributionOutcome[];
 }
 
-export interface MigrateSelection {
+export interface DistributionSelection {
   subsystemId: string;
   excludedPaths?: string[];
-  includePaths?: string[];
 }
 
-export interface MigratePreviewRequest {
+export interface DistributionPreviewRequest {
   mainBranch: string;
   subsystemIds: string[];
+  commitShas: string[];
 }
 
-export interface MigrateRunRequest {
+export interface DistributionRunRequest {
   mainBranch: string;
   message?: string | null;
-  subsystems: MigrateSelection[];
+  commitShas: string[];
+  subsystems: DistributionSelection[];
 }

@@ -16,10 +16,11 @@ import type {
   IntegrationPr,
   IntegrationStatus,
   MainCommitDiff,
-  MigratePreview,
-  MigratePreviewRequest,
-  MigrateRunRequest,
-  MigrateRunResult,
+  DistributionPreview,
+  DistributionPreviewRequest,
+  DistributionRunRequest,
+  DistributionRunResult,
+  TrunkCommit,
   PromotionDispatchResult,
   PromotionPreflight,
   PromotionRequest,
@@ -154,11 +155,14 @@ export const api = {
   preflightPromotion: (request: PromotionRequest) =>
     call<PromotionPreflight>('preflight_promotion', { request }),
 
-  previewMigration: (request: MigratePreviewRequest) =>
-    call<MigratePreview>('preview_migration', { request }),
+  listTrunkCommits: (mainBranch: string) =>
+    call<TrunkCommit[]>('list_trunk_commits', { mainBranch }),
 
-  runMigration: (request: MigrateRunRequest) =>
-    call<MigrateRunResult>('run_migration', { request }),
+  previewDistribution: (request: DistributionPreviewRequest) =>
+    call<DistributionPreview>('preview_distribution', { request }),
+
+  runDistribution: (request: DistributionRunRequest) =>
+    call<DistributionRunResult>('run_distribution', { request }),
 
   listIntegrationPrs: (targetBranch: string, subsystemId: string | null) =>
     call<IntegrationPr[]>('list_integration_prs', { targetBranch, subsystemId }),

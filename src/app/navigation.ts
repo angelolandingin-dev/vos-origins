@@ -3,7 +3,7 @@ export type Route =
   | 'commit-browser'
   | 'subsystem-diff'
   | 'promote-commits'
-  | 'migrate'
+  | 'distribute'
   | 'integration-history'
   | 'settings';
 
@@ -30,9 +30,9 @@ export const NAV_ITEMS: NavItem[] = [
     description: 'Confirm SHAs and target branch, then dispatch',
   },
   {
-    id: 'migrate',
-    label: 'Migrate',
-    description: 'Push main-branch changes into subsystems as pull requests',
+    id: 'distribute',
+    label: 'Distribute',
+    description: 'Send selected trunk commits down to subsystem pull requests',
   },
   {
     id: 'integration-history',
@@ -59,9 +59,9 @@ export const ROUTE_META: Record<Route, { title: string; subtitle: string }> = {
     title: 'Promote Commits',
     subtitle: 'Confirm SHAs and target branch, then dispatch',
   },
-  migrate: {
-    title: 'Migrate',
-    subtitle: 'Push main-branch changes into subsystems as pull requests',
+  distribute: {
+    title: 'Distribute',
+    subtitle: 'Send selected trunk commits down to subsystem pull requests',
   },
   'integration-history': {
     title: 'Integration History',
