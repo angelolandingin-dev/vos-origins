@@ -106,26 +106,32 @@ pub fn run_ok(repo_dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
 pub fn run_with_stdin(repo_dir: &Path, args: &[&str], stdin: &[u8]) -> Result<GitOutput, GitError> {
     #[cfg(test)]
     count_spawn_for_tests(repo_dir);
-    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static REQUESTS: AtomicU64 = AtomicU64::new(0);
+    let fail = |status: Option<i32>, stderr: String| GitError {
+        args: args.join(" "),
+        status,
+        stderr,
+    };
+    // `cat-file --batch` answers while it is still reading requests, so a request
+    // batch and an answer batch that both exceed the pipe buffers deadlock a
+    // write-then-read, whichever side is threaded. A file as stdin cannot stall.
+    let request_path = std::env::temp_dir().join(format!(
+        "vos-stdin-{}-{}.bin",
+        std::process::id(),
+        REQUESTS.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&request_path, stdin).map_err(|err| fail(None, err.to_string()))?;
+    let requests = std::fs::File::open(&request_path).map_err(|err| fail(None, err.to_string()))?;
     let mut command = base_command();
     command.arg("-C").arg(repo_dir).args(args);
     command
-        .stdin(Stdio::piped())
+        .stdin(Stdio::from(requests))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|err| GitError {
-        args: args.join(" "),
-        status: None,
-        stderr: err.to_string(),
-    })?;
-    if let Some(mut pipe) = child.stdin.take() {
-        let _ = pipe.write_all(stdin);
-    }
-    let output = child.wait_with_output().map_err(|err| GitError {
-        args: args.join(" "),
-        status: None,
-        stderr: err.to_string(),
-    })?;
+    let output = command.output().map_err(|err| fail(None, err.to_string()));
+    let _ = std::fs::remove_file(&request_path);
+    let output = output?;
     Ok(GitOutput {
         status: output.status.code().unwrap_or(-1),
         stdout: output.stdout,

@@ -1198,6 +1198,64 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn blob_batch_survives_an_answer_larger_than_the_pipe_buffer() {
+        let dir = std::env::temp_dir().join(format!(
+            "vos-blob-batch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let total = 2000usize;
+        let filler = "x".repeat(1024);
+        for index in 0..total {
+            std::fs::write(
+                dir.join(format!("file-{index:03}.ts")),
+                format!("{index}{filler}"),
+            )
+            .unwrap();
+        }
+        let run = |args: &[&str]| git::run(&dir, args).expect("git").stdout_trimmed();
+        run(&["init", "-q", "-b", "main"]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "add",
+            "-A",
+        ]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ]);
+        let shas: Vec<String> = run(&["ls-tree", "-r", "HEAD"])
+            .lines()
+            .filter_map(|line| line.split_whitespace().nth(2).map(str::to_string))
+            .collect();
+        assert_eq!(shas.len(), total);
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let reader_dir = dir.clone();
+        std::thread::spawn(move || {
+            let blobs = read_blobs_batch(&reader_dir, &shas);
+            let _ = sender.send(blobs.len());
+        });
+        let count = receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("read_blobs_batch deadlocked on an answer batch larger than the pipe buffer");
+        assert_eq!(count, total);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
     fn migration_branch_flattens_unsafe_characters() {
         assert_eq!(migration_branch("master"), "migrate-master");
         assert_eq!(migration_branch("release/1.2"), "migrate-release-1.2");
