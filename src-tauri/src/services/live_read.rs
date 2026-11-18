@@ -1903,12 +1903,18 @@ pub fn commit_page_live(
             let out_of_sync: Vec<&String> = commit
                 .deltas
                 .iter()
-                .map(|(path, _, _)| path)
-                .filter(|path| {
-                    let voted = classify::classify_path(path, &entry.integration_policy, None);
-                    is_status_voting(voted.status)
-                        && source_tree.get(*path) != target_blobs.get(*path)
+                // A deletion leaves nothing to compare: `None == None` would
+                // read a removal the target never saw as "already applied", so
+                // an add+delete bundle could not be handed over as a pair. Count
+                // it as promotable — re-applying an absent file is a no-op.
+                .filter(|(path, _, kind)| {
+                    *kind == 'D' || {
+                        let voted = classify::classify_path(path, &entry.integration_policy, None);
+                        is_status_voting(voted.status)
+                            && source_tree.get(path.as_str()) != target_blobs.get(path.as_str())
+                    }
                 })
+                .map(|(path, _, _)| path)
                 .collect();
             // Manifest and lockfile paths are delta-merged or deferred to the
             // deployment (which regenerates the lockfile), never written
@@ -3129,6 +3135,30 @@ mod tests {
             CommitStatusKind::Integrated
         );
         let _ = _src;
+    }
+
+    #[test]
+    fn a_deletion_stays_promotable_when_the_target_lacks_the_file() {
+        let (src, main, _a, _b, registry) = sandbox_status();
+        std::fs::remove_file(src.join("b.txt")).expect("remove b.txt");
+        let _dropped = commit_all(&src, "Drop b.txt");
+        let drop_sha = git(&src, &["rev-parse", "HEAD"]);
+        let statuses = integration_statuses_live(
+            &main,
+            &registry,
+            &StubGitHubOps::new(),
+            "development",
+            Some("hr-management"),
+            std::slice::from_ref(&drop_sha),
+        )
+        .expect("statuses");
+        assert_eq!(statuses.len(), 1);
+        assert_ne!(
+            statuses[0].status.kind,
+            CommitStatusKind::Applied,
+            "absent on both sides proves nothing; a removal must stay promotable"
+        );
+        assert_eq!(statuses[0].status.kind, CommitStatusKind::Eligible);
     }
 
     #[test]

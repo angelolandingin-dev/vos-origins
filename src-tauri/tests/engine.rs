@@ -1677,6 +1677,107 @@ fn case14_shared_config_blocks_by_default_and_applies_under_approval() {
 }
 
 #[test]
+fn case14b_excluding_a_shared_config_path_lifts_its_blocker() {
+    let src_dir = make_temp_dir("src");
+    let main_dir = make_temp_dir("main");
+    init_repo(&src_dir, "master");
+    commit_files(
+        &src_dir,
+        "A",
+        &[
+            ("tsconfig.json", b"{\"a\":1}\n"),
+            ("src/app/page.ts", b"one\n"),
+        ],
+        &[],
+    );
+    let b = commit_files(
+        &src_dir,
+        "B modify both",
+        &[
+            ("tsconfig.json", b"{\"a\":2}\n"),
+            ("src/app/page.ts", b"two\n"),
+        ],
+        &[],
+    );
+    let main = create_main_repo(
+        &main_dir,
+        &[],
+        &[
+            ("tsconfig.json", b"{\"a\":1}\n"),
+            ("src/app/page.ts", b"one\n"),
+        ],
+    );
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    let excluded = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![b],
+            excluded_paths: vec!["tsconfig.json".to_string()],
+            ..Default::default()
+        },
+    );
+    assert!(excluded.ok, "{:?}", codes(&excluded));
+    let branch = excluded.integration_branch.clone().unwrap();
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "tsconfig.json"),
+        "{\"a\":1}\n",
+        "the excluded shared config must keep the target copy"
+    );
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "src/app/page.ts"),
+        "two\n"
+    );
+}
+
+#[test]
+fn case21_bundled_add_then_delete_lands_as_a_removal() {
+    let src_dir = make_temp_dir("src");
+    let main_dir = make_temp_dir("main");
+    init_repo(&src_dir, "master");
+    commit_files(&src_dir, "A base", &[("src/app/page.ts", b"one\n")], &[]);
+    let add = commit_files(
+        &src_dir,
+        "B add throwaway + change page",
+        &[
+            ("src/tmp/throwaway.txt", b"tmp\n"),
+            ("src/app/page.ts", b"two\n"),
+        ],
+        &[],
+    );
+    std::fs::remove_file(src_dir.join("src/tmp/throwaway.txt")).unwrap();
+    let del = commit_files(&src_dir, "C remove throwaway", &[], &[]);
+    let main = create_main_repo(&main_dir, &[], &[("src/app/page.ts", b"one\n")]);
+    let github = StubGitHubOps::new();
+    let registry = test_registry();
+
+    let report = promote(
+        &src_dir,
+        &main.dir,
+        &github,
+        &registry,
+        PromoteOptions {
+            commits: vec![add, del],
+            ..Default::default()
+        },
+    );
+    assert!(report.ok, "{:?}", codes(&report));
+    let branch = report.integration_branch.clone().unwrap();
+    assert!(
+        !try_branch_has(&main.dir, &branch, "src/tmp/throwaway.txt"),
+        "the removal must win over the add from the same bundle"
+    );
+    assert_eq!(
+        branch_file_text(&main.dir, &branch, "src/app/page.ts"),
+        "two\n"
+    );
+}
+
+#[test]
 fn case15_duplicate_and_open_pr_are_blocked() {
     use vos_origins_lib::services::engine::github_ops::PullRequestInfo;
     use vos_origins_lib::services::engine::{integration_branch_prefix, run_promotion};

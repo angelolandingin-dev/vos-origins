@@ -776,8 +776,21 @@ fn run_inner(
         order: request.commits.clone(),
     };
 
+    // Read before the classification gate: an excluded path is not promoted, so
+    // it must not raise a blocker that aborts the run (the operator's only way
+    // out of a `SHARED_CONFIG_REQUIRES_REVIEW` or `UNSAFE_PATH` would otherwise
+    // be to abandon the promotion entirely).
+    let excluded_set: std::collections::HashSet<String> = request
+        .excluded_paths
+        .iter()
+        .map(|p| p.replace('\\', "/"))
+        .collect();
+
     for planned in &classified_plan {
         for entry in &planned.entries {
+            if excluded_set.contains(&entry.path) {
+                continue;
+            }
             match entry.status {
                 PathStatus::Rejected => report.blockers.push(Blocker::new(
                     "UNSAFE_PATH",
@@ -821,11 +834,6 @@ fn run_inner(
     // re-read mid-run, so the two cannot disagree because the file changed
     // mid-run. The standalone preflight command likewise loads the registry
     // once per call.
-    let excluded_set: std::collections::HashSet<String> = request
-        .excluded_paths
-        .iter()
-        .map(|p| p.replace('\\', "/"))
-        .collect();
     {
         let mut excluded: Vec<String> = excluded_set.iter().cloned().collect();
         excluded.sort();
