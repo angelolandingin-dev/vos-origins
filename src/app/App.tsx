@@ -9,13 +9,30 @@ import { PromoteCommits } from '../pages/PromoteCommits';
 import { Settings } from '../pages/Settings';
 import { SubsystemDiff } from '../pages/SubsystemDiff';
 import { useApp } from './context';
+import { findUpdate } from './updater';
 
 let fixtureNoticeShown = false;
+let updateNoticeShown = false;
 
 export default function App() {
   const app = useApp();
   const { route, pushNotice } = app;
   const authStatus = app.auth.data;
+
+  // One silent check per session: it tells the operator a release exists, never
+  // installs anything on its own, and stays quiet when the endpoint is unreachable.
+  useEffect(() => {
+    if (updateNoticeShown) return;
+    updateNoticeShown = true;
+    void findUpdate().then((info) => {
+      if (!info) return;
+      pushNotice({
+        tone: 'info',
+        title: `Version ${info.version} is available`,
+        message: 'Install it from Settings › Updates.',
+      });
+    });
+  }, [pushNotice]);
 
   // A fixture-mode banner must be visible exactly once per session start. The
   // module-level flag survives the dev server's double-invoked mount, which

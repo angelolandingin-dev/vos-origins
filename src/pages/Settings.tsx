@@ -1,21 +1,33 @@
-import { useRef, useState, type KeyboardEvent } from 'react';
-import { ExternalLink, KeyRound, RefreshCw, ShieldAlert, Terminal, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import {
+  Download,
+  ExternalLink,
+  KeyRound,
+  RefreshCw,
+  ShieldAlert,
+  Terminal,
+  Trash2,
+} from 'lucide-react';
 
 import { api, isTauriRuntime } from '../api/invoke';
 import type { CacheStats } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
+import type { UpdateInfo } from '../app/updater';
+import { currentVersion, findUpdate, installUpdate } from '../app/updater';
 import { Button, InlineAlert, KeyValue, LoadingState, Panel } from '../components/ui/primitives';
 import { ThemeControl } from '../components/ThemeControl';
 import { formatDateTime } from '../components/ui/format';
 import { RegistryEditor } from '../components/RegistryEditor';
 import { cx } from '../components/ui/cx';
 
-type SettingsGroup = 'connection' | 'registry' | 'storage' | 'appearance' | 'diagnostics';
+type SettingsGroup =
+  'connection' | 'registry' | 'storage' | 'updates' | 'appearance' | 'diagnostics';
 
 const GROUPS: Array<{ id: SettingsGroup; label: string }> = [
   { id: 'connection', label: 'Connection' },
   { id: 'registry', label: 'Registry' },
   { id: 'storage', label: 'Storage' },
+  { id: 'updates', label: 'Updates' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'diagnostics', label: 'Diagnostics' },
 ];
@@ -24,7 +36,40 @@ const GROUPS: Array<{ id: SettingsGroup; label: string }> = [
 export function Settings() {
   const app = useApp();
   const [cacheMessage, setCacheMessage] = useState<string | null>(null);
+  const [version, setVersion] = useState<string | null>(null);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checked, setChecked] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [percent, setPercent] = useState<number | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const railRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    void currentVersion().then(setVersion);
+  }, []);
+
+  const runCheck = async () => {
+    setChecking(true);
+    setUpdateError(null);
+    const found = await findUpdate();
+    setUpdate(found);
+    setChecked(true);
+    setChecking(false);
+  };
+
+  const runInstall = async () => {
+    if (!update) return;
+    setInstalling(true);
+    setPercent(null);
+    setUpdateError(null);
+    try {
+      await installUpdate(update.update, setPercent);
+    } catch (error) {
+      setInstalling(false);
+      setUpdateError(error instanceof Error ? error.message : 'The update could not be installed.');
+    }
+  };
 
   const cache = useAsyncData(() => api.getCacheStats(), [app.dataVersion]);
   const status = app.auth.data;
@@ -51,6 +96,7 @@ export function Settings() {
 
   const diagnostics = [
     `app: VOS Origins`,
+    `app version: ${version ?? 'unknown'}`,
     `runtime: ${isTauriRuntime() ? 'Tauri v2 (desktop webview)' : 'browser preview (backend unavailable)'}`,
     `platform: ${typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown'}`,
     `data source: ${status?.dataSource ?? 'unknown'}`,
@@ -266,6 +312,90 @@ export function Settings() {
               </Panel>
             ) : null}
 
+            {group === 'updates' ? (
+              <Panel
+                title="Updates"
+                subtitle="Signed releases published on GitHub"
+                actions={
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={RefreshCw}
+                    onClick={() => void runCheck()}
+                    disabled={checking || installing}
+                  >
+                    {checking ? 'Checking…' : 'Check for updates'}
+                  </Button>
+                }
+              >
+                <div className="space-y-3 p-3">
+                  <dl className="rounded-md border border-line bg-raised px-3 py-1">
+                    <KeyValue label="Installed version">
+                      <span className="mono">{version ?? '—'}</span>
+                    </KeyValue>
+                    <KeyValue label="Channel">
+                      <span className="mono">stable</span>
+                    </KeyValue>
+                  </dl>
+
+                  {update ? (
+                    <div className="space-y-2 rounded-md border border-line bg-raised p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold text-fg">
+                          Version <span className="mono">{update.version}</span> is available
+                        </p>
+                        <Button
+                          size="sm"
+                          icon={Download}
+                          onClick={() => void runInstall()}
+                          disabled={installing}
+                        >
+                          {installing ? 'Installing…' : 'Install and restart'}
+                        </Button>
+                      </div>
+                      {update.notes ? (
+                        <pre className="mono max-h-[180px] overflow-auto rounded-md border border-line bg-ground p-2 leading-relaxed whitespace-pre-wrap text-muted">
+                          {update.notes}
+                        </pre>
+                      ) : null}
+                      {installing ? (
+                        <div
+                          role="progressbar"
+                          aria-label="Update download"
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={percent ?? undefined}
+                          className="h-1.5 overflow-hidden rounded-full bg-line"
+                        >
+                          <div
+                            className="h-full bg-accent transition-[width]"
+                            style={{ width: `${percent ?? 0}%` }}
+                          />
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-muted">
+                          The installer runs on its own and the app reopens on the new version.
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {!update && checked && !checking ? (
+                    <p className="text-[11px] text-muted">
+                      This build is the newest release.
+                      {version ? ` Running ${version}.` : ''}
+                    </p>
+                  ) : null}
+
+                  {updateError ? (
+                    <InlineAlert tone="danger" title="Update failed">
+                      {updateError}
+                    </InlineAlert>
+                  ) : null}
+                </div>
+              </Panel>
+            ) : null}
+
             {group === 'appearance' ? (
               <Panel title="Appearance" subtitle="Display and theme">
                 <div className="space-y-3 p-3">
@@ -283,7 +413,7 @@ export function Settings() {
                     <div className="flex-1">
                       <p className="text-xs font-semibold text-fg">Tauri permissions</p>
                       <p className="truncate text-[11px] text-muted">
-                        Core IPC plus title-bar window controls only.
+                        Core IPC, title-bar window controls, and signed updates.
                       </p>
                     </div>
                   </div>
