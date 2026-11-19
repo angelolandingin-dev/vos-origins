@@ -186,6 +186,22 @@ The frontend talks to Rust through `src/api/invoke.ts`; every command returns
 `ApiError` (`code`, `message`, `remedy`, `details`, `retryable`) instead of a bare
 string, so screens can show an actionable error.
 
+## Contributing
+
+`master` is protected by a repository ruleset: no force pushes, no branch
+deletion, and no direct pushes. Work lands through a pull request that passes
+both CI jobs, even for the maintainer.
+
+```bash
+git switch -c feat/short-name
+# commit, then
+git push -u origin feat/short-name
+gh pr create --fill
+```
+
+Merge with squash; the head branch is deleted automatically after the merge.
+Rebase onto `master` when the ruleset reports the branch is out of date.
+
 ## Releasing
 
 `.github/workflows/release.yml` fires on a tag matching `app-v*`, builds the
