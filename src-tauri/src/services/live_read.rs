@@ -1524,27 +1524,41 @@ pub(crate) struct SourceCommit {
 }
 
 pub(crate) fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<SourceCommit>> {
+    source_log(repo_dir, branch, false)
+}
+
+/// First-parent walk: the branch's own commits only. A trunk branch collects
+/// integration merges, and those side histories are not the trunk's story.
+pub(crate) fn parse_first_parent_log(
+    repo_dir: &Path,
+    branch: &str,
+) -> AppResult<Vec<SourceCommit>> {
+    source_log(repo_dir, branch, true)
+}
+
+fn source_log(repo_dir: &Path, branch: &str, first_parent: bool) -> AppResult<Vec<SourceCommit>> {
     const REC: char = '\u{1e}';
     const FIELD: char = '\u{1f}';
     let fmt = format!(
         "--format=%H{FIELD}%P{FIELD}%an{FIELD}%ae{FIELD}%aI{FIELD}%cI{FIELD}%ct{FIELD}%s{REC}"
     );
-    let out = git::run(
-        repo_dir,
-        &[
-            "log",
-            &format!("--max-count={MAX_SOURCE_COMMITS}"),
-            &fmt,
-            "--raw",
-            // Full blob ids: `history_of` compares content identity across repos.
-            "--no-abbrev",
-            // Rename rows carry two paths after one tab, which the row parser
-            // cannot split; as A+D pairs every consumer sees real paths.
-            "--no-renames",
-            branch,
-        ],
-    )
-    .map_err(|err| {
+    let max_count = format!("--max-count={MAX_SOURCE_COMMITS}");
+    let mut args = vec![
+        "log",
+        max_count.as_str(),
+        &fmt,
+        "--raw",
+        // Full blob ids: `history_of` compares content identity across repos.
+        "--no-abbrev",
+        // Rename rows carry two paths after one tab, which the row parser
+        // cannot split; as A+D pairs every consumer sees real paths.
+        "--no-renames",
+    ];
+    if first_parent {
+        args.push("--first-parent");
+    }
+    args.push(branch);
+    let out = git::run(repo_dir, &args).map_err(|err| {
         AppError::new(
             ErrorCode::RepositoryInaccessible,
             format!(

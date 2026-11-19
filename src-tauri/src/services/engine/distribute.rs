@@ -174,7 +174,7 @@ impl MainSnapshot {
 
 /// Commits on the trunk branch, newest first, with the paths each one touched.
 pub fn trunk_commits(main: &MainSnapshot) -> AppResult<Vec<TrunkCommit>> {
-    let commits = live_read::parse_source_log(&main.dir, &main.branch)?;
+    let commits = live_read::parse_first_parent_log(&main.dir, &main.branch)?;
     Ok(commits
         .into_iter()
         .map(|commit| TrunkCommit {
@@ -1139,6 +1139,57 @@ fn prerequisite_blockers(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn trunk_commits_walk_the_first_parent_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "vos-trunk-first-parent-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| git::run(&dir, args).expect("git").stdout_trimmed();
+        let author = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
+        let commit = |subject: &str, path: &str, body: &str| {
+            std::fs::write(dir.join(path), body).unwrap();
+            let mut args = author.to_vec();
+            args.extend(["add", "-A"]);
+            run(&args);
+            let mut args = author.to_vec();
+            args.extend(["commit", "-q", "-m", subject]);
+            run(&args);
+        };
+
+        run(&["init", "-q", "-b", "main"]);
+        commit("Trunk base", "a.ts", "one\n");
+        run(&["checkout", "-q", "-b", "side"]);
+        commit("Side work", "b.ts", "two\n");
+        run(&["checkout", "-q", "main"]);
+        commit("Trunk follow-up", "c.ts", "three\n");
+        let mut merge = author.to_vec();
+        merge.extend(["merge", "--no-ff", "-q", "side", "-m", "Merge side"]);
+        run(&merge);
+
+        let main = MainSnapshot::load(&dir, "main").expect("snapshot");
+        let subjects: Vec<String> = trunk_commits(&main)
+            .expect("commits")
+            .into_iter()
+            .map(|commit| commit.subject)
+            .collect();
+
+        assert!(
+            subjects.iter().any(|subject| subject == "Trunk follow-up"),
+            "{subjects:?}"
+        );
+        assert!(
+            !subjects.iter().any(|subject| subject == "Side work"),
+            "first-parent walk must not walk the merged branch: {subjects:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn blob_batch_survives_an_answer_larger_than_the_pipe_buffer() {

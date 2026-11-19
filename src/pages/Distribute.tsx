@@ -1,11 +1,16 @@
 import { useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
+  ArrowDownUp,
+  ArrowUpDown,
   ChevronDown,
   ExternalLink,
   GitPullRequestArrow,
   RefreshCw,
+  Search,
+  SquareCheck,
   TriangleAlert,
+  X,
 } from 'lucide-react';
 
 import { api, asApiError } from '../api/invoke';
@@ -46,6 +51,8 @@ export function Distribute() {
   const [branchChoice, setBranchChoice] = useState<string | null>(null);
   const [selectedShas, setSelectedShas] = useState<string[]>([]);
   const [expandedSha, setExpandedSha] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [subsystemChoice, setSubsystemChoice] = useState<string[] | null>(null);
   const [message, setMessage] = useState('');
   const [preview, setPreview] = useState<DistributionPreview | null>(null);
@@ -67,6 +74,19 @@ export function Distribute() {
   const commits = useMemo(() => commitQuery.data ?? [], [commitQuery.data]);
   const commitsLoading = trunkBranch !== '' && commitQuery.loading;
   const commitError = trunkBranch === '' ? null : commitQuery.error;
+
+  const visibleCommits = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    const filtered =
+      needle === ''
+        ? commits
+        : commits.filter((commit) =>
+            `${commit.subject} ${commit.shortSha} ${commit.sha} ${commit.authorName}`
+              .toLowerCase()
+              .includes(needle),
+          );
+    return sort === 'newest' ? filtered : [...filtered].reverse();
+  }, [commits, search, sort]);
 
   const enabledSubsystems = useMemo(
     () => (app.subsystems.data ?? []).filter((subsystem) => subsystem.enabled),
@@ -235,6 +255,12 @@ export function Distribute() {
       });
   };
 
+  const clearSelection = () => {
+    setSelectedShas([]);
+    setExpandedSha(null);
+    resetDistribution();
+  };
+
   const resetAll = () => {
     setSelectedShas([]);
     setExpandedSha(null);
@@ -307,19 +333,130 @@ export function Distribute() {
             ) : commits.length === 0 ? (
               <EmptyState title="No commits on this branch" />
             ) : (
-              <ul className="scroll-area max-h-[380px] divide-y divide-line">
-                {commits.map((commit) => (
-                  <CommitRow
-                    key={commit.sha}
-                    commit={commit}
-                    selected={selectedShas.includes(commit.sha)}
-                    expanded={expandedSha === commit.sha}
-                    locked={locked}
-                    onToggle={() => toggleCommit(commit.sha)}
-                    onExpand={() => setExpandedSha(expandedSha === commit.sha ? null : commit.sha)}
-                  />
-                ))}
-              </ul>
+              <>
+                <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
+                  <div className="relative min-w-[180px] flex-1">
+                    <Search
+                      className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-disabled"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="search"
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="Search commits…"
+                      aria-label="Search commits by message, SHA or author"
+                      className="input pl-9"
+                      disabled={locked}
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={sort === 'newest' ? ArrowDownUp : ArrowUpDown}
+                    disabled={locked}
+                    onClick={() => setSort(sort === 'newest' ? 'oldest' : 'newest')}
+                    title={
+                      sort === 'newest'
+                        ? 'Sorted newest first — click for oldest first'
+                        : 'Sorted oldest first — click for newest first'
+                    }
+                  >
+                    {sort === 'newest' ? 'Newest' : 'Oldest'}
+                  </Button>
+                  {selectedShas.length > 0 ? (
+                    <>
+                      <span className="meta text-accent-ink tabular-nums">
+                        <SquareCheck className="h-2.5 w-2.5" aria-hidden="true" />
+                        {selectedShas.length} selected
+                      </span>
+                      <IconButton
+                        icon={X}
+                        label="Clear commit selection"
+                        onClick={clearSelection}
+                      />
+                    </>
+                  ) : null}
+                </div>
+
+                <div className="scroll-area max-h-[440px]">
+                  {visibleCommits.length === 0 ? (
+                    <EmptyState
+                      icon={Search}
+                      title="No commits match the search"
+                      message="Clear the search to see the full history of this branch."
+                      action={
+                        <Button size="sm" onClick={() => setSearch('')}>
+                          Clear search
+                        </Button>
+                      }
+                    />
+                  ) : (
+                    <table className="w-full border-separate border-spacing-0">
+                      <caption className="sr-only">
+                        Commits on trunk branch {trunkBranch}. Selecting commits offers the paths
+                        they touched to every selected subsystem.
+                      </caption>
+                      <thead className="sticky top-0 z-10">
+                        <tr className="table-head">
+                          <th scope="col" className="w-10 py-2 pl-2.5 text-left">
+                            <span className="sr-only">Selected</span>
+                          </th>
+                          <th scope="col" className="w-6 py-2" />
+                          <th scope="col" className="w-24 py-2 pr-2.5 text-right">
+                            SHA
+                          </th>
+                          <th scope="col" className="py-2 pr-2.5 text-left">
+                            Message
+                          </th>
+                          <th
+                            scope="col"
+                            className="hidden w-40 py-2 pr-2.5 text-left xl:table-cell"
+                          >
+                            Author
+                          </th>
+                          <th
+                            scope="col"
+                            className="hidden w-28 py-2 pr-2.5 text-right xl:table-cell"
+                          >
+                            Committed
+                          </th>
+                          <th scope="col" className="w-24 py-2 pr-2.5 text-right">
+                            Files
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleCommits.map((commit) => (
+                          <CommitRow
+                            key={commit.sha}
+                            commit={commit}
+                            selected={selectedShas.includes(commit.sha)}
+                            expanded={expandedSha === commit.sha}
+                            locked={locked}
+                            onToggle={() => toggleCommit(commit.sha)}
+                            onExpand={() =>
+                              setExpandedSha(expandedSha === commit.sha ? null : commit.sha)
+                            }
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-2.5 py-2 text-[11px] text-muted">
+                  <span className="truncate">
+                    {visibleCommits.length === commits.length
+                      ? `${commits.length} commits`
+                      : `${visibleCommits.length} of ${commits.length} commits`}{' '}
+                    on <span className="mono text-fg">{trunkBranch}</span>
+                  </span>
+                  <span className="text-disabled">
+                    Every selected subsystem receives the paths these commits touched.
+                  </span>
+                </div>
+              </>
             )}
           </Panel>
 
@@ -560,55 +697,93 @@ function CommitRow({
   onExpand: () => void;
 }) {
   return (
-    <li className={cx('last:border-b-0', selected && 'row-selected')}>
-      <div className="flex h-[29px] items-center gap-2 px-2.5">
-        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
-          <Checkbox
-            checked={selected}
-            disabled={locked}
-            onChange={onToggle}
-            label={`Select commit ${commit.shortSha}`}
+    <>
+      <tr
+        onClick={onExpand}
+        className={cx(
+          'row-hover h-[50px] cursor-pointer border-b border-line',
+          selected && 'bg-selection',
+        )}
+      >
+        <td className="py-2 pl-2.5 align-top">
+          {/* Ticking a box must not also expand the row. */}
+          <span onClick={(event) => event.stopPropagation()}>
+            <Checkbox
+              checked={selected}
+              disabled={locked}
+              onChange={onToggle}
+              label={`Select commit ${commit.shortSha} – ${commit.subject}`}
+            />
+          </span>
+        </td>
+        <td className="relative w-6 align-top">
+          <span
+            aria-hidden="true"
+            className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 bg-line"
           />
-          <span className="mono shrink-0 text-[11px] text-muted" title={commit.sha}>
+          <span
+            aria-hidden="true"
+            className="absolute top-4 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-accent ring-2 ring-accent/30"
+          />
+        </td>
+        <td className="py-2 pr-2.5 text-right align-top">
+          <span className="mono text-[11px] text-accent-ink" title={commit.sha}>
             {commit.shortSha}
           </span>
-          <span className="min-w-0 flex-1 truncate text-xs text-fg" title={commit.subject}>
+        </td>
+        <td className="max-w-[52ch] py-2 pr-2.5 align-top">
+          <span className="block truncate text-xs text-fg" title={commit.subject}>
             {commit.subject}
           </span>
-        </label>
-        <span
-          className="max-w-[130px] shrink-0 truncate text-[11px] text-muted"
-          title={`${commit.authorName} · ${formatDateTime(commit.committedAt)}`}
-        >
-          {commit.authorName}
-        </span>
-        <span className="mono shrink-0 text-[11px] text-muted tabular-nums">
+          <p
+            className="mt-0.5 truncate text-[11px] text-muted"
+            title={`${commit.authorName} · ${formatDateTime(commit.committedAt)}`}
+          >
+            {commit.authorName} · {formatDateTime(commit.committedAt)}
+          </p>
+        </td>
+        <td className="hidden max-w-40 py-2 pr-2.5 align-top text-xs text-muted xl:table-cell">
+          <span className="block truncate">{commit.authorName}</span>
+        </td>
+        <td className="mono hidden py-2 pr-2.5 text-right text-muted tabular-nums xl:table-cell">
           {formatDate(commit.committedAt)}
-        </span>
-        <span
-          className="shrink-0 text-[11px] text-muted tabular-nums"
-          title={`${commit.filesChanged} files changed`}
-        >
-          {commit.filesChanged} files
-        </span>
-        <IconButton
-          icon={ChevronDown}
-          label={expanded ? `Hide paths of ${commit.shortSha}` : `Show paths of ${commit.shortSha}`}
-          aria-expanded={expanded}
-          className={cx('h-[21px] w-[21px]', expanded && 'text-fg')}
-          onClick={onExpand}
-        />
-      </div>
+        </td>
+        <td className="py-2 pr-2.5 align-top">
+          <div className="flex items-center justify-end gap-1.5">
+            <span
+              className="text-[11px] text-muted tabular-nums"
+              title={`${commit.filesChanged} files changed`}
+            >
+              {commit.filesChanged}
+            </span>
+            <span onClick={(event) => event.stopPropagation()}>
+              <IconButton
+                icon={ChevronDown}
+                label={
+                  expanded ? `Hide paths of ${commit.shortSha}` : `Show paths of ${commit.shortSha}`
+                }
+                aria-expanded={expanded}
+                className={cx('h-[21px] w-[21px]', expanded && 'text-fg')}
+                onClick={onExpand}
+              />
+            </span>
+          </div>
+        </td>
+      </tr>
       {expanded ? (
-        <ul className="scroll-area max-h-44 border-t border-line bg-raised px-2.5 py-1">
-          {commit.paths.map((path) => (
-            <li key={path} className="flex h-[25px] items-center">
-              <PathLabel path={path} className="text-[11px]" />
-            </li>
-          ))}
-        </ul>
+        <tr className="bg-raised">
+          <td colSpan={7} className="border-b border-line p-0">
+            <ul className="scroll-area max-h-44 px-2.5 py-1">
+              {commit.paths.map((path) => (
+                <li key={path} className="flex h-[25px] items-center">
+                  <PathLabel path={path} className="text-[11px]" />
+                </li>
+              ))}
+            </ul>
+          </td>
+        </tr>
       ) : null}
-    </li>
+    </>
   );
 }
 
