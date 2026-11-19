@@ -620,7 +620,12 @@ export interface TrunkCommit {
   committedAt: string;
   committedUnix: number;
   filesChanged: number;
-  paths: string[];
+  paths: TrunkPath[];
+}
+
+export interface TrunkPath {
+  path: string;
+  change: FileChangeKind;
 }
 
 export interface DistributionSkip {

@@ -201,8 +201,19 @@ fn distributes_trunk_commit_paths_into_a_subsystem_pull_request() {
         .iter()
         .find(|commit| commit.sha == trunk_sha)
         .expect("the new trunk commit is listed");
-    assert_eq!(selected.paths, vec!["src/shared.ts".to_string()]);
-    let wanted: HashSet<String> = selected.paths.iter().cloned().collect();
+    assert_eq!(
+        selected
+            .paths
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.change.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("src/shared.ts", "modified")]
+    );
+    let wanted: HashSet<String> = selected
+        .paths
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect();
 
     let ops = PrRecorder::default();
     let subsystem = entry();

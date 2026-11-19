@@ -34,7 +34,15 @@ pub struct TrunkCommit {
     pub committed_at: String,
     pub committed_unix: i64,
     pub files_changed: u32,
-    pub paths: Vec<String>,
+    pub paths: Vec<TrunkPath>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrunkPath {
+    pub path: String,
+    /// `added`, `modified` or `deleted`, matching the UI's change glyphs.
+    pub change: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,7 +196,15 @@ pub fn trunk_commits(main: &MainSnapshot) -> AppResult<Vec<TrunkCommit>> {
             paths: commit
                 .deltas
                 .into_iter()
-                .map(|(path, _blob, _status)| path)
+                .map(|(path, _blob, status)| TrunkPath {
+                    path,
+                    change: match status {
+                        'A' => "added",
+                        'D' => "deleted",
+                        _ => "modified",
+                    }
+                    .to_string(),
+                })
                 .collect(),
         })
         .collect())

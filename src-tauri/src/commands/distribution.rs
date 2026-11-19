@@ -105,7 +105,7 @@ fn wanted_paths(main: &MainSnapshot, shas: &[String]) -> AppResult<HashSet<Strin
     for commit in &commits {
         if selected.contains(commit.sha.as_str()) {
             found += 1;
-            paths.extend(commit.paths.iter().cloned());
+            paths.extend(commit.paths.iter().map(|entry| entry.path.clone()));
         }
     }
     if found == 0 {

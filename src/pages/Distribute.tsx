@@ -4,6 +4,8 @@ import {
   ArrowDownUp,
   ArrowUpDown,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ExternalLink,
   GitPullRequestArrow,
   RefreshCw,
@@ -27,6 +29,7 @@ import type {
   TrunkCommit,
 } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
+import { ChangeKindIcon } from '../components/ChangeKindIcon';
 import { PathLabel } from '../components/PathLabel';
 import { cx } from '../components/ui/cx';
 import { formatDate, formatDateTime } from '../components/ui/format';
@@ -53,6 +56,8 @@ export function Distribute() {
   const [expandedSha, setExpandedSha] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
+  const [pageSize, setPageSize] = useState(25);
+  const [pageNumber, setPageNumber] = useState(1);
   const [subsystemChoice, setSubsystemChoice] = useState<string[] | null>(null);
   const [message, setMessage] = useState('');
   const [preview, setPreview] = useState<DistributionPreview | null>(null);
@@ -87,6 +92,12 @@ export function Distribute() {
           );
     return sort === 'newest' ? filtered : [...filtered].reverse();
   }, [commits, search, sort]);
+
+  const totalPages = Math.max(1, Math.ceil(visibleCommits.length / pageSize));
+  const page = Math.min(pageNumber, totalPages);
+  const pagedCommits = visibleCommits.slice((page - 1) * pageSize, page * pageSize);
+  const rangeStart = visibleCommits.length === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(page * pageSize, visibleCommits.length);
 
   const enabledSubsystems = useMemo(
     () => (app.subsystems.data ?? []).filter((subsystem) => subsystem.enabled),
@@ -144,12 +155,15 @@ export function Distribute() {
     setBranchChoice(next);
     setSelectedShas([]);
     setExpandedSha(null);
+    setSearch('');
+    setPageNumber(1);
     resetDistribution();
   };
 
   const refreshCommits = () => {
     setSelectedShas([]);
     setExpandedSha(null);
+    setPageNumber(1);
     resetDistribution();
     commitQuery.reload();
   };
@@ -343,7 +357,10 @@ export function Distribute() {
                     <input
                       type="search"
                       value={search}
-                      onChange={(event) => setSearch(event.target.value)}
+                      onChange={(event) => {
+                        setSearch(event.target.value);
+                        setPageNumber(1);
+                      }}
                       placeholder="Search commits…"
                       aria-label="Search commits by message, SHA or author"
                       className="input pl-9"
@@ -355,7 +372,10 @@ export function Distribute() {
                     variant="secondary"
                     icon={sort === 'newest' ? ArrowDownUp : ArrowUpDown}
                     disabled={locked}
-                    onClick={() => setSort(sort === 'newest' ? 'oldest' : 'newest')}
+                    onClick={() => {
+                      setSort(sort === 'newest' ? 'oldest' : 'newest');
+                      setPageNumber(1);
+                    }}
                     title={
                       sort === 'newest'
                         ? 'Sorted newest first — click for oldest first'
@@ -427,7 +447,7 @@ export function Distribute() {
                         </tr>
                       </thead>
                       <tbody>
-                        {visibleCommits.map((commit) => (
+                        {pagedCommits.map((commit) => (
                           <CommitRow
                             key={commit.sha}
                             commit={commit}
@@ -447,14 +467,46 @@ export function Distribute() {
 
                 <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-2.5 py-2 text-[11px] text-muted">
                   <span className="truncate">
+                    {visibleCommits.length === 0
+                      ? 'No commits'
+                      : `Showing ${rangeStart}–${rangeEnd} of ${visibleCommits.length}`}
                     {visibleCommits.length === commits.length
-                      ? `${commits.length} commits`
-                      : `${visibleCommits.length} of ${commits.length} commits`}{' '}
-                    on <span className="mono text-fg">{trunkBranch}</span>
+                      ? ''
+                      : ` (${commits.length} on branch)`}
                   </span>
-                  <span className="text-disabled">
-                    Every selected subsystem receives the paths these commits touched.
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1.5 text-[11px] text-muted">
+                      Rows
+                      <Select
+                        className="w-[76px]"
+                        value={String(pageSize)}
+                        onValueChange={(next) => {
+                          setPageSize(Number(next));
+                          setPageNumber(1);
+                        }}
+                        ariaLabel="Rows per page"
+                        options={[25, 50, 100].map((size) => ({
+                          value: String(size),
+                          label: String(size),
+                        }))}
+                      />
+                    </label>
+                    <IconButton
+                      icon={ChevronLeft}
+                      label="Previous page"
+                      disabled={page <= 1}
+                      onClick={() => setPageNumber(Math.max(1, page - 1))}
+                    />
+                    <span className="mono text-right text-muted tabular-nums">
+                      {page} / {totalPages}
+                    </span>
+                    <IconButton
+                      icon={ChevronRight}
+                      label="Next page"
+                      disabled={page >= totalPages}
+                      onClick={() => setPageNumber(Math.min(totalPages, page + 1))}
+                    />
+                  </div>
                 </div>
               </>
             )}
@@ -774,9 +826,10 @@ function CommitRow({
         <tr className="bg-raised">
           <td colSpan={7} className="border-b border-line p-0">
             <ul className="scroll-area max-h-44 px-2.5 py-1">
-              {commit.paths.map((path) => (
-                <li key={path} className="flex h-[25px] items-center">
-                  <PathLabel path={path} className="text-[11px]" />
+              {commit.paths.map((entry) => (
+                <li key={entry.path} className="flex h-[25px] items-center gap-2">
+                  <ChangeKindIcon change={entry.change} />
+                  <PathLabel path={entry.path} className="text-[11px]" />
                 </li>
               ))}
             </ul>
