@@ -49,9 +49,7 @@ fn commit(dir: &Path, message: &str) -> String {
 fn sandbox(tag: &str) -> PathBuf {
     let base = std::env::var("VOS_ENGINE_SANDBOX")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from("C:\\GithubRepos\\vos-web-integrated\\.tmp\\rust-engine-sandbox")
-        });
+        .unwrap_or_else(|_| std::env::temp_dir().join("vos-rust-engine-sandbox"));
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())

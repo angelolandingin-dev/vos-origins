@@ -3,8 +3,8 @@
 //!
 //! Everything runs against **disposable local git repositories** created in a sandbox
 //! directory, with a stub `GitHubOps` and a stub lockfile generator, so the suite is fully
-//! offline. (Reference default sandbox: `C:\GithubRepos\vos-web-integrated\.tmp\rust-engine-sandbox`;
-//! override with `VOS_ENGINE_SANDBOX`.)
+//! offline. (Sandbox defaults to `vos-rust-engine-sandbox` under the system temp
+//! directory; override with `VOS_ENGINE_SANDBOX`.)
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -36,11 +36,9 @@ mod sandbox {
     pub fn sandbox_root() -> PathBuf {
         let base = std::env::var("VOS_ENGINE_SANDBOX")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                PathBuf::from("C:\\GithubRepos\\vos-web-integrated\\.tmp\\rust-engine-sandbox")
-            });
+            .unwrap_or_else(|_| std::env::temp_dir().join("vos-rust-engine-sandbox"));
         if std::fs::create_dir_all(&base).is_err() {
-            let fallback = std::env::temp_dir().join("vos-rust-engine-sandbox");
+            let fallback = std::env::temp_dir().join("vos-rust-engine-sandbox-fallback");
             let _ = std::fs::create_dir_all(&fallback);
             return fallback;
         }
