@@ -7,10 +7,24 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+# chrono is only used for fixture timestamps and relative-time rendering; the
+# advisory reports the crate as unmaintained, not a vulnerability, and there is
+# no upgrade path inside chrono. Migration to jiff/time is tracked separately.
+ignore = [
+  "RUSTSEC-2026-0543",
+  # Unmaintained-only advisories from the Tauri dependency tree: proc-macro-error
+  # is build-time only, and the zvariant/zbus_names family reaches us through
+  # tauri-plugin-opener on Linux, which this Windows-only app never ships.
+  "RUSTSEC-2024-0370",
+  "RUSTSEC-2026-0370",
+  "RUSTSEC-2026-0371",
+  "RUSTSEC-2026-0372",
+]
 
 [licenses]
 version = 2
+# This crate is not published (publish = false), so it carries no SPDX license.
+private = { ignore = true }
 # Allow only common permissive licenses; anything else must be explicitly reviewed.
 allow = [
   "MIT",

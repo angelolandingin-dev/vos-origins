@@ -103,22 +103,23 @@ pub(crate) fn strip_cr(bytes: &[u8]) -> Vec<u8> {
 
 fn is_reparse_or_symlink(path: &Path) -> bool {
     match std::fs::symlink_metadata(path) {
-        Ok(meta) => {
-            if meta.file_type().is_symlink() {
-                return true;
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::MetadataExt;
-                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-                if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                    return true;
-                }
-            }
-            false
-        }
+        Ok(meta) => meta.file_type().is_symlink() || has_reparse_point(&meta),
         Err(_) => false,
     }
+}
+
+/// Windows junctions are reparse points but not symlinks, so `is_symlink` alone
+/// would let a write follow one out of the worktree.
+#[cfg(windows)]
+fn has_reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn has_reparse_point(_meta: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// Symlinked parents/files would let a write escape the worktree, so every

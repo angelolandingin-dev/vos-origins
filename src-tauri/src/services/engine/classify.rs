@@ -313,10 +313,7 @@ fn is_secret(lower_basename: &str) -> bool {
         }
     }
     let stem = lower_basename.strip_suffix(".json").unwrap_or("");
-    if !stem.is_empty() && stem.starts_with("service") && stem.contains("account") {
-        return true;
-    }
-    false
+    !stem.is_empty() && stem.starts_with("service") && stem.contains("account")
 }
 
 #[cfg(test)]
