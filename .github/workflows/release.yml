@@ -40,7 +40,7 @@ jobs:
           tagName: app-v__VERSION__
           releaseName: 'VOS Origins v__VERSION__'
           releaseBody: 'Windows installers plus the signed update bundle. Existing installs update themselves from Settings › Updates.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
           args: '--target x86_64-pc-windows-msvc'
