@@ -1,6 +1,6 @@
 [package]
 name = "vos-origins"
-version = "0.1.1"
+version = "0.1.2"
 description = "Promotes approved subsystem commits into a main-system branch."
 authors = ["VOS Integration"]
 edition = "2021"
