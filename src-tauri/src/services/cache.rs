@@ -2,6 +2,7 @@
 //! entries expire and are never persisted (spec §8.4).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -30,7 +31,18 @@ pub struct Cache {
 /// then hit the freshly populated entry, so N simultaneous tab mounts cost
 /// one clone+call instead of N.
 pub struct Singleflight {
-    inner: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    inner: Mutex<HashMap<String, Arc<Slot>>>,
+}
+
+pub struct Slot {
+    gate: Mutex<()>,
+    users: AtomicUsize,
+}
+
+impl Slot {
+    pub fn enter(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.gate.lock().unwrap_or_else(|err| err.into_inner())
+    }
 }
 
 impl Singleflight {
@@ -40,24 +52,37 @@ impl Singleflight {
         }
     }
 
-    pub fn lock_for(&self, key: &str) -> Arc<Mutex<()>> {
+    /// Join the in-flight group for `key`; the caller counts as a user until it
+    /// calls [`Singleflight::release`]. Counting here, under the map lock, is
+    /// what makes "last caller out drops the slot" exact rather than a guess
+    /// at `Arc::strong_count`, which straddles `join` and release.
+    pub fn join(&self, key: &str) -> Arc<Slot> {
         let mut slots = self.inner.lock().unwrap_or_else(|err| err.into_inner());
-        slots.get(key).cloned().unwrap_or_else(|| {
-            let slot = Arc::new(Mutex::new(()));
+        let slot = slots.get(key).cloned().unwrap_or_else(|| {
+            let slot = Arc::new(Slot {
+                gate: Mutex::new(()),
+                users: AtomicUsize::new(0),
+            });
             slots.insert(key.to_string(), slot.clone());
             slot
-        })
+        });
+        slot.users.fetch_add(1, Ordering::SeqCst);
+        slot
     }
 
-    /// Drop the slot once nobody is waiting on it, so the map stays small.
-    /// A waiter that arrived before the removal holds its own `Arc` and still
-    /// serializes correctly; newcomers create a fresh slot and hit the cache.
-    pub fn remove_if_unused(&self, key: &str) {
+    /// Leave the group and drop the slot when this was the last user, so the
+    /// map stays small. Decrement and removal share the map lock, so a caller
+    /// arriving meanwhile either keeps the slot alive or gets a fresh one.
+    pub fn release(&self, key: &str, slot: &Arc<Slot>) {
         let mut slots = self.inner.lock().unwrap_or_else(|err| err.into_inner());
-        if let Some(slot) = slots.get(key) {
-            if Arc::strong_count(slot) <= 2 {
-                slots.remove(key);
-            }
+        if slot.users.fetch_sub(1, Ordering::SeqCst) > 1 {
+            return;
+        }
+        if slots
+            .get(key)
+            .is_some_and(|current| Arc::ptr_eq(current, slot))
+        {
+            slots.remove(key);
         }
     }
 

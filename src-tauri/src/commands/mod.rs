@@ -63,30 +63,31 @@ where
             return Ok(value);
         }
     }
-    let slot = state.singleflight.lock_for(key);
-    let _guard = slot.lock().unwrap_or_else(|err| err.into_inner());
-    if let Some(hit) = state.cache.get(key) {
-        if let Ok(value) = serde_json::from_str::<T>(&hit) {
-            state.singleflight.remove_if_unused(key);
-            return Ok(value);
-        }
-    }
-    let outcome = compute();
-    match outcome {
-        // Store before releasing: a newcomer either waits on the still-present
-        // slot and double-check-hits, or arrives after removal to a warm cache.
-        Ok(value) => {
-            if let Ok(encoded) = serde_json::to_string(&value) {
-                state.cache.put(key, encoded);
+    let slot = state.singleflight.join(key);
+    // Release outside the gate: `release` takes the map lock, and `join` takes
+    // it before the gate, so holding the gate here would invert that order.
+    let outcome = (|| {
+        let _gate = slot.enter();
+        if let Some(hit) = state.cache.get(key) {
+            if let Ok(value) = serde_json::from_str::<T>(&hit) {
+                return Ok(value);
             }
-            state.singleflight.remove_if_unused(key);
-            Ok(value)
         }
-        Err(err) => {
-            state.singleflight.remove_if_unused(key);
-            Err(err)
+        let outcome = compute();
+        match outcome {
+            // Store before releasing: a newcomer either waits on the still-present
+            // slot and double-check-hits, or arrives after removal to a warm cache.
+            Ok(value) => {
+                if let Ok(encoded) = serde_json::to_string(&value) {
+                    state.cache.put(key, encoded);
+                }
+                Ok(value)
+            }
+            Err(err) => Err(err),
         }
-    }
+    })();
+    state.singleflight.release(key, &slot);
+    outcome
 }
 
 #[cfg(test)]
