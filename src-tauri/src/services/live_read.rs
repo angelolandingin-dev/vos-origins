@@ -1527,15 +1527,6 @@ pub(crate) fn parse_source_log(repo_dir: &Path, branch: &str) -> AppResult<Vec<S
     source_log(repo_dir, branch, false)
 }
 
-/// First-parent walk: the branch's own commits only. A trunk branch collects
-/// integration merges, and those side histories are not the trunk's story.
-pub(crate) fn parse_first_parent_log(
-    repo_dir: &Path,
-    branch: &str,
-) -> AppResult<Vec<SourceCommit>> {
-    source_log(repo_dir, branch, true)
-}
-
 fn source_log(repo_dir: &Path, branch: &str, first_parent: bool) -> AppResult<Vec<SourceCommit>> {
     const REC: char = '\u{1e}';
     const FIELD: char = '\u{1f}';

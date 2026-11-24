@@ -1,9 +1,19 @@
-//! Trunk ? subsystem distribution: the operator picks trunk commits, the paths
-//! those commits touch are offered per subsystem and delivered as a pull request
-//! on `distribute-<trunk-branch>`. Never writes a lockfile, never deletes a path.
+//! Trunk -> subsystem distribution: the operator picks one trunk commit and one
+//! target subsystem, reviews the files and scoped dependencies, and delivers the
+//! change as a pull request on `distribute/<trunk-branch>-<short-sha>`.
+//!
+//! Key invariants:
+//! - File bytes and modes are read from the exact selected commit (never trunk HEAD).
+//! - Deletions in the selected commit delete the file in the subsystem if present
+//!   (and can be unchecked by the operator).
+//! - Dependencies are scoped to packages imported by the non-excluded distributed
+//!   files plus any dependency delta introduced by the selected commit's own
+//!   `package.json` (for packages the subsystem already uses or distributed files import).
+//! - Lockfiles are never written; the PR notes the install step.
+//! - Always pushes a unique branch and opens a PR; never pushes to the base branch.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,14 +26,16 @@ use super::provenance::{self, ProvenanceInput};
 use super::semver::{self, ComparisonKind};
 use super::Blocker;
 use crate::error::{AppError, AppResult, ErrorCode};
-use crate::services::live_read;
-use crate::services::registry::SubsystemEntry;
+use crate::github::gh_cli::GitHubAccount;
+use crate::services::registry::{assert_full_sha, SubsystemEntry};
 
 pub const DISTRIBUTION_PROGRESS_EVENT: &str = "distribution-progress";
 pub const DISTRIBUTE_MODE: &str = "distribute";
 
 const MAX_BLOB_BYTES: usize = 1024 * 1024;
 const MAX_LISTED_PATHS: usize = 200;
+const MAX_TRUNK_COMMITS: usize = 300;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrunkCommit {
@@ -33,6 +45,7 @@ pub struct TrunkCommit {
     pub author_name: String,
     pub committed_at: String,
     pub committed_unix: i64,
+    pub is_merge: bool,
     pub files_changed: u32,
     pub paths: Vec<TrunkPath>,
 }
@@ -43,6 +56,23 @@ pub struct TrunkPath {
     pub path: String,
     /// `added`, `modified` or `deleted`, matching the UI's change glyphs.
     pub change: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DistributionPathAction {
+    Add,
+    Update,
+    Delete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DistributionFile {
+    pub path: String,
+    pub action: DistributionPathAction,
+    /// `added`, `modified` or `deleted` in the selected trunk commit.
+    pub trunk_change: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,11 +108,13 @@ pub struct DistributionDependency {
 pub struct DistributionPlan {
     pub subsystem_id: String,
     pub name: String,
+    pub main_branch: String,
+    pub commit_sha: String,
+    pub commit_subject: String,
     pub source_branch: String,
-    pub branch: String,
-    pub main_sha: String,
     pub source_sha: String,
-    pub paths: Vec<String>,
+    pub branch: String,
+    pub files: Vec<DistributionFile>,
     pub skipped: Vec<DistributionSkip>,
     pub dependencies: Vec<DistributionDependency>,
     pub blockers: Vec<Blocker>,
@@ -91,38 +123,20 @@ pub struct DistributionPlan {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DistributionPreview {
-    pub main_branch: String,
-    pub main_sha: String,
-    pub subsystems: Vec<DistributionPlan>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Selection {
-    pub excluded_paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct DistributionOutcome {
     pub subsystem_id: String,
     pub ok: bool,
+    pub main_branch: String,
+    pub source_commit_sha: String,
     pub branch: String,
     pub commit_sha: Option<String>,
     pub pull_request: Option<PullRequestInfo>,
     pub applied: Vec<String>,
+    pub deleted: Vec<String>,
     pub dependencies: Vec<DistributionDependency>,
     pub blockers: Vec<Blocker>,
     pub warnings: Vec<String>,
     pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DistributionRunResult {
-    pub main_branch: String,
-    pub main_sha: String,
-    pub outcomes: Vec<DistributionOutcome>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,89 +145,342 @@ pub struct TreeEntry {
     pub blob: String,
 }
 
-pub struct MainSnapshot {
-    pub dir: std::path::PathBuf,
-    pub branch: String,
-    pub sha: String,
-    pub index: HashMap<String, TreeEntry>,
-    pub manifest: Value,
+#[derive(Debug, Clone)]
+pub struct CommitDelta {
+    pub path: String,
+    pub new_mode: String,
+    pub new_blob: String,
+    pub status: char,
 }
 
-impl MainSnapshot {
-    pub fn load(main_dir: &Path, main_branch: &str) -> AppResult<Self> {
+pub struct CommitSnapshot {
+    pub dir: PathBuf,
+    pub branch: String,
+    pub sha: String,
+    pub subject: String,
+    pub deltas: Vec<CommitDelta>,
+    pub manifest: Value,
+    pub parent_manifest: Value,
+}
+
+impl CommitSnapshot {
+    pub fn load(main_dir: &Path, main_branch: &str, commit_sha: &str) -> AppResult<Self> {
         let branch = main_branch.trim();
         if branch.is_empty() {
             return Err(
-                AppError::invalid_request("Choose a main branch to distribute from.")
+                AppError::invalid_request("Choose a trunk branch to distribute from.")
                     .with_remedy("Pick one of the main repository's branches."),
             );
         }
+        let sha = commit_sha.trim();
+        if assert_full_sha(sha, "commit_sha").is_err() {
+            return Err(AppError::invalid_request(format!(
+                "'{sha}' is not a full 40/64-character lowercase commit SHA."
+            ))
+            .with_remedy("Select a commit from the trunk commit list."));
+        }
+
         let reference = git::resolve_branch_ref(main_dir, branch).ok_or_else(|| {
             AppError::new(
                 ErrorCode::BranchNotPermitted,
-                format!("Main branch '{branch}' does not exist in the main checkout."),
+                format!("Trunk branch '{branch}' does not exist in the main checkout."),
             )
             .with_remedy("Fetch the main repository or choose another branch.")
         })?;
-        let sha = git::rev_parse(main_dir, &reference).ok_or_else(|| {
+        let branch_tip = git::rev_parse(main_dir, &reference).ok_or_else(|| {
             AppError::new(
                 ErrorCode::RepositoryInaccessible,
-                format!("Could not resolve main branch '{branch}'."),
+                format!("Could not resolve trunk branch '{branch}'."),
             )
             .with_remedy("Check the main checkout under the checkouts cache, then retry.")
         })?;
-        let index = tree_index(main_dir, &sha);
-        if index.is_empty() {
-            return Err(AppError::new(
-                ErrorCode::RepositoryInaccessible,
-                format!("Main branch '{branch}' has no tracked files."),
-            )
-            .with_remedy("Confirm the main checkout is a readable clone of the main repository."));
+
+        let is_ancestor = git::run(main_dir, &["merge-base", "--is-ancestor", sha, &branch_tip])
+            .map(|out| out.status == 0)
+            .unwrap_or(false);
+        if !is_ancestor {
+            return Err(AppError::invalid_request(format!(
+                "Commit '{sha}' is not reachable from trunk branch '{branch}'."
+            ))
+            .with_remedy("Refresh the commit list and select a commit on this branch."));
         }
+
+        let subject = git::run(main_dir, &["show", "-s", "--format=%s", sha])
+            .ok()
+            .filter(|out| out.status == 0)
+            .map(|out| out.stdout_trimmed())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("sync changes from {branch}"));
+
+        let deltas = read_commit_deltas(main_dir, sha)?;
+        let manifest = read_manifest(main_dir, sha);
+        let parent_ref = format!("{sha}^1");
+        let parent_manifest = if git::rev_parse(main_dir, &parent_ref).is_some() {
+            read_manifest(main_dir, &parent_ref)
+        } else {
+            serde_json::json!({})
+        };
+
         Ok(Self {
             dir: main_dir.to_path_buf(),
             branch: branch.to_string(),
-            sha: sha.clone(),
-            index,
-            manifest: read_manifest(main_dir, &sha),
+            sha: sha.to_string(),
+            subject,
+            deltas,
+            manifest,
+            parent_manifest,
         })
     }
 }
 
-/// Commits on the trunk branch, newest first, with the paths each one touched.
-pub fn trunk_commits(main: &MainSnapshot) -> AppResult<Vec<TrunkCommit>> {
-    let commits = live_read::parse_first_parent_log(&main.dir, &main.branch)?;
-    Ok(commits
-        .into_iter()
-        .map(|commit| TrunkCommit {
-            short_sha: commit.sha.chars().take(7).collect(),
-            sha: commit.sha,
-            subject: commit.subject,
-            author_name: commit.author_name,
-            committed_at: commit.committed_at,
-            committed_unix: commit.committed_unix,
-            files_changed: commit.files_changed,
-            paths: commit
-                .deltas
-                .into_iter()
-                .map(|(path, _blob, status)| TrunkPath {
-                    path,
-                    change: match status {
-                        'A' => "added",
-                        'D' => "deleted",
-                        _ => "modified",
-                    }
-                    .to_string(),
-                })
-                .collect(),
-        })
-        .collect())
+/// First-parent commits on `main_branch`, newest first, including merge commits
+/// diffed against their first parent (`-m --first-parent`).
+pub fn trunk_commits(main_dir: &Path, main_branch: &str) -> AppResult<Vec<TrunkCommit>> {
+    let branch = main_branch.trim();
+    if branch.is_empty() {
+        return Err(
+            AppError::invalid_request("Choose a trunk branch to load commits from.")
+                .with_remedy("Pick one of the main repository's branches."),
+        );
+    }
+    let reference = git::resolve_branch_ref(main_dir, branch).ok_or_else(|| {
+        AppError::new(
+            ErrorCode::BranchNotPermitted,
+            format!("Trunk branch '{branch}' does not exist in the main checkout."),
+        )
+        .with_remedy("Fetch the main repository or choose another branch.")
+    })?;
+
+    const REC: char = '\u{1e}';
+    const FIELD: char = '\u{1f}';
+    let fmt = format!("--format=%H{FIELD}%P{FIELD}%an{FIELD}%cI{FIELD}%ct{FIELD}%s{REC}");
+    let max_count = format!("--max-count={MAX_TRUNK_COMMITS}");
+    let args = [
+        "log",
+        max_count.as_str(),
+        "--first-parent",
+        "-m",
+        &fmt,
+        "--raw",
+        "--no-abbrev",
+        "--no-renames",
+        &reference,
+    ];
+    let out = git::run(main_dir, &args).map_err(|err| {
+        AppError::new(
+            ErrorCode::RepositoryInaccessible,
+            format!(
+                "Could not read trunk branch '{branch}': {}",
+                git::sanitize(&err.to_string())
+            ),
+        )
+        .with_remedy("Confirm the main checkout is readable, then retry.")
+    })?;
+    if out.status != 0 {
+        return Err(AppError::new(
+            ErrorCode::RepositoryInaccessible,
+            format!(
+                "Could not read trunk branch '{branch}': {}",
+                git::sanitize(&out.stderr)
+            ),
+        )
+        .with_remedy("Confirm the main checkout is readable, then retry."));
+    }
+
+    let text = out.stdout_str();
+    let mut commits: Vec<TrunkCommit> = Vec::new();
+    let mut current: Option<TrunkCommit> = None;
+
+    let flush = |current: &mut Option<TrunkCommit>, commits: &mut Vec<TrunkCommit>| {
+        if let Some(mut commit) = current.take() {
+            if commit.sha.len() == 40 || commit.sha.len() == 64 {
+                commit.files_changed = commit.paths.len() as u32;
+                commits.push(commit);
+            }
+        }
+    };
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim_end_matches([REC, '\r']);
+        if line.contains(FIELD) {
+            flush(&mut current, &mut commits);
+            let mut parts = line.split(FIELD);
+            let sha = parts.next().unwrap_or("").trim().to_string();
+            if sha.is_empty() {
+                continue;
+            }
+            let parents_raw = parts.next().unwrap_or("");
+            let is_merge = parents_raw.split_whitespace().count() > 1;
+            let author_name = parts.next().unwrap_or("").to_string();
+            let committed_at = parts.next().unwrap_or("").to_string();
+            let committed_unix = parts.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
+            let subject = parts.next().unwrap_or("").to_string();
+            let short_sha: String = sha.chars().take(7).collect();
+            current = Some(TrunkCommit {
+                sha,
+                short_sha,
+                subject,
+                author_name,
+                committed_at,
+                committed_unix,
+                is_merge,
+                files_changed: 0,
+                paths: Vec::new(),
+            });
+        } else if let Some(commit) = current.as_mut() {
+            if let Some(delta) = parse_raw_diff_row(line) {
+                commit.paths.push(TrunkPath {
+                    path: delta.path,
+                    change: status_to_change(delta.status).to_string(),
+                });
+            }
+        }
+    }
+    flush(&mut current, &mut commits);
+    Ok(commits)
 }
 
-/// `distribute-<main branch>` with everything git refuses in a ref name flattened,
-/// mirroring how integration branches are named on the forward path.
-pub fn distribution_branch(main_branch: &str) -> String {
-    let safe: String = main_branch
+fn read_commit_deltas(repo_dir: &Path, sha: &str) -> AppResult<Vec<CommitDelta>> {
+    let out = git::run(
+        repo_dir,
+        &[
+            "diff-tree",
+            "--root",
+            "-m",
+            "--first-parent",
+            "--raw",
+            "--no-abbrev",
+            "--no-renames",
+            "-r",
+            "--format=",
+            sha,
+        ],
+    )
+    .map_err(|err| {
+        AppError::new(
+            ErrorCode::RepositoryInaccessible,
+            format!(
+                "Could not inspect commit '{sha}': {}",
+                git::sanitize(&err.to_string())
+            ),
+        )
+    })?;
+    if out.status != 0 {
+        return Err(AppError::new(
+            ErrorCode::RepositoryInaccessible,
+            format!(
+                "Could not inspect commit '{sha}': {}",
+                git::sanitize(&out.stderr)
+            ),
+        ));
+    }
+    let mut deltas = Vec::new();
+    let mut seen = HashSet::new();
+    for line in out.stdout_str().lines() {
+        if let Some(delta) = parse_raw_diff_row(line) {
+            if seen.insert(delta.path.clone()) {
+                deltas.push(delta);
+            }
+        }
+    }
+    Ok(deltas)
+}
+
+fn parse_raw_diff_row(line: &str) -> Option<CommitDelta> {
+    let row = line.trim();
+    if !row.starts_with(':') {
+        return None;
+    }
+    let (meta, raw_path) = row.split_once('\t')?;
+    let mut cols = meta.split(' ');
+    let (_old_mode, new_mode, _old_sha, new_sha, status_str) = (
+        cols.next()?,
+        cols.next()?,
+        cols.next()?,
+        cols.next()?,
+        cols.next()?,
+    );
+    let status = status_str.chars().next()?;
+    let path = unquote_git_path(raw_path);
+    if path.is_empty() {
+        return None;
+    }
+    Some(CommitDelta {
+        path,
+        new_mode: new_mode.to_string(),
+        new_blob: new_sha.to_string(),
+        status,
+    })
+}
+
+fn unquote_git_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if !(trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2) {
+        return trimmed.to_string();
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let bytes = inner.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'\\' => {
+                    out.push(b'\\');
+                    i += 2;
+                }
+                b'"' => {
+                    out.push(b'"');
+                    i += 2;
+                }
+                b'n' => {
+                    out.push(b'\n');
+                    i += 2;
+                }
+                b't' => {
+                    out.push(b'\t');
+                    i += 2;
+                }
+                b'r' => {
+                    out.push(b'\r');
+                    i += 2;
+                }
+                c if (b'0'..=b'7').contains(&c) && i + 3 < bytes.len() => {
+                    if let Ok(oct) = std::str::from_utf8(&bytes[i + 1..i + 4]) {
+                        if let Ok(val) = u8::from_str_radix(oct, 8) {
+                            out.push(val);
+                            i += 4;
+                            continue;
+                        }
+                    }
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+                _ => {
+                    out.push(bytes[i + 1]);
+                    i += 2;
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn status_to_change(status: char) -> &'static str {
+    match status {
+        'A' => "added",
+        'D' => "deleted",
+        _ => "modified",
+    }
+}
+
+/// Unique branch name `distribute/<safe-trunk>-<short7>` so concurrent or
+/// sequential distributions from different trunk commits do not collide.
+pub fn distribution_branch(main_branch: &str, commit_sha: &str) -> String {
+    let safe_branch: String = main_branch
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
@@ -223,25 +490,34 @@ pub fn distribution_branch(main_branch: &str) -> String {
             }
         })
         .collect();
-    format!("distribute-{safe}")
+    let safe_branch = safe_branch.trim_matches(['-', '.']);
+    let safe_branch = if safe_branch.is_empty() {
+        "trunk"
+    } else {
+        safe_branch
+    };
+    let short: String = commit_sha.chars().take(7).collect();
+    format!("distribute/{safe_branch}-{short}")
 }
 
 pub fn plan(
-    main: &MainSnapshot,
+    commit: &CommitSnapshot,
     child_dir: &Path,
     entry: &SubsystemEntry,
     github: &dyn GitHubOps,
-    wanted: &HashSet<String>,
+    excluded_paths: &HashSet<String>,
 ) -> DistributionPlan {
-    let branch = distribution_branch(&main.branch);
+    let branch = distribution_branch(&commit.branch, &commit.sha);
     let mut plan = DistributionPlan {
         subsystem_id: entry.id.clone(),
         name: entry.name.clone(),
+        main_branch: commit.branch.clone(),
+        commit_sha: commit.sha.clone(),
+        commit_subject: commit.subject.clone(),
         source_branch: entry.source_branch.clone(),
-        branch: branch.clone(),
-        main_sha: main.sha.clone(),
         source_sha: String::new(),
-        paths: Vec::new(),
+        branch: branch.clone(),
+        files: Vec::new(),
         skipped: Vec::new(),
         dependencies: Vec::new(),
         blockers: Vec::new(),
@@ -300,7 +576,7 @@ pub fn plan(
                     code: "DISTRIBUTION_BRANCH_EXISTS".to_string(),
                     message: format!("Branch '{branch}' already exists on {}.", entry.repository),
                     details: Some(format!(
-                        "Merge or delete it first. It points at {}.",
+                        "A distribution PR for this commit may already be open. Merge or delete '{branch}' first (at {}).",
                         existing.sha
                     )),
                 });
@@ -312,142 +588,218 @@ pub fn plan(
         )),
     }
 
-    // A leftover local branch would make `worktree_add` fail, and cleanup only
-    // deletes branches this run created, so refuse before anything is written.
     if git::local_branch_exists(child_dir, &branch) {
         plan.blockers.push(Blocker {
             code: "DISTRIBUTION_BRANCH_EXISTS".to_string(),
             message: format!("A local branch '{branch}' already exists in the subsystem checkout."),
             details: Some(format!(
-                "Delete it in {} (or push it to {}) before distributing again.",
-                child_dir.display(),
-                entry.repository
+                "Delete it in {} before distributing this commit again.",
+                child_dir.display()
             )),
         });
     }
 
-    let mut missing = 0usize;
-    let mut identical = 0usize;
     let mut lockfile_seen = false;
-    for path in wanted {
-        let Some(main_entry) = main.index.get(path) else {
-            missing += 1;
-            continue;
-        };
-        if is_deferred(path) {
-            if is_lockfile(path) {
-                lockfile_seen = true;
-                plan.skipped.push(DistributionSkip {
-                    path: path.clone(),
-                    reason: "lockfile: never written, commit it after `npm install`".to_string(),
-                });
-            } else {
-                plan.skipped.push(DistributionSkip {
-                    path: path.clone(),
-                    reason: "package.json: dependencies are merged by the distribution".to_string(),
-                });
-            }
+    let mut shared_configs: Vec<String> = Vec::new();
+    let mut commit_touched_root_manifest = false;
+
+    for delta in &commit.deltas {
+        let path = &delta.path;
+        if is_lockfile(path) {
+            lockfile_seen = true;
+            plan.skipped.push(DistributionSkip {
+                path: path.clone(),
+                reason: "lockfile: never written; run install in the subsystem and commit it"
+                    .to_string(),
+            });
             continue;
         }
-        let classification =
-            classify::classify_path(path, &entry.integration_policy, Some(&main_entry.mode));
+        if path == "package.json" {
+            commit_touched_root_manifest = true;
+            plan.skipped.push(DistributionSkip {
+                path: path.clone(),
+                reason: "package.json: dependencies are reconciled automatically".to_string(),
+            });
+            continue;
+        }
+        if path.ends_with("/package.json") {
+            plan.skipped.push(DistributionSkip {
+                path: path.clone(),
+                reason: "nested package.json: never overwritten automatically".to_string(),
+            });
+            continue;
+        }
+
+        let mode_opt = if delta.status == 'D' {
+            None
+        } else {
+            Some(delta.new_mode.as_str())
+        };
+        let classification = classify::classify_path(path, &entry.integration_policy, mode_opt);
         if !matches!(
             classification.status,
             PathStatus::Apply | PathStatus::ExplicitReview
         ) {
             plan.skipped.push(DistributionSkip {
                 path: path.clone(),
-                reason: classification.reason.clone(),
+                reason: classification.reason,
             });
             continue;
         }
-        if child_index
-            .get(path)
-            .map(|child| child.blob == main_entry.blob)
-            .unwrap_or(false)
-        {
-            identical += 1;
+
+        if delta.status == 'D' {
+            if child_index.contains_key(path) {
+                plan.files.push(DistributionFile {
+                    path: path.clone(),
+                    action: DistributionPathAction::Delete,
+                    trunk_change: "deleted".to_string(),
+                });
+            } else {
+                plan.skipped.push(DistributionSkip {
+                    path: path.clone(),
+                    reason: "deleted in trunk commit and already absent in subsystem".to_string(),
+                });
+            }
             continue;
         }
-        plan.paths.push(path.clone());
+
+        if let Some(child_entry) = child_index.get(path) {
+            if child_entry.blob == delta.new_blob {
+                plan.skipped.push(DistributionSkip {
+                    path: path.clone(),
+                    reason: "already matches subsystem".to_string(),
+                });
+                continue;
+            }
+            if classification.status == PathStatus::ExplicitReview && !excluded_paths.contains(path)
+            {
+                shared_configs.push(path.clone());
+            }
+            plan.files.push(DistributionFile {
+                path: path.clone(),
+                action: DistributionPathAction::Update,
+                trunk_change: status_to_change(delta.status).to_string(),
+            });
+        } else {
+            if classification.status == PathStatus::ExplicitReview && !excluded_paths.contains(path)
+            {
+                shared_configs.push(path.clone());
+            }
+            plan.files.push(DistributionFile {
+                path: path.clone(),
+                action: DistributionPathAction::Add,
+                trunk_change: status_to_change(delta.status).to_string(),
+            });
+        }
     }
-    plan.paths.sort();
+
+    plan.files.sort_by(|a, b| a.path.cmp(&b.path));
     plan.skipped.sort_by(|a, b| a.path.cmp(&b.path));
-    if missing > 0 {
+
+    if !shared_configs.is_empty() {
+        shared_configs.sort();
         plan.warnings.push(format!(
-            "{missing} selected path(s) no longer exist on '{}' and were skipped.",
-            main.branch
+            "Includes shared config file(s): {}. Uncheck them if the subsystem should keep its own copy.",
+            shared_configs.join(", ")
         ));
     }
-    if identical > 0 {
-        plan.warnings.push(format!(
-            "{identical} selected path(s) already match the subsystem and were skipped."
-        ));
-    }
+
+    let included_write_paths: Vec<String> = plan
+        .files
+        .iter()
+        .filter(|file| {
+            file.action != DistributionPathAction::Delete && !excluded_paths.contains(&file.path)
+        })
+        .map(|file| file.path.clone())
+        .collect();
+    let included_delete_count = plan
+        .files
+        .iter()
+        .filter(|file| {
+            file.action == DistributionPathAction::Delete && !excluded_paths.contains(&file.path)
+        })
+        .count();
 
     let child_manifest = read_manifest(child_dir, &child_sha);
-    if child_manifest
+    let has_child_manifest = child_manifest
         .as_object()
-        .map(|o| o.is_empty())
-        .unwrap_or(true)
+        .map(|o| !o.is_empty())
+        .unwrap_or(false);
+
+    if !has_child_manifest {
+        if !included_write_paths.is_empty() || commit_touched_root_manifest {
+            plan.blockers.push(Blocker::new(
+                "SUBSYSTEM_MANIFEST_MISSING",
+                format!(
+                    "Subsystem '{}' has no readable package.json on '{}'.",
+                    entry.id, entry.source_branch
+                ),
+            ));
+            return plan;
+        }
+    } else {
+        let distributed_code = read_code_files(commit, &included_write_paths);
+        let mut candidate_packages = imported_names(&distributed_code);
+
+        // If the selected commit itself changed root `package.json`, also consider
+        // any added/updated packages that the subsystem already declares so trunk
+        // dependency upgrades propagate without pulling in unrelated trunk packages.
+        if commit_touched_root_manifest {
+            for pkg in manifest_changed_packages(&commit.parent_manifest, &commit.manifest) {
+                if declared(&child_manifest, &pkg).is_some() {
+                    candidate_packages.insert(pkg);
+                }
+            }
+        }
+
+        plan.dependencies = dependency_plan(&commit.manifest, &child_manifest, &candidate_packages);
+
+        for dep in &plan.dependencies {
+            if dep.action == DistributionDepAction::Update {
+                plan.warnings.push(format!(
+                    "Overrides the subsystem's {} {} with trunk's {}; the subsystem's code may need changes.",
+                    dep.name,
+                    dep.from_spec.clone().unwrap_or_default(),
+                    dep.spec
+                ));
+            }
+        }
+
+        if let Ok(updated) = reconciled_manifest(&child_manifest, &plan.dependencies) {
+            plan.blockers.extend(prerequisite_blockers(
+                &distributed_code,
+                &updated,
+                &plan.dependencies,
+            ));
+        }
+    }
+
+    if included_write_paths.is_empty() && included_delete_count == 0 && plan.dependencies.is_empty()
     {
-        plan.blockers.push(Blocker::new(
-            "SUBSYSTEM_MANIFEST_MISSING",
-            format!(
-                "Subsystem '{}' has no readable package.json on '{}'.",
-                entry.id, entry.source_branch
-            ),
-        ));
-        return plan;
-    }
-
-    let mut imported = imported_packages(child_dir, &child_index);
-    // Distributed trunk files bring their own imports; without them a package the
-    // subsystem never imported would block the run instead of being added.
-    imported.extend(imported_names(&read_code_files(main, &plan.paths)));
-    plan.dependencies = dependency_plan(&main.manifest, &child_manifest, &imported);
-    let overrides: Vec<String> = plan
-        .dependencies
-        .iter()
-        .filter(|dep| dep.action == DistributionDepAction::Update)
-        .map(|dep| {
-            format!(
-                "Overrides the subsystem's {} {} with trunk's {}; the subsystem's code may need changes.",
-                dep.name,
-                dep.from_spec.clone().unwrap_or_default(),
-                dep.spec
-            )
-        })
-        .collect();
-    plan.warnings.extend(overrides);
-
-    if let Ok(updated) = reconciled_manifest(&child_manifest, &plan.dependencies) {
-        let files = read_code_files(main, &plan.paths);
-        plan.blockers
-            .extend(prerequisite_blockers(&files, &updated, &plan.dependencies));
-    }
-
-    if plan.paths.is_empty() && plan.dependencies.is_empty() {
-        plan.warnings
-            .push("The selected commits change nothing this subsystem still lacks.".to_string());
-    }
-    if lockfile_seen {
         plan.warnings.push(
-            "Lockfiles are never written: run npm install in the subsystem and commit the lockfile."
+            "Nothing to distribute for this subsystem with the current file selection.".to_string(),
+        );
+    }
+    if lockfile_seen || !plan.dependencies.is_empty() {
+        plan.warnings.push(
+            "Lockfiles are never written: run install in the subsystem and commit the lockfile after merging."
                 .to_string(),
         );
     }
+
     plan
 }
 
 pub struct RunInput<'a> {
-    pub main: &'a MainSnapshot,
+    pub commit: &'a CommitSnapshot,
     pub child_dir: &'a Path,
     pub entry: &'a SubsystemEntry,
     pub main_repo: &'a str,
     pub plan: &'a DistributionPlan,
-    pub selection: &'a Selection,
+    pub excluded_paths: &'a HashSet<String>,
     pub message: Option<&'a str>,
+    pub attribute_to_account: bool,
+    pub account: Option<GitHubAccount>,
     pub temp_root: &'a Path,
     pub remote_url: &'a str,
     pub github: &'a dyn GitHubOps,
@@ -458,10 +810,13 @@ pub fn run(input: RunInput<'_>) -> DistributionOutcome {
     let mut outcome = DistributionOutcome {
         subsystem_id: plan.subsystem_id.clone(),
         ok: false,
+        main_branch: plan.main_branch.clone(),
+        source_commit_sha: plan.commit_sha.clone(),
         branch: plan.branch.clone(),
         commit_sha: None,
         pull_request: None,
         applied: Vec::new(),
+        deleted: Vec::new(),
         dependencies: plan.dependencies.clone(),
         blockers: plan.blockers.clone(),
         warnings: plan.warnings.clone(),
@@ -471,17 +826,10 @@ pub fn run(input: RunInput<'_>) -> DistributionOutcome {
         return outcome;
     }
 
-    let excluded: HashSet<&str> = input
-        .selection
-        .excluded_paths
+    let selected: Vec<&DistributionFile> = plan
+        .files
         .iter()
-        .map(String::as_str)
-        .collect();
-    let selected: Vec<String> = plan
-        .paths
-        .iter()
-        .filter(|path| !excluded.contains(path.as_str()))
-        .cloned()
+        .filter(|file| !input.excluded_paths.contains(&file.path))
         .collect();
     if selected.is_empty() && plan.dependencies.is_empty() {
         outcome.blockers.push(Blocker::new(
@@ -491,12 +839,24 @@ pub fn run(input: RunInput<'_>) -> DistributionOutcome {
         return outcome;
     }
 
-    match apply_and_publish(&input, &selected) {
+    let applied: Vec<String> = selected
+        .iter()
+        .filter(|f| f.action != DistributionPathAction::Delete)
+        .map(|f| f.path.clone())
+        .collect();
+    let deleted: Vec<String> = selected
+        .iter()
+        .filter(|f| f.action == DistributionPathAction::Delete)
+        .map(|f| f.path.clone())
+        .collect();
+
+    match apply_and_publish(&input, &selected, &applied, &deleted) {
         Ok((commit_sha, pull_request)) => {
             outcome.ok = true;
             outcome.commit_sha = Some(commit_sha);
             outcome.pull_request = pull_request;
-            outcome.applied = selected.clone();
+            outcome.applied = applied;
+            outcome.deleted = deleted;
         }
         Err(err) => {
             outcome.blockers.push(Blocker {
@@ -511,7 +871,12 @@ pub fn run(input: RunInput<'_>) -> DistributionOutcome {
 
 type Published = (String, Option<PullRequestInfo>);
 
-fn apply_and_publish(input: &RunInput<'_>, selected: &[String]) -> AppResult<Published> {
+fn apply_and_publish(
+    input: &RunInput<'_>,
+    selected: &[&DistributionFile],
+    applied: &[String],
+    deleted: &[String],
+) -> AppResult<Published> {
     let branch = input.plan.branch.clone();
     let nonce = format!(
         "{}-{}",
@@ -522,15 +887,13 @@ fn apply_and_publish(input: &RunInput<'_>, selected: &[String]) -> AppResult<Pub
         .temp_root
         .join(format!("distribute-{}-{nonce}", input.entry.id));
     std::fs::create_dir_all(input.temp_root).ok();
-    let applied: Vec<String> = selected.to_vec();
     let branch_existed = git::local_branch_exists(input.child_dir, &branch);
 
     let result = populate_worktree(input, selected, &worktree).and_then(|commit_sha| {
-        publish(input, &worktree, &branch, &applied).map(|pr| (commit_sha, pr))
+        publish(input, &worktree, &branch, applied, deleted).map(|pr| (commit_sha, pr))
     });
     git::worktree_remove(input.child_dir, &worktree);
-    // Only a branch this run created may be deleted; a pre-existing one holds
-    // commits the operator may still need.
+    let _ = std::fs::remove_dir_all(&worktree);
     if !branch_existed {
         let _ = git::run(input.child_dir, &["branch", "-D", &branch]);
     }
@@ -539,7 +902,7 @@ fn apply_and_publish(input: &RunInput<'_>, selected: &[String]) -> AppResult<Pub
 
 fn populate_worktree(
     input: &RunInput<'_>,
-    selected: &[String],
+    selected: &[&DistributionFile],
     worktree: &Path,
 ) -> AppResult<String> {
     git::worktree_add(
@@ -559,30 +922,57 @@ fn populate_worktree(
         .with_remedy("Check that no other distribution is running for this subsystem, then retry.")
     })?;
 
+    let delta_by_path: HashMap<&str, &CommitDelta> = input
+        .commit
+        .deltas
+        .iter()
+        .map(|d| (d.path.as_str(), d))
+        .collect();
+
     let mut code_files: Vec<CodeFile> = Vec::new();
-    for item in selected {
-        let path = classify::inspect_path_safety(item).map_err(|reason| {
-            AppError::invalid_request(format!("'{item}' is not a safe path: {reason}"))
-        })?;
-        let mode = input
-            .main
-            .index
-            .get(item)
-            .map(|entry| entry.mode.clone())
-            .unwrap_or_else(|| "100644".to_string());
-        if mode == "120000" || mode == "160000" {
-            return Err(AppError::invalid_request(format!(
-                "'{item}' is a symlink or submodule entry; distribution only copies regular files."
-            )));
-        }
-        let bytes = git::read_blob(&input.main.dir, &input.main.sha, &path).ok_or_else(|| {
-            AppError::new(
-                ErrorCode::RepositoryInaccessible,
-                format!("Could not read '{item}' from the main checkout."),
-            )
-            .with_remedy("Fetch the main branch again and retry.")
+    let mut executable_paths: Vec<(&str, bool)> = Vec::new();
+
+    for file in selected {
+        let path = classify::inspect_path_safety(&file.path).map_err(|reason| {
+            AppError::invalid_request(format!("'{}' is not a safe path: {reason}", file.path))
         })?;
         let target = worktree.join(&path);
+
+        if file.action == DistributionPathAction::Delete {
+            if target.exists() {
+                std::fs::remove_file(&target).map_err(|err| {
+                    AppError::new(
+                        ErrorCode::Internal,
+                        format!("Could not remove '{}': {err}", file.path),
+                    )
+                })?;
+                prune_empty_parents(&target, worktree);
+            }
+            continue;
+        }
+
+        let mode = delta_by_path
+            .get(file.path.as_str())
+            .map(|d| d.new_mode.as_str())
+            .unwrap_or("100644");
+        if mode == "120000" || mode == "160000" {
+            return Err(AppError::invalid_request(format!(
+                "'{}' is a symlink or submodule entry; distribution only copies regular files.",
+                file.path
+            )));
+        }
+
+        let bytes =
+            git::read_blob(&input.commit.dir, &input.commit.sha, &path).ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::RepositoryInaccessible,
+                    format!(
+                        "Could not read '{}' from commit '{}'.",
+                        file.path, input.commit.sha
+                    ),
+                )
+                .with_remedy("Fetch the main repository again and retry.")
+            })?;
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
                 AppError::new(
@@ -594,12 +984,13 @@ fn populate_worktree(
         std::fs::write(&target, &bytes).map_err(|err| {
             AppError::new(
                 ErrorCode::Internal,
-                format!("Could not write '{item}': {err}"),
+                format!("Could not write '{}': {err}", file.path),
             )
         })?;
+        executable_paths.push((file.path.as_str(), mode == "100755"));
         if deps::is_code_path(&path) && bytes.len() <= MAX_BLOB_BYTES {
             code_files.push(CodeFile {
-                path: path.clone(),
+                path,
                 content: String::from_utf8_lossy(&bytes).to_string(),
             });
         }
@@ -614,14 +1005,8 @@ fn populate_worktree(
             ),
         )
     })?;
-    for item in selected {
-        let executable = input
-            .main
-            .index
-            .get(item)
-            .map(|entry| entry.mode == "100755")
-            .unwrap_or(false);
-        git::update_index_chmod(worktree, item, executable);
+    for (path, executable) in executable_paths {
+        git::update_index_chmod(worktree, path, executable);
     }
 
     if !input.plan.dependencies.is_empty() {
@@ -636,7 +1021,7 @@ fn populate_worktree(
         std::fs::write(&manifest_path, text).map_err(|err| {
             AppError::new(
                 ErrorCode::Internal,
-                format!("Could not write package.json in the migration worktree: {err}"),
+                format!("Could not write package.json in the distribution worktree: {err}"),
             )
         })?;
         if let Some(blocker) =
@@ -662,33 +1047,32 @@ fn populate_worktree(
 
     if git::status_porcelain(worktree).trim().is_empty() {
         return Err(AppError::invalid_request(
-            "The migration produced no changes on the subsystem branch.",
+            "The distribution produced no changes on the subsystem branch.",
         )
         .with_remedy("Main and the subsystem already agree; nothing to open a pull request for."));
     }
 
     let subject = input
         .message
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
         .map(str::to_string)
-        .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| format!("sync changes from {}", input.main.branch));
-    let message = provenance::build_provenance_message(&ProvenanceInput {
+        .unwrap_or_else(|| input.commit.subject.clone());
+    let message = provenance::build_distribution_message(&ProvenanceInput {
         subsystem_id: &input.entry.id,
         source_repo: input.main_repo,
-        source_commits: std::slice::from_ref(&input.main.sha),
+        source_commits: std::slice::from_ref(&input.commit.sha),
         mode: DISTRIBUTE_MODE,
         target: &input.entry.source_branch,
         subject: &subject,
     });
-    let author = provenance::commit_author(false, None);
-    // A linked worktree's `.git` is a file, so the message has to live beside
-    // the worktree under the temp root; `commit_with_message` reads it via `-F`.
+    let author = provenance::commit_author(input.attribute_to_account, input.account.as_ref());
     let message_file = input.temp_root.join(format!(
         "{}.msg",
         worktree
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "migrate".to_string())
+            .unwrap_or_else(|| "distribute".to_string())
     ));
     std::fs::write(&message_file, message.as_bytes()).map_err(|err| {
         AppError::new(
@@ -698,6 +1082,7 @@ fn populate_worktree(
     })?;
     let commit_sha = git::commit_with_message(worktree, &message_file, &author.name, &author.email)
         .map_err(|err| {
+            let _ = std::fs::remove_file(&message_file);
             AppError::new(
                 ErrorCode::Internal,
                 format!(
@@ -705,24 +1090,22 @@ fn populate_worktree(
                     git::sanitize(&err.to_string())
                 ),
             )
-            .with_remedy("Retry; if it fails again, inspect the worktree under the temp folder.")
+            .with_remedy("Retry; if it fails again, inspect the subsystem checkout.")
         })?;
     let _ = std::fs::remove_file(&message_file);
 
-    // `git add -A` skips ignored paths, and the worktree is about to be
-    // destroyed, so a selected path missing from the commit must fail loudly.
-    let mut expected: HashSet<&str> = selected.iter().map(String::as_str).collect();
+    // `git add -A` skips ignored paths, so verify every selected path landed in the commit.
+    let mut expected: HashSet<&str> = selected.iter().map(|f| f.path.as_str()).collect();
     if !input.plan.dependencies.is_empty() {
         expected.insert("package.json");
     }
     let committed = committed_paths(worktree, &commit_sha);
-    let missing: Vec<&str> = expected
+    let mut missing: Vec<&str> = expected
         .iter()
         .copied()
         .filter(|path| !committed.contains(*path))
         .collect();
     if !missing.is_empty() {
-        let mut missing = missing;
         missing.sort();
         return Err(AppError::new(
             ErrorCode::Internal,
@@ -733,10 +1116,24 @@ fn populate_worktree(
             ),
         )
         .with_remedy(
-            "The subsystem's .gitignore excludes them; unignore the path or leave it out of the migration.",
+            "The subsystem's .gitignore excludes them; unignore the path or uncheck it before distributing.",
         ));
     }
+
     Ok(commit_sha)
+}
+
+fn prune_empty_parents(file_path: &Path, stop_at: &Path) {
+    let mut current = file_path.parent();
+    while let Some(dir) = current {
+        if dir == stop_at || !dir.starts_with(stop_at) {
+            break;
+        }
+        if std::fs::remove_dir(dir).is_err() {
+            break;
+        }
+        current = dir.parent();
+    }
 }
 
 fn committed_paths(worktree: &Path, sha: &str) -> HashSet<String> {
@@ -756,7 +1153,7 @@ fn committed_paths(worktree: &Path, sha: &str) -> HashSet<String> {
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
-            .map(str::to_string)
+            .map(unquote_git_path)
             .collect()
     })
     .unwrap_or_default()
@@ -767,6 +1164,7 @@ fn publish(
     worktree: &Path,
     branch: &str,
     applied: &[String],
+    deleted: &[String],
 ) -> AppResult<Option<PullRequestInfo>> {
     git::push(worktree, input.remote_url, branch).map_err(|err| {
         AppError::new(
@@ -780,11 +1178,13 @@ fn publish(
         .with_remedy("Check the token's push permission on the subsystem repository, then retry.")
     })?;
 
-    let body = distribution_body(input, applied);
-    let title = format!(
-        "migrate({}): {} → {}",
-        input.entry.id, input.main.branch, input.entry.source_branch
-    );
+    let body = distribution_body(input, applied, deleted);
+    let subject = input
+        .message
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(&input.commit.subject);
+    let title = format!("distribute({}): {subject}", input.entry.id);
     let pull_request = input
         .github
         .create_pull_request(
@@ -807,17 +1207,21 @@ fn publish(
     Ok(Some(pull_request))
 }
 
-fn distribution_body(input: &RunInput<'_>, applied: &[String]) -> String {
+fn distribution_body(input: &RunInput<'_>, applied: &[String], deleted: &[String]) -> String {
     let mut body = String::new();
     body.push_str(&format!(
-        "Distribution of `{}` into `{}` for subsystem `{}`.\n\n",
-        input.main.branch, input.entry.source_branch, input.entry.id
+        "Distribution from `{}` (`{}`) into `{}` for subsystem `{}`.\n\n",
+        input.main_repo, input.commit.branch, input.entry.source_branch, input.entry.id
     ));
-    body.push_str(&format!("- Trunk commit: `{}`\n", input.main.sha));
+    body.push_str(&format!("- Source commit: `{}`\n", input.commit.sha));
+    body.push_str(&format!("- Subject: {}\n", input.commit.subject));
     if !input.plan.source_sha.is_empty() {
         body.push_str(&format!("- Subsystem base: `{}`\n", input.plan.source_sha));
     }
-    body.push_str(&format!("- Paths distributed: {}\n", applied.len()));
+    body.push_str(&format!("- Files written: {}\n", applied.len()));
+    if !deleted.is_empty() {
+        body.push_str(&format!("- Files deleted: {}\n", deleted.len()));
+    }
     if !input.plan.dependencies.is_empty() {
         body.push_str(&format!(
             "- Dependencies changed: {}\n",
@@ -825,8 +1229,9 @@ fn distribution_body(input: &RunInput<'_>, applied: &[String]) -> String {
         ));
     }
     body.push('\n');
+
     if !applied.is_empty() {
-        body.push_str("Files:\n");
+        body.push_str("Files written:\n");
         for path in applied.iter().take(MAX_LISTED_PATHS) {
             body.push_str(&format!("- `{path}`\n"));
         }
@@ -838,6 +1243,21 @@ fn distribution_body(input: &RunInput<'_>, applied: &[String]) -> String {
         }
         body.push('\n');
     }
+
+    if !deleted.is_empty() {
+        body.push_str("Files deleted:\n");
+        for path in deleted.iter().take(MAX_LISTED_PATHS) {
+            body.push_str(&format!("- `{path}`\n"));
+        }
+        if deleted.len() > MAX_LISTED_PATHS {
+            body.push_str(&format!(
+                "- … and {} more\n",
+                deleted.len() - MAX_LISTED_PATHS
+            ));
+        }
+        body.push('\n');
+    }
+
     if !input.plan.dependencies.is_empty() {
         body.push_str("Dependencies:\n");
         for dep in &input.plan.dependencies {
@@ -847,25 +1267,27 @@ fn distribution_body(input: &RunInput<'_>, applied: &[String]) -> String {
                     dep.name, dep.spec, dep.section
                 )),
                 DistributionDepAction::Update => body.push_str(&format!(
-                    "- update `{}` {} → {} ({})\n",
+                    "- update `{}` {} -> {} ({})\n",
                     dep.name,
                     dep.from_spec.clone().unwrap_or_default(),
                     dep.spec,
                     dep.section
                 )),
                 DistributionDepAction::Move => body.push_str(&format!(
-                    "- move `{}` {} from {} to {} ({})\n",
+                    "- move `{}` {} from {} to {}\n",
                     dep.name,
                     dep.spec,
                     dep.from_section.clone().unwrap_or_default(),
                     dep.section,
-                    dep.from_spec.clone().unwrap_or_default()
                 )),
             }
         }
         body.push('\n');
     }
-    body.push_str("The lockfile is not written by this distribution: run `npm install` and commit the lockfile before merging.\n");
+
+    if !input.plan.dependencies.is_empty() {
+        body.push_str("The lockfile is not written by this distribution: run install in the subsystem and commit the lockfile before merging.\n");
+    }
     body
 }
 
@@ -883,10 +1305,6 @@ fn is_lockfile(path: &str) -> bool {
             | "bun.lockb"
             | "bun.lock"
     )
-}
-
-fn is_deferred(path: &str) -> bool {
-    is_lockfile(path) || path == "package.json" || path.ends_with("/package.json")
 }
 
 pub fn tree_index(repo_dir: &Path, rev: &str) -> HashMap<String, TreeEntry> {
@@ -938,37 +1356,13 @@ fn imported_names(files: &[CodeFile]) -> HashSet<String> {
     names
 }
 
-fn imported_packages(repo_dir: &Path, index: &HashMap<String, TreeEntry>) -> HashSet<String> {
-    let mut paths: Vec<&String> = index.keys().filter(|p| deps::is_code_path(p)).collect();
-    paths.sort();
-    let shas: Vec<String> = paths
-        .iter()
-        .filter_map(|path| index.get(*path).map(|entry| entry.blob.clone()))
-        .collect();
-    let blobs = read_blobs_batch(repo_dir, &shas);
-    let mut files = Vec::new();
-    for path in paths {
-        let Some(entry) = index.get(path) else {
-            continue;
-        };
-        let Some(bytes) = blobs.get(&entry.blob) else {
-            continue;
-        };
-        files.push(CodeFile {
-            path: path.clone(),
-            content: String::from_utf8_lossy(bytes).to_string(),
-        });
-    }
-    imported_names(&files)
-}
-
-fn read_code_files(main: &MainSnapshot, paths: &[String]) -> Vec<CodeFile> {
+fn read_code_files(commit: &CommitSnapshot, paths: &[String]) -> Vec<CodeFile> {
     let mut files = Vec::new();
     for path in paths {
         if !deps::is_code_path(path) {
             continue;
         }
-        if let Some(bytes) = git::read_blob(&main.dir, &main.sha, path) {
+        if let Some(bytes) = git::read_blob(&commit.dir, &commit.sha, path) {
             if bytes.len() <= MAX_BLOB_BYTES {
                 files.push(CodeFile {
                     path: path.clone(),
@@ -980,47 +1374,27 @@ fn read_code_files(main: &MainSnapshot, paths: &[String]) -> Vec<CodeFile> {
     files
 }
 
-fn read_blobs_batch(repo_dir: &Path, shas: &[String]) -> HashMap<String, Vec<u8>> {
-    let mut blobs = HashMap::new();
-    if shas.is_empty() {
-        return blobs;
-    }
-    let input = shas.join("\n") + "\n";
-    let Ok(out) = git::run_with_stdin(repo_dir, &["cat-file", "--batch"], input.as_bytes()) else {
-        return blobs;
-    };
-    if out.status != 0 {
-        return blobs;
-    }
-    let bytes = out.stdout;
-    let mut cursor = 0;
-    while cursor < bytes.len() {
-        let Some(newline) = bytes[cursor..].iter().position(|b| *b == b'\n') else {
-            break;
-        };
-        let header = String::from_utf8_lossy(&bytes[cursor..cursor + newline]).to_string();
-        cursor += newline + 1;
-        let mut cols = header.split(' ');
-        let (Some(sha), Some(kind)) = (cols.next(), cols.next()) else {
-            break;
-        };
-        // "missing" rows have no payload, and a skipped blob must not stop the
-        // scan: both leave the cursor exactly after the header.
-        if kind != "blob" {
+fn manifest_changed_packages(parent: &Value, current: &Value) -> HashSet<String> {
+    let mut changed = HashSet::new();
+    for section in deps::DEP_SECTIONS {
+        let Some(curr_obj) = current.get(section).and_then(Value::as_object) else {
             continue;
-        }
-        let Some(size) = cols.next().and_then(|size| size.parse::<usize>().ok()) else {
-            break;
         };
-        let Some(end) = cursor.checked_add(size).filter(|end| *end <= bytes.len()) else {
-            break;
-        };
-        if size <= MAX_BLOB_BYTES {
-            blobs.insert(sha.to_string(), bytes[cursor..end].to_vec());
+        for (name, curr_val) in curr_obj {
+            let prev = declared(parent, name);
+            let curr_spec = match curr_val {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            let is_same = prev
+                .map(|(prev_sec, prev_spec)| prev_sec == section && prev_spec == curr_spec)
+                .unwrap_or(false);
+            if !is_same {
+                changed.insert(name.clone());
+            }
         }
-        cursor = end + 1;
     }
-    blobs
+    changed
 }
 
 fn declared(manifest: &Value, name: &str) -> Option<(String, String)> {
@@ -1039,9 +1413,9 @@ fn declared(manifest: &Value, name: &str) -> Option<(String, String)> {
 fn dependency_plan(
     main: &Value,
     child: &Value,
-    imported: &HashSet<String>,
+    candidates: &HashSet<String>,
 ) -> Vec<DistributionDependency> {
-    let mut names: Vec<&String> = imported.iter().collect();
+    let mut names: Vec<&String> = candidates.iter().collect();
     names.sort();
     let mut plan = Vec::new();
     for name in names {
@@ -1062,8 +1436,6 @@ fn dependency_plan(
                     if child_spec == main_spec {
                         continue;
                     }
-                    // Overlapping ranges are not worth a rewrite: the subsystem's
-                    // own range already admits main's version.
                     let kind = semver::compare_ranges(&child_spec, &main_spec).kind;
                     if matches!(kind, ComparisonKind::Identical | ComparisonKind::Compatible) {
                         continue;
@@ -1092,9 +1464,6 @@ fn dependency_plan(
     plan
 }
 
-// Main's manifest is the source of truth on the reverse path, so ranges are
-// written as-is instead of going through the forward path's fail-closed
-// reconciliation; the plan reports every override as a warning.
 fn reconciled_manifest(child: &Value, plan: &[DistributionDependency]) -> AppResult<Value> {
     let mut manifest = child.clone();
     let Some(root) = manifest.as_object_mut() else {
@@ -1143,7 +1512,7 @@ fn prerequisite_blockers(
             Blocker::new(
                 "MISSING_DEPENDENCY_PREREQUISITE",
                 format!(
-                    "'{}' is imported by migrated code but declared in neither the subsystem nor the main manifest.",
+                    "'{}' is imported by distributed code but declared in neither the subsystem nor the trunk commit's manifest.",
                     missing.name
                 ),
             )
@@ -1154,12 +1523,12 @@ fn prerequisite_blockers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::engine::github_ops::StubGitHubOps;
     use serde_json::json;
 
-    #[test]
-    fn trunk_commits_walk_the_first_parent_only() {
+    fn temp_dir(prefix: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "vos-trunk-first-parent-{}-{}",
+            "vos-dist-{prefix}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1167,121 +1536,304 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let run = |args: &[&str]| git::run(&dir, args).expect("git").stdout_trimmed();
+        dir
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) -> String {
+        let out = git::run(dir, args).expect("git");
+        assert_eq!(out.status, 0, "git {args:?} failed: {}", out.stderr);
+        out.stdout_trimmed()
+    }
+
+    fn git_commit(dir: &Path, subject: &str) -> String {
         let author = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
-        let commit = |subject: &str, path: &str, body: &str| {
-            std::fs::write(dir.join(path), body).unwrap();
-            let mut args = author.to_vec();
-            args.extend(["add", "-A"]);
-            run(&args);
-            let mut args = author.to_vec();
-            args.extend(["commit", "-q", "-m", subject]);
-            run(&args);
-        };
-
-        run(&["init", "-q", "-b", "main"]);
-        commit("Trunk base", "a.ts", "one\n");
-        run(&["checkout", "-q", "-b", "side"]);
-        commit("Side work", "b.ts", "two\n");
-        run(&["checkout", "-q", "main"]);
-        commit("Trunk follow-up", "c.ts", "three\n");
-        let mut merge = author.to_vec();
-        merge.extend(["merge", "--no-ff", "-q", "side", "-m", "Merge side"]);
-        run(&merge);
-
-        let main = MainSnapshot::load(&dir, "main").expect("snapshot");
-        let subjects: Vec<String> = trunk_commits(&main)
-            .expect("commits")
-            .into_iter()
-            .map(|commit| commit.subject)
-            .collect();
-
-        assert!(
-            subjects.iter().any(|subject| subject == "Trunk follow-up"),
-            "{subjects:?}"
-        );
-        assert!(
-            !subjects.iter().any(|subject| subject == "Side work"),
-            "first-parent walk must not walk the merged branch: {subjects:?}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
+        let mut add = author.to_vec();
+        add.extend(["add", "-A"]);
+        git_ok(dir, &add);
+        let mut commit = author.to_vec();
+        commit.extend(["commit", "-q", "-m", subject]);
+        git_ok(dir, &commit);
+        git_ok(dir, &["rev-parse", "HEAD"])
     }
 
-    #[test]
-    fn blob_batch_survives_an_answer_larger_than_the_pipe_buffer() {
-        let dir = std::env::temp_dir().join(format!(
-            "vos-blob-batch-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let total = 2000usize;
-        let filler = "x".repeat(1024);
-        for index in 0..total {
-            std::fs::write(
-                dir.join(format!("file-{index:03}.ts")),
-                format!("{index}{filler}"),
-            )
-            .unwrap();
+    fn write_file(dir: &Path, rel: &str, body: &str) {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
         }
-        let run = |args: &[&str]| git::run(&dir, args).expect("git").stdout_trimmed();
-        run(&["init", "-q", "-b", "main"]);
-        run(&[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@example.com",
-            "add",
-            "-A",
-        ]);
-        run(&[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@example.com",
-            "commit",
-            "-q",
-            "-m",
-            "fixture",
-        ]);
-        let shas: Vec<String> = run(&["ls-tree", "-r", "HEAD"])
-            .lines()
-            .filter_map(|line| line.split_whitespace().nth(2).map(str::to_string))
-            .collect();
-        assert_eq!(shas.len(), total);
+        std::fs::write(path, body).unwrap();
+    }
 
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let reader_dir = dir.clone();
-        std::thread::spawn(move || {
-            let blobs = read_blobs_batch(&reader_dir, &shas);
-            let _ = sender.send(blobs.len());
-        });
-        let count = receiver
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .expect("read_blobs_batch deadlocked on an answer batch larger than the pipe buffer");
-        assert_eq!(count, total);
+    fn test_entry() -> SubsystemEntry {
+        serde_json::from_value(json!({
+            "id": "hr",
+            "name": "HR",
+            "repository": "org/hr",
+            "sourceBranch": "master",
+            "enabled": true,
+            "pathStrategy": "preserve-relative-paths",
+            "dependencyStrategy": "reconcile",
+            "integrationPolicy": {
+                "applicationFiles": "selected-commit-delta",
+                "packageJson": "merge-dependency-delta",
+                "lockfiles": "regenerate-in-target",
+                "sharedConfiguration": "review-explicitly",
+                "githubWorkflows": "main-owned",
+                "secretFiles": "never-import"
+            }
+        }))
+        .expect("valid subsystem entry")
+    }
+
+    #[test]
+    fn trunk_commits_walk_first_parent_and_include_merge_commit_files() {
+        let dir = temp_dir("first-parent-merge");
+        git_ok(&dir, &["init", "-q", "-b", "main"]);
+        write_file(&dir, "a.ts", "one\n");
+        git_commit(&dir, "Trunk base");
+
+        git_ok(&dir, &["checkout", "-q", "-b", "side"]);
+        write_file(&dir, "b.ts", "two\n");
+        git_commit(&dir, "Side work");
+
+        git_ok(&dir, &["checkout", "-q", "main"]);
+        write_file(&dir, "c.ts", "three\n");
+        git_commit(&dir, "Trunk follow-up");
+
+        git_ok(
+            &dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "merge",
+                "--no-ff",
+                "-q",
+                "side",
+                "-m",
+                "Merge side",
+            ],
+        );
+
+        let commits = trunk_commits(&dir, "main").expect("commits");
+        let subjects: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
+        assert!(subjects.contains(&"Merge side"), "{subjects:?}");
+        assert!(subjects.contains(&"Trunk follow-up"), "{subjects:?}");
+        assert!(
+            !subjects.contains(&"Side work"),
+            "first-parent walk must not include side branch commits: {subjects:?}"
+        );
+
+        let merge_commit = commits.iter().find(|c| c.subject == "Merge side").unwrap();
+        assert!(merge_commit.is_merge);
+        assert_eq!(merge_commit.paths.len(), 1);
+        assert_eq!(merge_commit.paths[0].path, "b.ts");
+        assert_eq!(merge_commit.paths[0].change, "added");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
+
     #[test]
-    fn distribution_branch_flattens_unsafe_characters() {
-        assert_eq!(distribution_branch("master"), "distribute-master");
-        assert_eq!(distribution_branch("release/1.2"), "distribute-release-1.2");
-        assert_eq!(distribution_branch("feat x"), "distribute-feat-x");
+    fn distribution_copies_exact_selected_commit_not_trunk_head() {
+        let root = temp_dir("exact-commit");
+        let main_dir = root.join("main");
+        let child_dir = root.join("child");
+        let bare_dir = root.join("remote.git");
+        let work_tmp = root.join("tmp");
+        std::fs::create_dir_all(&main_dir).unwrap();
+        std::fs::create_dir_all(&child_dir).unwrap();
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        std::fs::create_dir_all(&work_tmp).unwrap();
+
+        git_ok(&bare_dir, &["init", "--bare", "-q"]);
+
+        git_ok(&main_dir, &["init", "-q", "-b", "main"]);
+        write_file(
+            &main_dir,
+            "package.json",
+            r#"{"dependencies":{"zod":"4.1.0"}}"#,
+        );
+        write_file(&main_dir, "src/shared.ts", "export const v = 1;\n");
+        git_commit(&main_dir, "initial");
+
+        write_file(
+            &main_dir,
+            "src/shared.ts",
+            "import { z } from 'zod';\nexport const v = 2;\n",
+        );
+        let commit_v2 = git_commit(&main_dir, "bump shared to v2");
+
+        write_file(
+            &main_dir,
+            "src/shared.ts",
+            "import { z } from 'zod';\nexport const v = 3;\n",
+        );
+        git_commit(&main_dir, "bump shared to v3");
+
+        git_ok(&child_dir, &["init", "-q", "-b", "master"]);
+        write_file(
+            &child_dir,
+            "package.json",
+            r#"{"dependencies":{"react":"^19.0.0"}}"#,
+        );
+        write_file(&child_dir, "src/shared.ts", "export const v = 1;\n");
+        git_commit(&child_dir, "child init");
+
+        let snapshot = CommitSnapshot::load(&main_dir, "main", &commit_v2).expect("snapshot");
+        let entry = test_entry();
+        let github = StubGitHubOps::new();
+        let excluded = HashSet::new();
+
+        let p = plan(&snapshot, &child_dir, &entry, &github, &excluded);
+        assert!(p.blockers.is_empty(), "{:?}", p.blockers);
+        assert_eq!(p.files.len(), 1);
+        assert_eq!(p.files[0].path, "src/shared.ts");
+        assert_eq!(p.files[0].action, DistributionPathAction::Update);
+        assert_eq!(p.dependencies.len(), 1);
+        assert_eq!(p.dependencies[0].name, "zod");
+        assert_eq!(p.dependencies[0].action, DistributionDepAction::Add);
+
+        let remote_url = bare_dir.to_string_lossy().replace('\\', "/");
+        let outcome = run(RunInput {
+            commit: &snapshot,
+            child_dir: &child_dir,
+            entry: &entry,
+            main_repo: "org/main",
+            plan: &p,
+            excluded_paths: &excluded,
+            message: None,
+            attribute_to_account: false,
+            account: None,
+            temp_root: &work_tmp,
+            remote_url: &remote_url,
+            github: &github,
+        });
+        assert!(outcome.ok, "{:?}", outcome.blockers);
+        assert_eq!(outcome.applied, vec!["src/shared.ts".to_string()]);
+        assert!(outcome.deleted.is_empty());
+
+        let pushed_branch = &p.branch;
+        let content = git_ok(
+            &bare_dir,
+            &["show", &format!("{pushed_branch}:src/shared.ts")],
+        );
+        assert!(
+            content.contains("v = 2"),
+            "must copy v2 from selected commit, not v3 from trunk HEAD: {content}"
+        );
+
+        let commit_msg = git_ok(&bare_dir, &["show", "-s", "--format=%B", pushed_branch]);
+        assert!(commit_msg.starts_with("distribute(hr): bump shared to v2"));
+        assert!(commit_msg.contains(&format!("Source-Commit: {commit_v2}")));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn deferred_paths_are_never_copied() {
-        assert!(is_deferred("package.json"));
-        assert!(is_deferred("src/modules/hr/package.json"));
-        assert!(is_deferred("package-lock.json"));
-        assert!(!is_deferred("src/package.json.bak"));
+    fn distribution_propagates_deletions_and_respects_exclusions() {
+        let root = temp_dir("deletions-and-exclusions");
+        let main_dir = root.join("main");
+        let child_dir = root.join("child");
+        let bare_dir = root.join("remote.git");
+        let work_tmp = root.join("tmp");
+        std::fs::create_dir_all(&main_dir).unwrap();
+        std::fs::create_dir_all(&child_dir).unwrap();
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        std::fs::create_dir_all(&work_tmp).unwrap();
+
+        git_ok(&bare_dir, &["init", "--bare", "-q"]);
+
+        git_ok(&main_dir, &["init", "-q", "-b", "main"]);
+        write_file(
+            &main_dir,
+            "package.json",
+            r#"{"dependencies":{"zod":"4.1.0","dayjs":"1.11.0"}}"#,
+        );
+        write_file(&main_dir, "src/old.ts", "export const old = true;\n");
+        write_file(&main_dir, "src/only-main.ts", "export const m = true;\n");
+        git_commit(&main_dir, "init");
+
+        std::fs::remove_file(main_dir.join("src/old.ts")).unwrap();
+        std::fs::remove_file(main_dir.join("src/only-main.ts")).unwrap();
+        write_file(
+            &main_dir,
+            "src/new-with-dep.ts",
+            "import dayjs from 'dayjs';\nexport const d = dayjs;\n",
+        );
+        let del_commit = git_commit(&main_dir, "remove old and add new");
+
+        git_ok(&child_dir, &["init", "-q", "-b", "master"]);
+        write_file(
+            &child_dir,
+            "package.json",
+            r#"{"dependencies":{"react":"^19.0.0"}}"#,
+        );
+        write_file(&child_dir, "src/old.ts", "export const old = true;\n");
+        git_commit(&child_dir, "child init");
+
+        let snapshot = CommitSnapshot::load(&main_dir, "main", &del_commit).expect("snapshot");
+        let entry = test_entry();
+        let github = StubGitHubOps::new();
+
+        // Exclude `src/new-with-dep.ts`: `dayjs` must NOT be added to dependencies!
+        let mut excluded = HashSet::new();
+        excluded.insert("src/new-with-dep.ts".to_string());
+
+        let p = plan(&snapshot, &child_dir, &entry, &github, &excluded);
+        assert!(p.blockers.is_empty(), "{:?}", p.blockers);
+        assert!(
+            p.dependencies.is_empty(),
+            "excluded file's imports must not add dependencies: {:?}",
+            p.dependencies
+        );
+        assert!(p
+            .files
+            .iter()
+            .any(|f| f.path == "src/old.ts" && f.action == DistributionPathAction::Delete));
+        assert!(p.skipped.iter().any(|s| s.path == "src/only-main.ts"));
+
+        let remote_url = bare_dir.to_string_lossy().replace('\\', "/");
+        let outcome = run(RunInput {
+            commit: &snapshot,
+            child_dir: &child_dir,
+            entry: &entry,
+            main_repo: "org/main",
+            plan: &p,
+            excluded_paths: &excluded,
+            message: Some("drop deprecated helper"),
+            attribute_to_account: false,
+            account: None,
+            temp_root: &work_tmp,
+            remote_url: &remote_url,
+            github: &github,
+        });
+        assert!(outcome.ok, "{:?}", outcome.blockers);
+        assert!(outcome.applied.is_empty());
+        assert_eq!(outcome.deleted, vec!["src/old.ts".to_string()]);
+
+        let files_in_branch = git_ok(&bare_dir, &["ls-tree", "-r", "--name-only", &p.branch]);
+        assert!(!files_in_branch.contains("src/old.ts"));
+        assert!(!files_in_branch.contains("src/new-with-dep.ts"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn dependency_plan_adds_updates_moves_and_keeps_non_candidates() {
+    fn distribution_branch_includes_branch_and_short_sha() {
+        let sha = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+        assert_eq!(
+            distribution_branch("master", sha),
+            "distribute/master-a1b2c3d"
+        );
+        assert_eq!(
+            distribution_branch("release/1.2", sha),
+            "distribute/release-1.2-a1b2c3d"
+        );
+    }
+
+    #[test]
+    fn dependency_plan_adds_updates_moves_and_skips_compatible() {
         let main = json!({
             "dependencies": { "react": "19.2.0", "zod": "4.1.0", "left-pad": "1.3.0" },
             "devDependencies": { "typescript": "^5.9.0" }
@@ -1290,11 +1842,11 @@ mod tests {
             "dependencies": { "react": "^18.2.0", "lodash": "4.17.21" },
             "devDependencies": { "zod": "3.22.0" }
         });
-        let imported: HashSet<String> = ["react", "zod", "lodash"]
+        let candidates: HashSet<String> = ["react", "zod", "lodash"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let plan = dependency_plan(&main, &child, &imported);
+        let plan = dependency_plan(&main, &child, &candidates);
         let names: Vec<(&str, DistributionDepAction)> =
             plan.iter().map(|d| (d.name.as_str(), d.action)).collect();
         assert_eq!(
@@ -1302,36 +1854,15 @@ mod tests {
             vec![
                 ("react", DistributionDepAction::Update),
                 ("zod", DistributionDepAction::Move),
-            ],
-            "imported but unchanged deps are skipped and unimported main-only deps are never added"
+            ]
         );
-        let zod = &plan[1];
-        assert_eq!(zod.from_section.as_deref(), Some("devDependencies"));
-        assert_eq!(zod.section, "dependencies");
-        assert_eq!(zod.spec, "4.1.0");
     }
 
     #[test]
-    fn dependency_plan_treats_equivalent_ranges_as_identical() {
+    fn dependency_plan_treats_compatible_ranges_as_unchanged() {
         let main = json!({ "dependencies": { "react": "19.2.0" } });
         let child = json!({ "dependencies": { "react": "^19.2.0" } });
-        let imported: HashSet<String> = ["react".to_string()].iter().cloned().collect();
-        assert!(dependency_plan(&main, &child, &imported).is_empty());
-    }
-
-    #[test]
-    fn reconciled_manifest_writes_planned_dependencies() {
-        let child = json!({ "name": "hr", "dependencies": { "react": "^19.0.0" } });
-        let plan = vec![DistributionDependency {
-            name: "zod".to_string(),
-            action: DistributionDepAction::Add,
-            from_section: None,
-            from_spec: None,
-            section: "dependencies".to_string(),
-            spec: "4.1.0".to_string(),
-        }];
-        let manifest = reconciled_manifest(&child, &plan).expect("reconciled");
-        assert_eq!(manifest["dependencies"]["zod"], json!("4.1.0"));
-        assert_eq!(manifest["dependencies"]["react"], json!("^19.0.0"));
+        let candidates: HashSet<String> = ["react".to_string()].into_iter().collect();
+        assert!(dependency_plan(&main, &child, &candidates).is_empty());
     }
 }

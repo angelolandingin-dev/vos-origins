@@ -611,7 +611,7 @@ export interface SubsystemDiff {
   dataSource: DataSource;
 }
 
-/** Distribution: selected trunk commits ? subsystem branches, delivered as pull requests. */
+/** Distribution: single trunk commit -> single subsystem branch, delivered as a pull request. */
 export interface TrunkCommit {
   sha: string;
   shortSha: string;
@@ -619,6 +619,7 @@ export interface TrunkCommit {
   authorName: string;
   committedAt: string;
   committedUnix: number;
+  isMerge: boolean;
   filesChanged: number;
   paths: TrunkPath[];
 }
@@ -626,6 +627,14 @@ export interface TrunkCommit {
 export interface TrunkPath {
   path: string;
   change: FileChangeKind;
+}
+
+export type DistributionPathAction = 'add' | 'update' | 'delete';
+
+export interface DistributionFile {
+  path: string;
+  action: DistributionPathAction;
+  trunkChange: FileChangeKind;
 }
 
 export interface DistributionSkip {
@@ -653,21 +662,17 @@ export interface DistributionBlocker {
 export interface DistributionPlan {
   subsystemId: string;
   name: string;
+  mainBranch: string;
+  commitSha: string;
+  commitSubject: string;
   sourceBranch: string;
-  branch: string;
-  mainSha: string;
   sourceSha: string;
-  paths: string[];
+  branch: string;
+  files: DistributionFile[];
   skipped: DistributionSkip[];
   dependencies: DistributionDependency[];
   blockers: DistributionBlocker[];
   warnings: string[];
-}
-
-export interface DistributionPreview {
-  mainBranch: string;
-  mainSha: string;
-  subsystems: DistributionPlan[];
 }
 
 export interface DistributionPullRequest {
@@ -681,36 +686,30 @@ export interface DistributionPullRequest {
 export interface DistributionOutcome {
   subsystemId: string;
   ok: boolean;
+  mainBranch: string;
+  sourceCommitSha: string;
   branch: string;
   commitSha: string | null;
   pullRequest: DistributionPullRequest | null;
   applied: string[];
+  deleted: string[];
   dependencies: DistributionDependency[];
   blockers: DistributionBlocker[];
   warnings: string[];
   message: string | null;
 }
 
-export interface DistributionRunResult {
-  mainBranch: string;
-  mainSha: string;
-  outcomes: DistributionOutcome[];
-}
-
-export interface DistributionSelection {
-  subsystemId: string;
-  excludedPaths?: string[];
-}
-
 export interface DistributionPreviewRequest {
   mainBranch: string;
-  subsystemIds: string[];
-  commitShas: string[];
+  subsystemId: string;
+  commitSha: string;
+  excludedPaths?: string[];
 }
 
 export interface DistributionRunRequest {
   mainBranch: string;
+  subsystemId: string;
+  commitSha: string;
+  excludedPaths?: string[];
   message?: string | null;
-  commitShas: string[];
-  subsystems: DistributionSelection[];
 }

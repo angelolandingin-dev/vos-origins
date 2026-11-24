@@ -7,12 +7,11 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  GitMerge,
   GitPullRequestArrow,
   RefreshCw,
   Search,
-  SquareCheck,
   TriangleAlert,
-  X,
 } from 'lucide-react';
 
 import { api, asApiError } from '../api/invoke';
@@ -21,15 +20,16 @@ import type {
   DistributionBlocker,
   DistributionDependency,
   DistributionOutcome,
+  DistributionPathAction,
   DistributionPlan,
-  DistributionPreview,
-  DistributionRunResult,
   DistributionSkip,
+  MainCommitDiff,
   PromotionProgress,
   TrunkCommit,
 } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
 import { ChangeKindIcon } from '../components/ChangeKindIcon';
+import { DiffViewer } from '../components/DiffViewer';
 import { PathLabel } from '../components/PathLabel';
 import { cx } from '../components/ui/cx';
 import { formatDate, formatDateTime } from '../components/ui/format';
@@ -48,29 +48,50 @@ import {
   Spinner,
 } from '../components/ui/primitives';
 
-/** Distribute: send the paths touched by selected trunk commits down to subsystem pull requests. */
+/** Distribute: move one trunk commit's changes into one subsystem via a pull request. */
 export function Distribute() {
   const app = useApp();
   const [branchChoice, setBranchChoice] = useState<string | null>(null);
-  const [selectedShas, setSelectedShas] = useState<string[]>([]);
-  const [expandedSha, setExpandedSha] = useState<string | null>(null);
+  const [subsystemChoice, setSubsystemChoice] = useState<string | null>(null);
+  const [selectedSha, setSelectedSha] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [pageSize, setPageSize] = useState(25);
   const [pageNumber, setPageNumber] = useState(1);
-  const [subsystemChoice, setSubsystemChoice] = useState<string[] | null>(null);
+
+  const [excludedPaths, setExcludedPaths] = useState<string[]>([]);
+  const [inspectedPath, setInspectedPath] = useState<string | null>(null);
+
   const [message, setMessage] = useState('');
-  const [preview, setPreview] = useState<DistributionPreview | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<ApiError | null>(null);
-  const [excluded, setExcluded] = useState<Record<string, string[]>>({});
   const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<PromotionProgress[]>([]);
+  const [progress, setProgress] = useState<PromotionProgress | null>(null);
   const [runError, setRunError] = useState<ApiError | null>(null);
-  const [result, setResult] = useState<DistributionRunResult | null>(null);
+  const [outcome, setOutcome] = useState<DistributionOutcome | null>(null);
 
   const targetBranches = app.targetBranches;
   const trunkBranch = branchChoice ?? targetBranches.data?.targetBranch ?? '';
+
+  const enabledSubsystems = useMemo(
+    () => (app.subsystems.data ?? []).filter((subsystem) => subsystem.enabled),
+    [app.subsystems.data],
+  );
+  const subsystemId = useMemo(() => {
+    if (subsystemChoice && enabledSubsystems.some((s) => s.id === subsystemChoice)) {
+      return subsystemChoice;
+    }
+    if (
+      app.selectedSubsystem?.enabled &&
+      enabledSubsystems.some((s) => s.id === app.selectedSubsystem?.id)
+    ) {
+      return app.selectedSubsystem.id;
+    }
+    return enabledSubsystems[0]?.id ?? '';
+  }, [subsystemChoice, enabledSubsystems, app.selectedSubsystem]);
+
+  const selectedSubsystem = useMemo(
+    () => enabledSubsystems.find((s) => s.id === subsystemId) ?? null,
+    [enabledSubsystems, subsystemId],
+  );
 
   const commitQuery = useAsyncData<TrunkCommit[]>(
     () => (trunkBranch ? api.listTrunkCommits(trunkBranch) : Promise.resolve([])),
@@ -99,41 +120,50 @@ export function Distribute() {
   const rangeStart = visibleCommits.length === 0 ? 0 : (page - 1) * pageSize + 1;
   const rangeEnd = Math.min(page * pageSize, visibleCommits.length);
 
-  const enabledSubsystems = useMemo(
-    () => (app.subsystems.data ?? []).filter((subsystem) => subsystem.enabled),
-    [app.subsystems.data],
+  const selectedCommit = useMemo(
+    () => (selectedSha ? (commits.find((c) => c.sha === selectedSha) ?? null) : null),
+    [commits, selectedSha],
   );
-  const enabledIds = useMemo(
-    () => enabledSubsystems.map((subsystem) => subsystem.id),
-    [enabledSubsystems],
-  );
-  const selectedIds = useMemo(() => {
-    const chosen = subsystemChoice ?? enabledIds;
-    return chosen.filter((id) => enabledIds.includes(id));
-  }, [subsystemChoice, enabledIds]);
 
-  const selectedCommits = useMemo(
-    () => commits.filter((commit) => selectedShas.includes(commit.sha)),
-    [commits, selectedShas],
+  const excludedKey = excludedPaths.join('\0');
+  const planQuery = useAsyncData<DistributionPlan | null>(
+    () =>
+      trunkBranch && subsystemId && selectedSha
+        ? api.previewDistribution({
+            mainBranch: trunkBranch,
+            subsystemId,
+            commitSha: selectedSha,
+            excludedPaths,
+          })
+        : Promise.resolve(null),
+    [trunkBranch, subsystemId, selectedSha, excludedKey],
   );
-  const commitShas = selectedCommits.map((commit) => commit.sha);
-  const readyCount = preview
-    ? preview.subsystems.filter((plan) => plan.blockers.length === 0).length
-    : 0;
-  const locked = previewLoading || running || result !== null;
-  const canPreview =
-    trunkBranch !== '' && commitShas.length > 0 && selectedIds.length > 0 && !locked;
-  const canRun = preview !== null && readyCount > 0 && !locked;
-  const latestProgress = progress.length > 0 ? (progress[progress.length - 1] ?? null) : null;
-  const nothingToDistribute =
-    preview !== null &&
-    preview.subsystems.every(
-      (plan) =>
-        plan.paths.length === 0 &&
-        plan.dependencies.length === 0 &&
-        plan.skipped.length === 0 &&
-        plan.blockers.length === 0,
-    );
+  const plan = trunkBranch && subsystemId && selectedSha ? planQuery.data : null;
+  const planLoading = Boolean(trunkBranch && subsystemId && selectedSha && planQuery.loading);
+  const planError = trunkBranch && subsystemId && selectedSha ? planQuery.error : null;
+
+  const diffActive = Boolean(trunkBranch && selectedSha && inspectedPath);
+  const diffQuery = useAsyncData<MainCommitDiff | null>(
+    () =>
+      trunkBranch && selectedSha && diffActive
+        ? api.getMainCommitDiff({ targetBranch: trunkBranch, mainCommitSha: selectedSha })
+        : Promise.resolve(null),
+    [trunkBranch, selectedSha, diffActive],
+  );
+  const commitDiff = diffActive ? diffQuery.data : null;
+  const diffLoading = diffActive && diffQuery.loading;
+  const diffError = diffActive ? diffQuery.error : null;
+
+  const includedFiles = useMemo(
+    () => (plan ? plan.files.filter((file) => !excludedPaths.includes(file.path)) : []),
+    [plan, excludedPaths],
+  );
+
+  const hasChanges = plan !== null && (includedFiles.length > 0 || plan.dependencies.length > 0);
+  const isBlocked = plan !== null && plan.blockers.length > 0;
+  const locked = running;
+  const canRun =
+    plan !== null && !planLoading && !isBlocked && hasChanges && !running && outcome === null;
 
   const branchOptions = (targetBranches.data?.branches ?? []).map((branch) => ({
     value: branch.name,
@@ -142,103 +172,87 @@ export function Distribute() {
     title: branch.allowed ? undefined : (branch.disallowedReason ?? 'Not permitted'),
   }));
 
-  const resetDistribution = () => {
-    setPreview(null);
-    setPreviewError(null);
-    setExcluded({});
-    setProgress([]);
+  const subsystemOptions = enabledSubsystems.map((subsystem) => ({
+    value: subsystem.id,
+    label: `${subsystem.name} (${subsystem.sourceBranch})`,
+  }));
+
+  const resetRunState = () => {
+    setExcludedPaths([]);
+    setInspectedPath(null);
+    setProgress(null);
     setRunError(null);
-    setResult(null);
+    setOutcome(null);
   };
 
   const changeTrunkBranch = (next: string) => {
     setBranchChoice(next);
-    setSelectedShas([]);
-    setExpandedSha(null);
+    setSelectedSha(null);
     setSearch('');
     setPageNumber(1);
-    resetDistribution();
+    setMessage('');
+    resetRunState();
+  };
+
+  const changeSubsystem = (next: string) => {
+    setSubsystemChoice(next);
+    resetRunState();
+  };
+
+  const selectCommit = (sha: string) => {
+    if (locked) return;
+    if (selectedSha === sha) return;
+    setSelectedSha(sha);
+    setMessage('');
+    resetRunState();
   };
 
   const refreshCommits = () => {
-    setSelectedShas([]);
-    setExpandedSha(null);
+    setSelectedSha(null);
     setPageNumber(1);
-    resetDistribution();
+    resetRunState();
     commitQuery.reload();
   };
 
-  const toggleCommit = (sha: string) => {
-    setSelectedShas((current) =>
-      current.includes(sha) ? current.filter((value) => value !== sha) : [...current, sha],
+  const togglePath = (path: string, included: boolean) => {
+    setOutcome(null);
+    setRunError(null);
+    setExcludedPaths((current) =>
+      included
+        ? current.filter((value) => value !== path)
+        : current.includes(path)
+          ? current
+          : [...current, path],
     );
-    resetDistribution();
   };
 
-  const toggleSubsystem = (id: string) => {
-    const base = subsystemChoice ?? enabledIds;
-    setSubsystemChoice(base.includes(id) ? base.filter((value) => value !== id) : [...base, id]);
-    resetDistribution();
+  const selectAllFiles = () => {
+    setOutcome(null);
+    setRunError(null);
+    setExcludedPaths([]);
   };
 
-  const selectAllSubsystems = () => {
-    setSubsystemChoice(enabledIds);
-    resetDistribution();
-  };
-
-  const selectNoSubsystems = () => {
-    setSubsystemChoice([]);
-    resetDistribution();
-  };
-
-  const excludedFor = (plan: DistributionPlan) => excluded[plan.subsystemId] ?? [];
-
-  const togglePath = (plan: DistributionPlan, path: string, included: boolean) => {
-    setExcluded((current) => {
-      const planPaths = current[plan.subsystemId] ?? [];
-      const nextPaths = included
-        ? planPaths.filter((value) => value !== path)
-        : planPaths.includes(path)
-          ? planPaths
-          : [...planPaths, path];
-      return { ...current, [plan.subsystemId]: nextPaths };
-    });
-  };
-
-  const loadPreview = () => {
-    if (!canPreview) return;
-    resetDistribution();
-    setPreviewLoading(true);
-    api
-      .previewDistribution({ mainBranch: trunkBranch, subsystemIds: selectedIds, commitShas })
-      .then((next) => {
-        setPreview(next);
-        setPreviewLoading(false);
-      })
-      .catch((error: unknown) => {
-        setPreviewError(asApiError(error));
-        setPreviewLoading(false);
-      });
+  const selectNoFiles = () => {
+    if (!plan) return;
+    setOutcome(null);
+    setRunError(null);
+    setExcludedPaths(plan.files.map((f) => f.path));
   };
 
   const startDistribution = () => {
-    if (!canRun || !preview) return;
-    const runnable = preview.subsystems.filter((plan) => plan.blockers.length === 0);
+    if (!canRun || !plan) return;
     const trimmedMessage = message.trim();
     const request = {
-      mainBranch: preview.mainBranch,
+      mainBranch: plan.mainBranch,
+      subsystemId: plan.subsystemId,
+      commitSha: plan.commitSha,
+      excludedPaths,
       message: trimmedMessage === '' ? null : trimmedMessage,
-      commitShas,
-      subsystems: runnable.map((plan) => ({
-        subsystemId: plan.subsystemId,
-        excludedPaths: excludedFor(plan),
-      })),
     };
     setRunError(null);
-    setProgress([]);
+    setProgress(null);
     setRunning(true);
 
-    // Listen before invoking so the first per-subsystem event is not missed.
     let stopListening: (() => void) | null = null;
     let done = false;
     const finishListening = () => {
@@ -248,7 +262,7 @@ export function Distribute() {
     };
     void listen<PromotionProgress>('distribution-progress', (event) => {
       if (done) return;
-      setProgress((current) => [...current, event.payload]);
+      setProgress(event.payload);
     })
       .then((stop) => {
         if (done) stop();
@@ -258,7 +272,7 @@ export function Distribute() {
       .then(() => api.runDistribution(request))
       .then((next) => {
         finishListening();
-        setResult(next);
+        setOutcome(next);
         setRunning(false);
         app.bumpDataVersion();
       })
@@ -269,38 +283,45 @@ export function Distribute() {
       });
   };
 
-  const clearSelection = () => {
-    setSelectedShas([]);
-    setExpandedSha(null);
-    resetDistribution();
-  };
-
-  const resetAll = () => {
-    setSelectedShas([]);
-    setExpandedSha(null);
-    setMessage('');
-    resetDistribution();
-  };
-
-  const openPullRequest = (url: string) => {
-    app.openExternal(url);
-  };
+  const inspectedDiff = useMemo(() => {
+    if (!inspectedPath || !commitDiff || commitDiff.mainCommitSha !== selectedSha) return null;
+    return commitDiff.files.find((f) => f.path === inspectedPath) ?? null;
+  }, [inspectedPath, commitDiff, selectedSha]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-center justify-between gap-3 px-5 pb-3 pt-4">
-        <h1 className="text-[14px] font-semibold text-fg">Distribute</h1>
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-muted">Trunk branch</span>
-          <Select
-            ariaLabel="Trunk branch"
-            value={trunkBranch}
-            onValueChange={changeTrunkBranch}
-            options={branchOptions}
-            disabled={locked || targetBranches.loading || branchOptions.length === 0}
-            className="w-[220px]"
-            title={targetBranches.error?.message ?? 'Branch the commits are taken from'}
-          />
+          <h1 className="text-[14px] font-semibold text-fg">Distribute</h1>
+          <span className="text-[11px] text-muted">
+            One trunk commit → one subsystem pull request
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted">Trunk</span>
+            <Select
+              ariaLabel="Trunk branch"
+              value={trunkBranch}
+              onValueChange={changeTrunkBranch}
+              options={branchOptions}
+              disabled={locked || targetBranches.loading || branchOptions.length === 0}
+              className="w-[190px]"
+              title={targetBranches.error?.message ?? 'Branch the commit is taken from'}
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted">Subsystem</span>
+            <Select
+              ariaLabel="Target subsystem"
+              value={subsystemId}
+              onValueChange={changeSubsystem}
+              options={subsystemOptions}
+              disabled={locked || app.subsystems.loading || subsystemOptions.length === 0}
+              className="w-[230px]"
+              title="Subsystem repository that will receive the pull request"
+            />
+          </div>
           {targetBranches.error ? (
             <button
               type="button"
@@ -313,15 +334,16 @@ export function Distribute() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-3 px-3 pb-3 xl:grid-cols-[minmax(0,1fr)_380px]">
-        <div className="scroll-area min-h-0 space-y-3">
+      <div className="grid min-h-0 flex-1 gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_minmax(440px,520px)]">
+        {/* Left column: trunk commit picker (single selection) */}
+        <div className="flex min-h-0 flex-col">
           <Panel
-            title="Commits"
+            title="Trunk Commits"
             subtitle={
               commitsLoading
                 ? trunkBranch
                 : commits.length > 0
-                  ? `${selectedShas.length} of ${commits.length} selected`
+                  ? `${commits.length} on ${trunkBranch}`
                   : trunkBranch
             }
             actions={
@@ -335,13 +357,15 @@ export function Distribute() {
                 Refresh
               </Button>
             }
+            className="flex min-h-0 flex-1 flex-col"
+            bodyClassName="flex min-h-0 flex-1 flex-col"
           >
             {targetBranches.loading && trunkBranch === '' ? (
               <LoadingState label="Loading branches" />
             ) : trunkBranch === '' ? (
               <EmptyState title="No trunk branch available" />
             ) : commitsLoading ? (
-              <LoadingState label="Loading commits" />
+              <LoadingState label="Loading trunk commits" />
             ) : commitError ? (
               <ErrorState compact error={commitError} onRetry={refreshCommits} />
             ) : commits.length === 0 ? (
@@ -351,7 +375,7 @@ export function Distribute() {
                 <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
                   <div className="relative min-w-[180px] flex-1">
                     <Search
-                      className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-disabled"
+                      className="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-disabled"
                       aria-hidden="true"
                     />
                     <input
@@ -361,9 +385,9 @@ export function Distribute() {
                         setSearch(event.target.value);
                         setPageNumber(1);
                       }}
-                      placeholder="Search commits…"
+                      placeholder="Search commits by message, SHA or author…"
                       aria-label="Search commits by message, SHA or author"
-                      className="input pl-9"
+                      className="input pl-8"
                       disabled={locked}
                     />
                   </div>
@@ -376,30 +400,12 @@ export function Distribute() {
                       setSort(sort === 'newest' ? 'oldest' : 'newest');
                       setPageNumber(1);
                     }}
-                    title={
-                      sort === 'newest'
-                        ? 'Sorted newest first — click for oldest first'
-                        : 'Sorted oldest first — click for newest first'
-                    }
                   >
                     {sort === 'newest' ? 'Newest' : 'Oldest'}
                   </Button>
-                  {selectedShas.length > 0 ? (
-                    <>
-                      <span className="meta text-accent-ink tabular-nums">
-                        <SquareCheck className="h-2.5 w-2.5" aria-hidden="true" />
-                        {selectedShas.length} selected
-                      </span>
-                      <IconButton
-                        icon={X}
-                        label="Clear commit selection"
-                        onClick={clearSelection}
-                      />
-                    </>
-                  ) : null}
                 </div>
 
-                <div className="scroll-area max-h-[440px]">
+                <div className="scroll-area min-h-0 flex-1">
                   {visibleCommits.length === 0 ? (
                     <EmptyState
                       icon={Search}
@@ -414,16 +420,13 @@ export function Distribute() {
                   ) : (
                     <table className="w-full border-separate border-spacing-0">
                       <caption className="sr-only">
-                        Commits on trunk branch {trunkBranch}. Selecting commits offers the paths
-                        they touched to every selected subsystem.
+                        Commits on trunk branch {trunkBranch}. Select one commit to preview and
+                        distribute to the chosen subsystem.
                       </caption>
                       <thead className="sticky top-0 z-10">
                         <tr className="table-head">
-                          <th scope="col" className="w-10 py-2 pl-2.5 text-left">
-                            <span className="sr-only">Selected</span>
-                          </th>
                           <th scope="col" className="w-6 py-2" />
-                          <th scope="col" className="w-24 py-2 pr-2.5 text-right">
+                          <th scope="col" className="w-20 py-2 pr-2.5 text-right">
                             SHA
                           </th>
                           <th scope="col" className="py-2 pr-2.5 text-left">
@@ -431,17 +434,17 @@ export function Distribute() {
                           </th>
                           <th
                             scope="col"
-                            className="hidden w-40 py-2 pr-2.5 text-left xl:table-cell"
+                            className="hidden w-32 py-2 pr-2.5 text-left 2xl:table-cell"
                           >
                             Author
                           </th>
                           <th
                             scope="col"
-                            className="hidden w-28 py-2 pr-2.5 text-right xl:table-cell"
+                            className="hidden w-24 py-2 pr-2.5 text-right 2xl:table-cell"
                           >
                             Committed
                           </th>
-                          <th scope="col" className="w-24 py-2 pr-2.5 text-right">
+                          <th scope="col" className="w-16 py-2 pr-2.5 text-right">
                             Files
                           </th>
                         </tr>
@@ -451,13 +454,9 @@ export function Distribute() {
                           <CommitRow
                             key={commit.sha}
                             commit={commit}
-                            selected={selectedShas.includes(commit.sha)}
-                            expanded={expandedSha === commit.sha}
+                            selected={selectedSha === commit.sha}
                             locked={locked}
-                            onToggle={() => toggleCommit(commit.sha)}
-                            onExpand={() =>
-                              setExpandedSha(expandedSha === commit.sha ? null : commit.sha)
-                            }
+                            onSelect={() => selectCommit(commit.sha)}
                           />
                         ))}
                       </tbody>
@@ -478,7 +477,7 @@ export function Distribute() {
                     <label className="flex items-center gap-1.5 text-[11px] text-muted">
                       Rows
                       <Select
-                        className="w-[76px]"
+                        className="w-[72px]"
                         value={String(pageSize)}
                         onValueChange={(next) => {
                           setPageSize(Number(next));
@@ -511,201 +510,271 @@ export function Distribute() {
               </>
             )}
           </Panel>
-
-          {previewError ? (
-            <Panel title="Preview" bodyClassName="p-3">
-              <ErrorState compact error={previewError} onRetry={loadPreview} />
-            </Panel>
-          ) : previewLoading ? (
-            <Panel title="Preview">
-              <LoadingState label="Building the distribution preview" />
-            </Panel>
-          ) : result ? (
-            <Panel
-              title="Results"
-              subtitle={`${result.outcomes.filter((outcome) => outcome.ok).length} of ${result.outcomes.length} branches pushed · ${result.mainBranch}`}
-              bodyClassName="divide-y divide-line"
-            >
-              {result.outcomes.map((outcome) => (
-                <OutcomeSection
-                  key={outcome.subsystemId}
-                  outcome={outcome}
-                  name={
-                    preview?.subsystems.find((plan) => plan.subsystemId === outcome.subsystemId)
-                      ?.name ?? outcome.subsystemId
-                  }
-                  onOpenPr={openPullRequest}
-                />
-              ))}
-            </Panel>
-          ) : preview ? (
-            preview.subsystems.length === 0 || nothingToDistribute ? (
-              <EmptyState
-                icon={GitPullRequestArrow}
-                title="Nothing to distribute"
-                message="The selected commits touch no files in the selected subsystems."
-              />
-            ) : (
-              <div className="space-y-3">
-                {preview.subsystems.map((plan) => (
-                  <PlanCard
-                    key={plan.subsystemId}
-                    plan={plan}
-                    excludedPaths={excludedFor(plan)}
-                    locked={locked}
-                    onTogglePath={(path, included) => togglePath(plan, path, included)}
-                  />
-                ))}
-              </div>
-            )
-          ) : (
-            <EmptyState
-              icon={GitPullRequestArrow}
-              title="Nothing previewed"
-              message="Pick trunk commits and subsystems, then preview what each branch receives."
-            />
-          )}
         </div>
 
+        {/* Right column: live plan preview, diff inspection, and PR execution */}
         <div className="scroll-area min-h-0 space-y-3">
-          <Panel
-            title="Subsystems"
-            subtitle={`${selectedIds.length} of ${enabledSubsystems.length} selected`}
-            actions={
-              <>
-                <Button variant="ghost" size="sm" disabled={locked} onClick={selectAllSubsystems}>
-                  All
-                </Button>
-                <Button variant="ghost" size="sm" disabled={locked} onClick={selectNoSubsystems}>
-                  None
-                </Button>
-              </>
-            }
-          >
-            {app.subsystems.loading && enabledSubsystems.length === 0 ? (
-              <LoadingState label="Loading subsystems" />
-            ) : app.subsystems.error ? (
-              <ErrorState compact error={app.subsystems.error} onRetry={app.subsystems.reload} />
-            ) : enabledSubsystems.length === 0 ? (
-              <EmptyState title="No enabled subsystems" />
-            ) : (
-              <ul className="scroll-area max-h-[280px] divide-y divide-line">
-                {enabledSubsystems.map((subsystem) => (
-                  <li key={subsystem.id} className="flex h-[29px] items-center gap-2 px-2.5">
-                    <Checkbox
-                      checked={selectedIds.includes(subsystem.id)}
-                      disabled={locked}
-                      onChange={() => toggleSubsystem(subsystem.id)}
-                      label={`Select ${subsystem.name}`}
-                    />
-                    <span
-                      className="min-w-0 flex-1 truncate text-xs text-fg"
-                      title={subsystem.name}
-                    >
-                      {subsystem.name}
-                    </span>
-                    <span
-                      className="mono shrink-0 text-[11px] text-muted"
-                      title={subsystem.sourceBranch}
-                    >
-                      {subsystem.sourceBranch}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Panel>
-
-          <Panel
-            title="Distribution"
-            actions={
-              preview !== null || result !== null ? (
-                <Button variant="ghost" size="sm" onClick={resetAll}>
-                  New distribution
-                </Button>
-              ) : null
-            }
-          >
-            <div className="space-y-3 p-3">
+          {!selectedSubsystem ? (
+            <Panel title="Distribution">
+              <EmptyState
+                icon={GitPullRequestArrow}
+                title="No enabled subsystem"
+                message="Enable or register a subsystem in Settings before distributing trunk commits."
+              />
+            </Panel>
+          ) : !selectedCommit ? (
+            <Panel title="Distribution">
+              <EmptyState
+                icon={GitPullRequestArrow}
+                title="Select a trunk commit"
+                message={`Pick a commit from ${trunkBranch || 'the trunk branch'} to preview what ${selectedSubsystem.name} will receive.`}
+              />
+            </Panel>
+          ) : outcome ? (
+            <OutcomePanel
+              outcome={outcome}
+              subsystemName={selectedSubsystem.name}
+              onOpenPr={(url) => app.openExternal(url)}
+              onReset={() => {
+                setOutcome(null);
+                planQuery.reload();
+              }}
+            />
+          ) : (
+            <Panel
+              title={selectedSubsystem.name}
+              subtitle={
+                plan
+                  ? `${plan.sourceBranch} ← ${plan.branch}`
+                  : `${selectedSubsystem.sourceBranch} · ${selectedCommit.shortSha}`
+              }
+              actions={
+                <>
+                  {plan ? <PlanStatusMark blocked={isBlocked} hasChanges={hasChanges} /> : null}
+                  <IconButton
+                    icon={RefreshCw}
+                    label="Refresh preview"
+                    disabled={planLoading || running}
+                    onClick={planQuery.reload}
+                  />
+                </>
+              }
+              bodyClassName="space-y-3 p-3"
+            >
               <dl>
-                <KeyValue label="Trunk">
-                  <span className="mono">{trunkBranch || '—'}</span>
+                <KeyValue label="Commit">
+                  <span className="mono text-accent-ink" title={selectedCommit.sha}>
+                    {selectedCommit.shortSha}
+                  </span>{' '}
+                  <span className="text-fg">{selectedCommit.subject}</span>
                 </KeyValue>
-                <KeyValue label="Commits">{commitShas.length}</KeyValue>
-                <KeyValue label="Subsystems">{selectedIds.length}</KeyValue>
-                <KeyValue label="Ready">
-                  {preview ? `${readyCount} of ${preview.subsystems.length}` : 'Not previewed'}
+                <KeyValue label="Target PR">
+                  <span className="mono">
+                    {selectedSubsystem.sourceBranch} ←{' '}
+                    {plan?.branch ?? `distribute/${trunkBranch}-${selectedCommit.shortSha}`}
+                  </span>
                 </KeyValue>
               </dl>
 
-              <Field
-                label="Commit message"
-                htmlFor="distribute-message"
-                hint="Blank uses the default subject."
-              >
-                <textarea
-                  id="distribute-message"
-                  rows={3}
-                  className="input min-h-[76px] py-2"
-                  placeholder="Optional"
-                  value={message}
-                  disabled={locked}
-                  onChange={(event) => setMessage(event.target.value)}
-                />
-              </Field>
-
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  variant="secondary"
-                  onClick={loadPreview}
-                  disabled={!canPreview}
-                  loading={previewLoading}
-                >
-                  Preview
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={startDistribution}
-                  disabled={!canRun}
-                  loading={running}
-                  title={
-                    preview && readyCount === 0 ? 'Every previewed subsystem is blocked' : undefined
-                  }
-                >
-                  Distribute
-                </Button>
-              </div>
-
-              {running ? (
-                <div className="space-y-1" role="status" aria-live="polite">
-                  <div className="flex items-center justify-between gap-2 text-[11px]">
-                    <span className="flex min-w-0 items-center gap-1.5 text-fg">
+              {planLoading && !plan ? (
+                <LoadingState label="Building distribution preview" />
+              ) : planError ? (
+                <ErrorState compact error={planError} onRetry={planQuery.reload} />
+              ) : plan ? (
+                <>
+                  {planLoading ? (
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted">
                       <Spinner className="h-3 w-3" />
-                      <span className="truncate">
-                        {latestProgress?.label ?? 'Starting distribution'}
-                      </span>
-                    </span>
-                    {latestProgress?.index != null && latestProgress.total != null ? (
-                      <span className="mono shrink-0 text-muted">
-                        {latestProgress.index}/{latestProgress.total}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="h-[3px] overflow-hidden rounded-full bg-line">
-                    <div
-                      className="h-full bg-accent transition-[width]"
-                      style={{ width: `${progressPercent(latestProgress)}%` }}
-                    />
-                  </div>
-                  {latestProgress?.detail ? (
-                    <p className="truncate text-[11px] text-muted">{latestProgress.detail}</p>
+                      Updating plan…
+                    </div>
                   ) : null}
-                </div>
-              ) : null}
 
-              {runError ? <ErrorState compact error={runError} /> : null}
-            </div>
-          </Panel>
+                  <BlockerList blockers={plan.blockers} />
+                  <WarningsList warnings={plan.warnings} />
+
+                  {/* Files list */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        Files ({includedFiles.length}/{plan.files.length})
+                      </span>
+                      {plan.files.length > 0 ? (
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={locked || isBlocked || excludedPaths.length === 0}
+                            onClick={selectAllFiles}
+                          >
+                            All
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={
+                              locked || isBlocked || excludedPaths.length === plan.files.length
+                            }
+                            onClick={selectNoFiles}
+                          >
+                            None
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {plan.files.length === 0 ? (
+                      <p className="text-[11px] text-muted">
+                        No file changes needed for this subsystem.
+                      </p>
+                    ) : (
+                      <ul className="scroll-area max-h-[240px] divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+                        {plan.files.map((file) => {
+                          const included = !excludedPaths.includes(file.path);
+                          const inspected = inspectedPath === file.path;
+                          return (
+                            <li
+                              key={file.path}
+                              className={cx(
+                                'flex h-[27px] items-center gap-2 px-2.5',
+                                inspected && 'bg-selection',
+                              )}
+                            >
+                              <Checkbox
+                                checked={included}
+                                disabled={locked || isBlocked}
+                                onChange={(event) => togglePath(file.path, event.target.checked)}
+                                label={`Include ${file.path}`}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setInspectedPath(inspected ? null : file.path)}
+                                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                                title="Click to view trunk commit diff for this file"
+                              >
+                                <ChangeKindIcon change={file.trunkChange} />
+                                <PathLabel
+                                  path={file.path}
+                                  muted={!included}
+                                  className="min-w-0 flex-1 text-[11px]"
+                                />
+                              </button>
+                              <ActionBadge action={file.action} />
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+
+                  {/* Inline diff viewer for the clicked file */}
+                  {inspectedPath ? (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-[11px] font-medium text-fg">
+                          Commit diff: <span className="mono">{inspectedPath}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setInspectedPath(null)}
+                          className="text-[11px] text-muted hover:text-fg"
+                        >
+                          Close
+                        </button>
+                      </div>
+                      <div className="max-h-[260px] overflow-auto rounded-md border border-line bg-surface">
+                        <DiffViewer
+                          diff={inspectedDiff}
+                          loading={diffLoading}
+                          error={diffError}
+                          onRetry={diffQuery.reload}
+                          mode="unified"
+                          onOpenExternal={(url) => app.openExternal(url)}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {plan.skipped.length > 0 ? <SkippedList skipped={plan.skipped} /> : null}
+
+                  {plan.dependencies.length > 0 ? (
+                    <div className="space-y-1">
+                      <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        Dependencies ({plan.dependencies.length})
+                      </span>
+                      <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+                        {plan.dependencies.map((dependency) => (
+                          <DependencyRow
+                            key={`${dependency.section}:${dependency.name}`}
+                            dependency={dependency}
+                          />
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  <Field
+                    label="Commit & PR subject"
+                    htmlFor="distribute-message"
+                    hint="Blank uses the trunk commit's subject."
+                  >
+                    <input
+                      id="distribute-message"
+                      type="text"
+                      className="input"
+                      placeholder={plan.commitSubject}
+                      value={message}
+                      disabled={locked}
+                      onChange={(event) => setMessage(event.target.value)}
+                    />
+                  </Field>
+
+                  <Button
+                    variant="primary"
+                    icon={GitPullRequestArrow}
+                    onClick={startDistribution}
+                    disabled={!canRun}
+                    loading={running}
+                    className="w-full"
+                    title={
+                      isBlocked
+                        ? 'Resolve blockers before distributing'
+                        : !hasChanges
+                          ? 'Select at least one file or dependency change'
+                          : undefined
+                    }
+                  >
+                    Open Pull Request in {selectedSubsystem.name}
+                  </Button>
+
+                  {running ? (
+                    <div className="space-y-1" role="status" aria-live="polite">
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="flex min-w-0 items-center gap-1.5 text-fg">
+                          <Spinner className="h-3 w-3" />
+                          <span className="truncate">
+                            {progress?.label ?? 'Starting distribution…'}
+                          </span>
+                        </span>
+                        {progress?.index != null && progress.total != null ? (
+                          <span className="mono shrink-0 text-muted">
+                            {progress.index}/{progress.total}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="h-[3px] overflow-hidden rounded-full bg-line">
+                        <div
+                          className="h-full bg-accent transition-[width]"
+                          style={{ width: `${progressPercent(progress)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {runError ? <ErrorState compact error={runError} /> : null}
+                </>
+              ) : null}
+            </Panel>
+          )}
         </div>
       </div>
     </div>
@@ -713,130 +782,108 @@ export function Distribute() {
 }
 
 function progressPercent(progress: PromotionProgress | null): number {
-  if (!progress || progress.index == null || progress.total == null || progress.total <= 0)
-    return 4;
-  return Math.max(4, Math.min(100, Math.round((progress.index / progress.total) * 100)));
+  if (!progress || progress.index == null || progress.total == null || progress.total <= 0) {
+    return 10;
+  }
+  return Math.max(10, Math.min(100, Math.round((progress.index / progress.total) * 100)));
 }
 
-function StatusMark({ blocked }: { blocked: boolean }) {
+function PlanStatusMark({ blocked, hasChanges }: { blocked: boolean; hasChanges: boolean }) {
+  const dot = blocked
+    ? 'bg-status-blocked'
+    : hasChanges
+      ? 'bg-status-eligible'
+      : 'bg-status-superseded';
+  const label = blocked ? 'Blocked' : hasChanges ? 'Ready' : 'No changes';
   return (
     <span className="flex items-center gap-1.5 text-[11px] text-muted">
-      <span
-        className={cx(
-          'h-1.5 w-1.5 rounded-full',
-          blocked ? 'bg-status-blocked' : 'bg-status-eligible',
-        )}
-        aria-hidden="true"
-      />
-      {blocked ? 'Blocked' : 'Ready'}
+      <span className={cx('h-1.5 w-1.5 rounded-full', dot)} aria-hidden="true" />
+      {label}
     </span>
+  );
+}
+
+function ActionBadge({ action }: { action: DistributionPathAction }) {
+  const styles: Record<DistributionPathAction, string> = {
+    add: 'text-status-applied-ink',
+    update: 'text-accent-ink',
+    delete: 'text-status-blocked-ink',
+  };
+  return (
+    <span className={cx('mono shrink-0 text-[10px] uppercase', styles[action])}>{action}</span>
   );
 }
 
 function CommitRow({
   commit,
   selected,
-  expanded,
   locked,
-  onToggle,
-  onExpand,
+  onSelect,
 }: {
   commit: TrunkCommit;
   selected: boolean;
-  expanded: boolean;
   locked: boolean;
-  onToggle: () => void;
-  onExpand: () => void;
+  onSelect: () => void;
 }) {
   return (
-    <>
-      <tr
-        onClick={onExpand}
-        className={cx(
-          'row-hover h-[50px] cursor-pointer border-b border-line',
-          selected && 'bg-selection',
-        )}
-      >
-        <td className="py-2 pl-2.5 align-top">
-          {/* Ticking a box must not also expand the row. */}
-          <span onClick={(event) => event.stopPropagation()}>
-            <Checkbox
-              checked={selected}
-              disabled={locked}
-              onChange={onToggle}
-              label={`Select commit ${commit.shortSha} – ${commit.subject}`}
-            />
-          </span>
-        </td>
-        <td className="relative w-6 align-top">
-          <span
-            aria-hidden="true"
-            className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 bg-line"
-          />
-          <span
-            aria-hidden="true"
-            className="absolute top-4 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-accent ring-2 ring-accent/30"
-          />
-        </td>
-        <td className="py-2 pr-2.5 text-right align-top">
-          <span className="mono text-[11px] text-accent-ink" title={commit.sha}>
-            {commit.shortSha}
-          </span>
-        </td>
-        <td className="max-w-[52ch] py-2 pr-2.5 align-top">
+    <tr
+      onClick={locked ? undefined : onSelect}
+      aria-selected={selected}
+      className={cx(
+        'row-hover h-[48px] border-b border-line',
+        !locked && 'cursor-pointer',
+        selected && 'bg-selection',
+      )}
+    >
+      <td className="relative w-6 align-top">
+        <span
+          aria-hidden="true"
+          className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 bg-line"
+        />
+        <span
+          aria-hidden="true"
+          className={cx(
+            'absolute top-4 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full',
+            selected ? 'bg-accent ring-2 ring-accent/30' : 'bg-line-strong',
+          )}
+        />
+      </td>
+      <td className="py-2 pr-2.5 text-right align-top">
+        <span className="mono text-[11px] text-accent-ink" title={commit.sha}>
+          {commit.shortSha}
+        </span>
+      </td>
+      <td className="max-w-[46ch] py-2 pr-2.5 align-top">
+        <div className="flex items-center gap-1.5">
+          {commit.isMerge ? (
+            <GitMerge className="h-3 w-3 shrink-0 text-muted" aria-label="Merge commit" />
+          ) : null}
           <span className="block truncate text-xs text-fg" title={commit.subject}>
             {commit.subject}
           </span>
-          <p
-            className="mt-0.5 truncate text-[11px] text-muted"
-            title={`${commit.authorName} · ${formatDateTime(commit.committedAt)}`}
-          >
-            {commit.authorName} · {formatDateTime(commit.committedAt)}
-          </p>
-        </td>
-        <td className="hidden max-w-40 py-2 pr-2.5 align-top text-xs text-muted xl:table-cell">
-          <span className="block truncate">{commit.authorName}</span>
-        </td>
-        <td className="mono hidden py-2 pr-2.5 text-right text-muted tabular-nums xl:table-cell">
-          {formatDate(commit.committedAt)}
-        </td>
-        <td className="py-2 pr-2.5 align-top">
-          <div className="flex items-center justify-end gap-1.5">
-            <span
-              className="text-[11px] text-muted tabular-nums"
-              title={`${commit.filesChanged} files changed`}
-            >
-              {commit.filesChanged}
-            </span>
-            <span onClick={(event) => event.stopPropagation()}>
-              <IconButton
-                icon={ChevronDown}
-                label={
-                  expanded ? `Hide paths of ${commit.shortSha}` : `Show paths of ${commit.shortSha}`
-                }
-                aria-expanded={expanded}
-                className={cx('h-[21px] w-[21px]', expanded && 'text-fg')}
-                onClick={onExpand}
-              />
-            </span>
-          </div>
-        </td>
-      </tr>
-      {expanded ? (
-        <tr className="bg-raised">
-          <td colSpan={7} className="border-b border-line p-0">
-            <ul className="scroll-area max-h-44 px-2.5 py-1">
-              {commit.paths.map((entry) => (
-                <li key={entry.path} className="flex h-[25px] items-center gap-2">
-                  <ChangeKindIcon change={entry.change} />
-                  <PathLabel path={entry.path} className="text-[11px]" />
-                </li>
-              ))}
-            </ul>
-          </td>
-        </tr>
-      ) : null}
-    </>
+        </div>
+        <p
+          className="mt-0.5 truncate text-[11px] text-muted"
+          title={`${commit.authorName} · ${formatDateTime(commit.committedAt)}`}
+        >
+          {commit.authorName} · {formatDateTime(commit.committedAt)}
+        </p>
+      </td>
+      <td className="hidden max-w-32 py-2 pr-2.5 align-top text-xs text-muted 2xl:table-cell">
+        <span className="block truncate">{commit.authorName}</span>
+      </td>
+      <td className="mono hidden py-2 pr-2.5 text-right align-top text-[11px] text-muted tabular-nums 2xl:table-cell">
+        {formatDate(commit.committedAt)}
+      </td>
+      <td className="py-2 pr-2.5 text-right align-top">
+        <span
+          className="text-[11px] text-muted tabular-nums"
+          title={`${commit.filesChanged} files changed`}
+        >
+          {commit.filesChanged}
+        </span>
+      </td>
+    </tr>
   );
 }
 
@@ -882,7 +929,7 @@ function SkippedList({ skipped }: { skipped: DistributionSkip[] }) {
           className="h-3 w-3 transition-transform group-open:rotate-180"
           aria-hidden="true"
         />
-        {skipped.length} paths skipped
+        {skipped.length} path{skipped.length === 1 ? '' : 's'} skipped
       </summary>
       <ul className="mt-1 divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
         {skipped.map((entry, index) => (
@@ -912,7 +959,7 @@ function DependencyRow({ dependency }: { dependency: DistributionDependency }) {
     : 'not present';
   const to = `${dependency.section}${dependency.spec ? ` ${dependency.spec}` : ''}`;
   return (
-    <li className="flex h-[29px] items-center gap-2 px-2.5 text-[11px]">
+    <li className="flex h-[27px] items-center gap-2 px-2.5 text-[11px]">
       <span className="mono w-[46px] shrink-0 uppercase text-muted">{dependency.action}</span>
       <span className="mono min-w-0 flex-1 truncate text-fg" title={dependency.name}>
         {dependency.name}
@@ -924,132 +971,56 @@ function DependencyRow({ dependency }: { dependency: DistributionDependency }) {
   );
 }
 
-function PlanCard({
-  plan,
-  excludedPaths,
-  locked,
-  onTogglePath,
-}: {
-  plan: DistributionPlan;
-  excludedPaths: string[];
-  locked: boolean;
-  onTogglePath: (path: string, included: boolean) => void;
-}) {
-  const blocked = plan.blockers.length > 0;
-  const includedCount = plan.paths.filter((path) => !excludedPaths.includes(path)).length;
-  return (
-    <Panel
-      title={plan.name}
-      subtitle={`${plan.sourceBranch} → ${plan.branch}`}
-      actions={
-        <>
-          <span className="mono text-[11px] text-muted tabular-nums">
-            {includedCount}/{plan.paths.length} included
-          </span>
-          <StatusMark blocked={blocked} />
-        </>
-      }
-      bodyClassName="space-y-2 p-3"
-    >
-      {blocked ? <BlockerList blockers={plan.blockers} /> : null}
-      <WarningsList warnings={plan.warnings} />
-      {plan.paths.length === 0 ? (
-        <p className="text-[11px] text-muted">No paths to distribute</p>
-      ) : (
-        <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
-          {plan.paths.map((path) => (
-            <li key={path} className="flex h-[25px] items-center gap-2 px-2.5">
-              <Checkbox
-                checked={!excludedPaths.includes(path)}
-                disabled={locked || blocked}
-                onChange={(event) => onTogglePath(path, event.target.checked)}
-                label={`Include ${path} in ${plan.name}`}
-              />
-              <span className="min-w-0 flex-1">
-                <PathLabel path={path} className="text-[11px]" />
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {plan.skipped.length > 0 ? <SkippedList skipped={plan.skipped} /> : null}
-      {plan.dependencies.length > 0 ? (
-        <div className="space-y-1">
-          <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-            Dependencies
-          </span>
-          <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
-            {plan.dependencies.map((dependency) => (
-              <DependencyRow
-                key={`${dependency.section}:${dependency.name}`}
-                dependency={dependency}
-              />
-            ))}
-          </ul>
-        </div>
-      ) : null}
-    </Panel>
-  );
-}
-
-function OutcomeSection({
+function OutcomePanel({
   outcome,
-  name,
+  subsystemName,
   onOpenPr,
+  onReset,
 }: {
   outcome: DistributionOutcome;
-  name: string;
+  subsystemName: string;
   onOpenPr: (url: string) => void;
+  onReset: () => void;
 }) {
   const pullRequest = outcome.pullRequest;
   const url = pullRequest?.url ?? null;
   const commitSha = outcome.commitSha;
-  return (
-    <div className="space-y-2 p-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className={cx(
-              'h-1.5 w-1.5 shrink-0 rounded-full',
-              outcome.ok ? 'bg-status-applied' : 'bg-status-blocked',
-            )}
-            aria-hidden="true"
-          />
-          <span className="truncate text-xs font-medium text-fg" title={name}>
-            {name}
-          </span>
-          <span
-            className={cx(
-              'shrink-0 text-[11px]',
-              outcome.ok ? 'text-status-applied-ink' : 'text-status-blocked-ink',
-            )}
-          >
-            {outcome.ok
-              ? pullRequest?.number != null
-                ? `Pull request #${pullRequest.number} ${pullRequest.state}`
-                : 'Pushed'
-              : 'Blocked'}
-          </span>
-        </div>
-        {url ? (
-          <Button variant="secondary" size="sm" icon={ExternalLink} onClick={() => onOpenPr(url)}>
-            Open pull request
-          </Button>
-        ) : null}
-      </div>
 
+  return (
+    <Panel
+      title={subsystemName}
+      subtitle={
+        outcome.ok
+          ? pullRequest?.number != null
+            ? `Pull request #${pullRequest.number} ${pullRequest.state}`
+            : 'Branch pushed'
+          : 'Distribution blocked'
+      }
+      actions={
+        <Button variant="ghost" size="sm" onClick={onReset}>
+          Done
+        </Button>
+      }
+      bodyClassName="space-y-3 p-3"
+    >
       <BlockerList blockers={outcome.blockers} />
       <WarningsList warnings={outcome.warnings} />
       {outcome.message ? <p className="text-[11px] text-muted">{outcome.message}</p> : null}
 
       <dl>
+        <KeyValue label="Source commit">
+          <span className="mono">{outcome.sourceCommitSha.slice(0, 7)}</span>
+        </KeyValue>
         <KeyValue label="Branch">
           <span className="mono">{outcome.branch}</span>
         </KeyValue>
-        <KeyValue label="Commit">
+        <KeyValue label="New commit">
           {commitSha ? <span className="mono">{commitSha.slice(0, 7)}</span> : '—'}
         </KeyValue>
-        <KeyValue label="Applied">{outcome.applied.length} paths</KeyValue>
+        <KeyValue label="Files written">{outcome.applied.length}</KeyValue>
+        {outcome.deleted.length > 0 ? (
+          <KeyValue label="Files deleted">{outcome.deleted.length}</KeyValue>
+        ) : null}
         {pullRequest ? (
           <KeyValue label="Target">
             <span className="mono">
@@ -1059,16 +1030,32 @@ function OutcomeSection({
         ) : null}
       </dl>
 
-      {outcome.dependencies.length > 0 ? (
-        <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
-          {outcome.dependencies.map((dependency) => (
-            <DependencyRow
-              key={`${dependency.section}:${dependency.name}`}
-              dependency={dependency}
-            />
-          ))}
-        </ul>
+      {url ? (
+        <Button
+          variant="primary"
+          icon={ExternalLink}
+          onClick={() => onOpenPr(url)}
+          className="w-full"
+        >
+          Open Pull Request
+        </Button>
       ) : null}
-    </div>
+
+      {outcome.dependencies.length > 0 ? (
+        <div className="space-y-1">
+          <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+            Dependencies updated
+          </span>
+          <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+            {outcome.dependencies.map((dependency) => (
+              <DependencyRow
+                key={`${dependency.section}:${dependency.name}`}
+                dependency={dependency}
+              />
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </Panel>
   );
 }

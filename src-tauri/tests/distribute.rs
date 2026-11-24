@@ -1,4 +1,4 @@
-//! End-to-end distribution: trunk branch → subsystem branch → pushed PR,
+//! End-to-end distribution: single trunk commit -> single subsystem branch -> pushed PR,
 //! against disposable local git repositories so the suite stays offline.
 
 use std::collections::HashSet;
@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
-use vos_origins_lib::services::engine::distribute::{self, MainSnapshot, Selection};
+use vos_origins_lib::services::engine::distribute::{self, CommitSnapshot, DistributionPathAction};
 use vos_origins_lib::services::engine::github_ops::{
     BranchInfo, CreatePrRequest, GitHubMode, GitHubOps, PullRequestInfo, PushOutcome,
 };
@@ -175,7 +175,7 @@ fn distributes_trunk_commit_paths_into_a_subsystem_pull_request() {
     write(
         &seed,
         "src/own.ts",
-        "import { useState } from 'react';\nimport { z } from 'zod';\nexport const own = z.string();\nexport const hook = useState;\n",
+        "import { useState } from 'react';\nexport const hook = useState;\n",
     );
     write(
         &seed,
@@ -190,11 +190,14 @@ fn distributes_trunk_commit_paths_into_a_subsystem_pull_request() {
     let child_dir = root.join("hr");
     git(&root, &["clone", "-q", &remote, "hr"]);
 
-    write(&main_dir, "src/shared.ts", "export const shared = 2;\n");
+    write(
+        &main_dir,
+        "src/shared.ts",
+        "import { z } from 'zod';\nexport const shared = z.string();\n",
+    );
     let trunk_sha = commit(&main_dir, "main moves ahead");
 
-    let main = MainSnapshot::load(&main_dir, "master").expect("load main snapshot");
-    let commits = distribute::trunk_commits(&main).expect("trunk commits");
+    let commits = distribute::trunk_commits(&main_dir, "master").expect("trunk commits");
     let selected = commits
         .iter()
         .find(|commit| commit.sha == trunk_sha)
@@ -207,45 +210,42 @@ fn distributes_trunk_commit_paths_into_a_subsystem_pull_request() {
             .collect::<Vec<_>>(),
         vec![("src/shared.ts", "modified")]
     );
-    let wanted: HashSet<String> = selected
-        .paths
-        .iter()
-        .map(|entry| entry.path.clone())
-        .collect();
 
+    let snapshot = CommitSnapshot::load(&main_dir, "master", &trunk_sha).expect("commit snapshot");
     let ops = PrRecorder::default();
     let subsystem = entry();
-    let plan = distribute::plan(&main, &child_dir, &subsystem, &ops, &wanted);
+    let excluded = HashSet::new();
+    let plan = distribute::plan(&snapshot, &child_dir, &subsystem, &ops, &excluded);
 
+    let expected_branch = distribute::distribution_branch("master", &trunk_sha);
     assert!(
         plan.blockers.is_empty(),
         "unexpected blockers: {:?}",
         plan.blockers
     );
-    assert_eq!(
-        plan.paths,
-        vec!["src/shared.ts".to_string()],
-        "plan: {plan:?}"
-    );
-    assert_eq!(plan.branch, "distribute-master");
-    assert_eq!(plan.dependencies.len(), 2, "deps: {:?}", plan.dependencies);
+    assert_eq!(plan.files.len(), 1, "plan: {plan:?}");
+    assert_eq!(plan.files[0].path, "src/shared.ts");
+    assert_eq!(plan.files[0].action, DistributionPathAction::Update);
+    assert_eq!(plan.branch, expected_branch);
+    // Scoped deps: `zod` is imported by `src/shared.ts`, while `react` in `src/own.ts`
+    // is unrelated to this commit and must not be touched.
+    assert_eq!(plan.dependencies.len(), 1, "deps: {:?}", plan.dependencies);
     assert!(plan
         .dependencies
         .iter()
         .any(|dep| dep.name == "zod" && dep.spec == "^3.23.0"));
-    assert!(plan.dependencies.iter().any(|dep| {
-        dep.name == "react" && dep.spec == "^18.2.0" && dep.from_spec.as_deref() == Some("^19.2.0")
-    }));
 
     let temp_root = root.join("tmp");
     let outcome = distribute::run(distribute::RunInput {
-        main: &main,
+        commit: &snapshot,
         child_dir: &child_dir,
         entry: &subsystem,
         main_repo: "ORG/main-system",
         plan: &plan,
-        selection: &Selection::default(),
+        excluded_paths: &excluded,
         message: Some("distribute from master"),
+        attribute_to_account: false,
+        account: None,
         temp_root: &temp_root,
         remote_url: &remote,
         github: &ops,
@@ -253,8 +253,9 @@ fn distributes_trunk_commit_paths_into_a_subsystem_pull_request() {
 
     assert!(outcome.ok, "distribution blockers: {:?}", outcome.blockers);
     assert_eq!(outcome.applied, vec!["src/shared.ts".to_string()]);
+    assert!(outcome.deleted.is_empty());
     let pull_request = outcome.pull_request.expect("pull request opened");
-    assert_eq!(pull_request.head, "distribute-master");
+    assert_eq!(pull_request.head, expected_branch);
     assert_eq!(pull_request.base, "master");
     assert_eq!(
         ops.requests.lock().expect("pr lock").len(),
@@ -262,20 +263,29 @@ fn distributes_trunk_commit_paths_into_a_subsystem_pull_request() {
         "exactly one pull request"
     );
 
-    let branch_tip = git(&bare, &["rev-parse", "distribute-master"]);
+    let branch_tip = git(&bare, &["rev-parse", &expected_branch]);
     assert_eq!(Some(branch_tip), outcome.commit_sha);
     assert_eq!(
-        git(&bare, &["show", "distribute-master:src/shared.ts"]),
-        "export const shared = 2;"
+        git(
+            &bare,
+            &["show", &format!("{expected_branch}:src/shared.ts")]
+        ),
+        "import { z } from 'zod';\nexport const shared = z.string();"
     );
-    let manifest: serde_json::Value =
-        serde_json::from_str(&git(&bare, &["show", "distribute-master:package.json"]))
-            .expect("manifest is json");
-    assert_eq!(manifest["dependencies"]["react"], "^18.2.0");
+    let manifest: serde_json::Value = serde_json::from_str(&git(
+        &bare,
+        &["show", &format!("{expected_branch}:package.json")],
+    ))
+    .expect("manifest is json");
+    assert_eq!(manifest["dependencies"]["react"], "^19.2.0");
     assert_eq!(manifest["dependencies"]["zod"], "^3.23.0");
-    let message = git(&bare, &["log", "-1", "--format=%B", "distribute-master"]);
+    let message = git(&bare, &["log", "-1", "--format=%B", &expected_branch]);
     assert!(
-        message.contains("distribute from master"),
+        message.contains("distribute(hr-management): distribute from master"),
+        "message: {message}"
+    );
+    assert!(
+        message.contains(&format!("Source-Commit: {trunk_sha}")),
         "message: {message}"
     );
     assert!(
