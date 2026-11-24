@@ -201,8 +201,7 @@ export function Distribute() {
 
   const selectCommit = (sha: string) => {
     if (locked) return;
-    if (selectedSha === sha) return;
-    setSelectedSha(sha);
+    setSelectedSha((current) => (current === sha ? null : sha));
     setMessage('');
     resetRunState();
   };
@@ -425,7 +424,9 @@ export function Distribute() {
                       </caption>
                       <thead className="sticky top-0 z-10">
                         <tr className="table-head">
-                          <th scope="col" className="w-6 py-2" />
+                          <th scope="col" className="w-10 py-2 pl-2.5 text-left">
+                            <span className="sr-only">Selected</span>
+                          </th>
                           <th scope="col" className="w-20 py-2 pr-2.5 text-right">
                             SHA
                           </th>
@@ -835,18 +836,15 @@ function CommitRow({
         selected && 'bg-selection',
       )}
     >
-      <td className="relative w-6 align-top">
-        <span
-          aria-hidden="true"
-          className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 bg-line"
-        />
-        <span
-          aria-hidden="true"
-          className={cx(
-            'absolute top-4 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rounded-full',
-            selected ? 'bg-accent ring-2 ring-accent/30' : 'bg-line-strong',
-          )}
-        />
+      <td className="py-2 pl-2.5 align-top">
+        <span onClick={(event) => event.stopPropagation()}>
+          <Checkbox
+            checked={selected}
+            disabled={locked}
+            onChange={onSelect}
+            label={`Select commit ${commit.shortSha} – ${commit.subject}`}
+          />
+        </span>
       </td>
       <td className="py-2 pr-2.5 text-right align-top">
         <span className="mono text-[11px] text-accent-ink" title={commit.sha}>
