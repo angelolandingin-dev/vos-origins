@@ -16,10 +16,10 @@ import type {
   IntegrationPr,
   IntegrationStatus,
   MainCommitDiff,
-  DistributionPreview,
+  DistributionOutcome,
+  DistributionPlan,
   DistributionPreviewRequest,
   DistributionRunRequest,
-  DistributionRunResult,
   TrunkCommit,
   PromotionDispatchResult,
   PromotionPreflight,
@@ -159,10 +159,10 @@ export const api = {
     call<TrunkCommit[]>('list_trunk_commits', { mainBranch }),
 
   previewDistribution: (request: DistributionPreviewRequest) =>
-    call<DistributionPreview>('preview_distribution', { request }),
+    call<DistributionPlan>('preview_distribution', { request }),
 
   runDistribution: (request: DistributionRunRequest) =>
-    call<DistributionRunResult>('run_distribution', { request }),
+    call<DistributionOutcome>('run_distribution', { request }),
 
   listIntegrationPrs: (targetBranch: string, subsystemId: string | null) =>
     call<IntegrationPr[]>('list_integration_prs', { targetBranch, subsystemId }),

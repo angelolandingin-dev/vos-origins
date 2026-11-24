@@ -66,8 +66,16 @@ pub struct ProvenanceInput<'a> {
 }
 
 pub fn build_provenance_message(input: &ProvenanceInput<'_>) -> String {
+    build_message_with_prefix("integrate", input)
+}
+
+pub fn build_distribution_message(input: &ProvenanceInput<'_>) -> String {
+    build_message_with_prefix("distribute", input)
+}
+
+fn build_message_with_prefix(prefix: &str, input: &ProvenanceInput<'_>) -> String {
     let header = format!(
-        "integrate({}): {}",
+        "{prefix}({}): {}",
         input.subsystem_id,
         sanitize_subject(input.subject, 72)
     );
