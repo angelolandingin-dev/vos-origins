@@ -78,6 +78,17 @@
   --color-diff-add-line: var(--diff-add-line);
   --color-diff-del: var(--diff-del);
   --color-diff-del-line: var(--diff-del-line);
+  --color-diff-hunk: var(--diff-hunk);
+  --color-diff-hunk-gutter: var(--diff-hunk-gutter);
+  --color-diff-hunk-text: var(--diff-hunk-text);
+
+  --color-syntax-keyword: var(--syntax-keyword);
+  --color-syntax-string: var(--syntax-string);
+  --color-syntax-comment: var(--syntax-comment);
+  --color-syntax-tag: var(--syntax-tag);
+  --color-syntax-attr: var(--syntax-attr);
+  --color-syntax-entity: var(--syntax-entity);
+  --color-syntax-number: var(--syntax-number);
 
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
@@ -182,6 +193,17 @@
   --diff-add-line: #cdffd8; /* --diff-add-gutter-background-color: darken($green-100, 3%) */
   --diff-del: #ffeef0; /* --diff-delete-background-color: $red-000 */
   --diff-del-line: #ffdce0; /* --diff-delete-gutter-background-color: $red-100 */
+  --diff-hunk: #f1f8ff;
+  --diff-hunk-gutter: #dbedff;
+  --diff-hunk-text: #586069;
+
+  --syntax-keyword: #d73a49;
+  --syntax-string: #032f62;
+  --syntax-comment: #6a737d;
+  --syntax-tag: #22863a;
+  --syntax-attr: #005cc5;
+  --syntax-entity: #6f42c1;
+  --syntax-number: #005cc5;
 }
 
 /* Forced dark theme. */
@@ -244,6 +266,17 @@
   --diff-add-line: #0b2612; /* darken($green-900, 8%) */
   --diff-del: #450c0f; /* darken($red-900, 15%) */
   --diff-del-line: #30090a; /* darken($red-900, 20%) */
+  --diff-hunk: #2b3137;
+  --diff-hunk-gutter: #24292e;
+  --diff-hunk-text: #8b949e;
+
+  --syntax-keyword: #ff7b72;
+  --syntax-string: #a5d6ff;
+  --syntax-comment: #8b949e;
+  --syntax-tag: #7ee787;
+  --syntax-attr: #79c0ff;
+  --syntax-entity: #d2a8ff;
+  --syntax-number: #79c0ff;
 }
 
 /* System-following dark theme (only when the user has not chosen explicitly). */
@@ -307,6 +340,17 @@
     --diff-add-line: #0b2612; /* darken($green-900, 8%) */
     --diff-del: #450c0f; /* darken($red-900, 15%) */
     --diff-del-line: #30090a; /* darken($red-900, 20%) */
+    --diff-hunk: #2b3137;
+    --diff-hunk-gutter: #24292e;
+    --diff-hunk-text: #8b949e;
+
+    --syntax-keyword: #ff7b72;
+    --syntax-string: #a5d6ff;
+    --syntax-comment: #8b949e;
+    --syntax-tag: #7ee787;
+    --syntax-attr: #79c0ff;
+    --syntax-entity: #d2a8ff;
+    --syntax-number: #79c0ff;
   }
 }
 

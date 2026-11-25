@@ -2,10 +2,12 @@ import { ExternalLink, FileCode2, TriangleAlert } from 'lucide-react';
 
 import type { ApiError } from '../api/invoke';
 import type { CommitDiff, DiffHunk, DiffLine } from '../api/types';
+import { tokenizeDiffLine, type SyntaxTokenKind } from './diffSyntax';
 import { cx } from './ui/cx';
 import { EmptyState, ErrorState, IconButton, InlineAlert, LoadingState } from './ui/primitives';
 
-const ROW_HEIGHT = 20;
+const ROW_HEIGHT = 21;
+const HUNK_HEIGHT = 28;
 
 type Row =
   | { kind: 'hunk'; header: string }
@@ -96,12 +98,55 @@ function signClasses(kind: DiffLine['kind']): string {
   return 'text-disabled';
 }
 
-function LineNumber({ kind, value }: { kind: DiffLine['kind']; value: number | null }) {
+function syntaxClasses(kind: SyntaxTokenKind): string {
+  switch (kind) {
+    case 'keyword':
+      return 'text-syntax-keyword';
+    case 'string':
+      return 'text-syntax-string';
+    case 'comment':
+      return 'text-syntax-comment italic';
+    case 'tag':
+      return 'text-syntax-tag';
+    case 'attr':
+      return 'text-syntax-attr';
+    case 'entity':
+      return 'text-syntax-entity';
+    case 'number':
+      return 'text-syntax-number';
+    default:
+      return 'text-fg';
+  }
+}
+
+function TokenizedCode({ text, language }: { text: string; language: string }) {
+  const tokens = tokenizeDiffLine(text, language);
+  return (
+    <>
+      {tokens.map((token, idx) => (
+        <span key={idx} className={syntaxClasses(token.kind)}>
+          {token.text}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function LineNumber({
+  kind,
+  value,
+  divider = false,
+}: {
+  kind: DiffLine['kind'];
+  value: number | null;
+  divider?: boolean;
+}) {
   return (
     <span
       className={cx(
-        'flex w-10 shrink-0 items-center justify-end pr-2 text-right text-disabled tabular-nums select-none',
+        'flex w-11 shrink-0 items-center justify-end pr-2.5 text-right text-[11px] leading-[21px] text-disabled tabular-nums select-none',
         gutterClasses(kind),
+        divider && 'border-r border-line/40',
       )}
     >
       {value ?? ''}
@@ -152,8 +197,8 @@ export function DiffViewer({
 
   return (
     <div className="flex min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b border-line px-2.5 py-2">
-        <span className="min-w-0 truncate text-[11px] text-muted">{diff.language}</span>
+      <div className="flex h-[28px] shrink-0 items-center gap-2 border-b border-line bg-raised px-3">
+        <span className="min-w-0 truncate text-[11px] font-medium text-muted">{diff.language}</span>
         <span className="mono shrink-0 text-right text-[11px] text-disabled tabular-nums">
           {rows.length} rows
         </span>
@@ -178,7 +223,7 @@ export function DiffViewer({
         </div>
       ) : null}
 
-      <DiffRows rows={rows} />
+      <DiffRows rows={rows} language={diff.language} mode={mode} />
 
       {diff.truncated ? (
         <div className="border-t border-status-unknown/40 bg-status-unknown-soft px-2.5 py-1.5">
@@ -192,91 +237,122 @@ export function DiffViewer({
   );
 }
 
-function DiffRows({ rows }: { rows: Row[] }) {
+function DiffRows({
+  rows,
+  language,
+  mode,
+}: {
+  rows: Row[];
+  language: string;
+  mode: 'side' | 'unified';
+}) {
   return (
-    <div className="bg-ground">
-      {rows.map((row, index) => {
-        if (row.kind === 'hunk') {
-          return (
-            <div
-              key={index}
-              style={{ height: ROW_HEIGHT }}
-              className="mono flex items-center gap-3 bg-accent-soft px-2.5 text-[11px] text-accent-ink"
-            >
-              <span className="min-w-0 flex-1 truncate">{row.header}</span>
-            </div>
-          );
-        }
+    <div className="overflow-x-auto bg-ground">
+      <div className={mode === 'unified' ? 'w-max min-w-full' : 'w-full'}>
+        {rows.map((row, index) => {
+          if (row.kind === 'hunk') {
+            return (
+              <div
+                key={index}
+                style={{ minHeight: HUNK_HEIGHT }}
+                className="mono flex items-stretch border-y border-line/60 bg-diff-hunk text-[11px] leading-[28px] text-diff-hunk-text first:border-t-0"
+              >
+                <span
+                  aria-hidden="true"
+                  className={cx(
+                    'shrink-0 border-r border-line/40 bg-diff-hunk-gutter',
+                    mode === 'unified' ? 'w-[88px]' : 'w-11',
+                  )}
+                />
+                <span className="min-w-0 flex-1 truncate px-3" title={row.header}>
+                  {row.header}
+                </span>
+              </div>
+            );
+          }
 
-        if (row.kind === 'unified') {
-          const { line } = row;
-          const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
-          return (
-            <div
-              key={index}
-              style={{ height: ROW_HEIGHT }}
-              className={cx(
-                'mono flex items-stretch text-[11px] leading-none',
-                lineClasses(line.kind),
-              )}
-            >
-              <LineNumber kind={line.kind} value={line.oldLine} />
-              <LineNumber kind={line.kind} value={line.newLine} />
-              <span
+          if (row.kind === 'unified') {
+            const { line } = row;
+            const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
+            return (
+              <div
+                key={index}
+                style={{ height: ROW_HEIGHT }}
                 className={cx(
-                  'flex w-3 shrink-0 items-center justify-center select-none',
-                  signClasses(line.kind),
+                  'mono flex items-stretch text-[12px] leading-[21px]',
+                  lineClasses(line.kind),
                 )}
               >
-                {sign}
-              </span>
-              <span className="min-w-0 flex-1 truncate pr-2 pl-1 text-fg" title={line.text}>
-                {line.text || ' '}
-              </span>
-            </div>
-          );
-        }
-
-        return (
-          <div
-            key={index}
-            style={{ height: ROW_HEIGHT }}
-            className="mono grid grid-cols-2 text-[11px] leading-none"
-          >
-            {(['left', 'right'] as const).map((side) => {
-              const line = side === 'left' ? row.left : row.right;
-              if (!line) {
-                return <div key={side} className={cx('flex', lineClasses('empty'))} />;
-              }
-              const lineNumber = side === 'left' ? line.oldLine : line.newLine;
-              const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
-              return (
-                <div
-                  key={side}
+                <LineNumber kind={line.kind} value={line.oldLine} />
+                <LineNumber kind={line.kind} value={line.newLine} divider />
+                <span
                   className={cx(
-                    'flex min-w-0 items-stretch',
-                    lineClasses(line.kind),
-                    side === 'right' && 'border-l border-line',
+                    'flex w-6 shrink-0 items-center justify-center select-none',
+                    signClasses(line.kind),
                   )}
                 >
-                  <LineNumber kind={line.kind} value={lineNumber} />
-                  <span
+                  {sign}
+                </span>
+                <span className="min-w-0 flex-1 pr-4 pl-1 whitespace-pre [tab-size:2]">
+                  {line.text ? <TokenizedCode text={line.text} language={language} /> : ' '}
+                </span>
+              </div>
+            );
+          }
+
+          return (
+            <div
+              key={index}
+              style={{ height: ROW_HEIGHT }}
+              className="mono grid grid-cols-2 text-[12px] leading-[21px]"
+            >
+              {(['left', 'right'] as const).map((side) => {
+                const line = side === 'left' ? row.left : row.right;
+                if (!line) {
+                  return (
+                    <div
+                      key={side}
+                      className={cx(
+                        'flex min-w-0',
+                        lineClasses('empty'),
+                        side === 'right' && 'border-l border-line',
+                      )}
+                    />
+                  );
+                }
+                const lineNumber = side === 'left' ? line.oldLine : line.newLine;
+                const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
+                return (
+                  <div
+                    key={side}
                     className={cx(
-                      'flex w-3 shrink-0 items-center justify-center select-none',
-                      signClasses(line.kind),
+                      'flex min-w-0 items-stretch overflow-hidden',
+                      lineClasses(line.kind),
+                      side === 'right' && 'border-l border-line',
                     )}
                   >
-                    {sign}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate pr-2 pl-1 text-fg" title={line.text}>
-                    {line.text || ' '}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        );
-      })}
+                    <LineNumber kind={line.kind} value={lineNumber} divider />
+                    <span
+                      className={cx(
+                        'flex w-6 shrink-0 items-center justify-center select-none',
+                        signClasses(line.kind),
+                      )}
+                    >
+                      {sign}
+                    </span>
+                    <span
+                      className="min-w-0 flex-1 overflow-hidden pr-3 pl-1 whitespace-pre [tab-size:2]"
+                      title={line.text}
+                    >
+                      {line.text ? <TokenizedCode text={line.text} language={language} /> : ' '}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
