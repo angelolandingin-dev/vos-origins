@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
+  ArrowDownToLine,
   ArrowDownUp,
   ArrowUpDown,
   ChevronDown,
@@ -31,6 +32,7 @@ import { useApp, useAsyncData } from '../app/context';
 import { ChangeKindIcon } from '../components/ChangeKindIcon';
 import { DiffViewer } from '../components/DiffViewer';
 import { PathLabel } from '../components/PathLabel';
+import { SubsystemSelector } from '../components/SubsystemSelector';
 import { cx } from '../components/ui/cx';
 import { formatDate, formatDateTime } from '../components/ui/format';
 import {
@@ -61,6 +63,7 @@ export function Distribute() {
 
   const [excludedPaths, setExcludedPaths] = useState<string[]>([]);
   const [inspectedPath, setInspectedPath] = useState<string | null>(null);
+  const [diffMode, setDiffMode] = useState<'unified' | 'side'>('unified');
 
   const [message, setMessage] = useState('');
   const [running, setRunning] = useState(false);
@@ -170,11 +173,6 @@ export function Distribute() {
     label: `${branch.name}${branch.isDefault ? ' (default)' : ''}`,
     disabled: !branch.allowed,
     title: branch.allowed ? undefined : (branch.disallowedReason ?? 'Not permitted'),
-  }));
-
-  const subsystemOptions = enabledSubsystems.map((subsystem) => ({
-    value: subsystem.id,
-    label: `${subsystem.name} (${subsystem.sourceBranch})`,
   }));
 
   const resetRunState = () => {
@@ -289,14 +287,14 @@ export function Distribute() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3">
+      <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-2.5">
         <div className="flex items-center gap-2">
           <h1 className="text-[14px] font-semibold text-fg">Distribute</h1>
           <span className="text-[11px] text-muted">
             One trunk commit → one subsystem pull request
           </span>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1.5">
             <span className="text-[11px] text-muted">Trunk</span>
             <Select
@@ -305,22 +303,26 @@ export function Distribute() {
               onValueChange={changeTrunkBranch}
               options={branchOptions}
               disabled={locked || targetBranches.loading || branchOptions.length === 0}
-              className="w-[190px]"
+              className="w-[180px]"
               title={targetBranches.error?.message ?? 'Branch the commit is taken from'}
             />
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] text-muted">Subsystem</span>
-            <Select
-              ariaLabel="Target subsystem"
-              value={subsystemId}
-              onValueChange={changeSubsystem}
-              options={subsystemOptions}
-              disabled={locked || app.subsystems.loading || subsystemOptions.length === 0}
-              className="w-[230px]"
-              title="Subsystem repository that will receive the pull request"
-            />
-          </div>
+          <SubsystemSelector
+            subsystems={enabledSubsystems}
+            selectedId={subsystemId || null}
+            onSelect={changeSubsystem}
+            disabled={locked || app.subsystems.loading || enabledSubsystems.length === 0}
+          />
+          <Button
+            variant="secondary"
+            icon={ArrowDownToLine}
+            loading={app.pullingCheckouts}
+            disabled={locked || app.pullingCheckouts}
+            onClick={() => app.pullLatest(subsystemId || null)}
+            title="Fetch the latest refs for this subsystem and main"
+          >
+            {app.pullingCheckouts ? 'Pulling…' : 'Pull latest'}
+          </Button>
           {targetBranches.error ? (
             <button
               type="button"
@@ -674,13 +676,37 @@ export function Distribute() {
                         <span className="truncate text-[11px] font-medium text-fg">
                           Commit diff: <span className="mono">{inspectedPath}</span>
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => setInspectedPath(null)}
-                          className="text-[11px] text-muted hover:text-fg"
-                        >
-                          Close
-                        </button>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <div
+                            role="group"
+                            aria-label="Diff view mode"
+                            className="flex h-[21px] overflow-hidden rounded-sm border border-line bg-surface"
+                          >
+                            {(['unified', 'side'] as const).map((mode, idx) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => setDiffMode(mode)}
+                                className={cx(
+                                  'px-1.5 text-[10px]',
+                                  idx > 0 && 'border-l border-line',
+                                  diffMode === mode
+                                    ? 'bg-raised font-semibold text-fg'
+                                    : 'text-muted hover:text-fg',
+                                )}
+                              >
+                                {mode === 'unified' ? 'Unified' : 'Split'}
+                              </button>
+                            ))}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setInspectedPath(null)}
+                            className="text-[11px] text-muted hover:text-fg"
+                          >
+                            Close
+                          </button>
+                        </div>
                       </div>
                       <div className="max-h-[260px] overflow-auto rounded-md border border-line bg-surface">
                         <DiffViewer
@@ -688,7 +714,7 @@ export function Distribute() {
                           loading={diffLoading}
                           error={diffError}
                           onRetry={diffQuery.reload}
-                          mode="unified"
+                          mode={diffMode}
                           onOpenExternal={(url) => app.openExternal(url)}
                         />
                       </div>

@@ -1,5 +1,12 @@
 import { useMemo, useState } from 'react';
-import { FileText, GitPullRequestArrow, TriangleAlert } from 'lucide-react';
+import {
+  ArrowDownToLine,
+  FileText,
+  GitPullRequestArrow,
+  RefreshCw,
+  Search,
+  TriangleAlert,
+} from 'lucide-react';
 
 import { api, asApiError } from '../api/invoke';
 import type {
@@ -16,6 +23,7 @@ import { PathLabel } from '../components/PathLabel';
 import { RevertsNewerLine } from '../components/RevertsNewer';
 import { revertsNewerText } from '../components/revertsNewerText';
 import { CommitStatusBadge } from '../components/StatusBadge';
+import { SubsystemSelector } from '../components/SubsystemSelector';
 import { cx } from '../components/ui/cx';
 import { formatDate, formatDateTime } from '../components/ui/format';
 import {
@@ -223,66 +231,112 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
         : 'Every touched commit is already promoted on this branch — nothing left to promote.'
       : `${resolution.commits.length} commit${resolution.commits.length === 1 ? '' : 's'} · ${resolution.excludedPaths.length} pre-excluded`;
 
+  const subsystems = app.subsystems.data ?? [];
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-center justify-between gap-3 px-5 pb-3 pt-4">
+      <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-2.5">
         <div className="min-w-0">
           <h1 className="text-[14px] font-semibold text-fg">Subsystem Diff</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Select
-            ariaLabel="Source subsystem"
-            className="w-[230px]"
-            value={subsystem.id}
-            onValueChange={(next) => app.selectSubsystem(next)}
-            options={(app.subsystems.data ?? []).map((entry) => ({
-              value: entry.id,
-              label: entry.name,
-            }))}
+          <SubsystemSelector
+            subsystems={subsystems}
+            selectedId={subsystem.id}
+            onSelect={(next) => app.selectSubsystem(next)}
           />
-          <Select
-            ariaLabel="Authorized target main-system branch"
-            className="w-[200px]"
-            value={app.targetBranch}
-            onValueChange={(next) => app.setTargetBranch(next)}
-            options={branches.map((branch) => ({
-              value: branch.name,
-              label: `target: ${branch.name}`,
-            }))}
-          />
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted">Target</span>
+            <Select
+              ariaLabel="Authorized target main-system branch"
+              className="w-[180px]"
+              value={app.targetBranch}
+              onValueChange={(next) => app.setTargetBranch(next)}
+              options={branches.map((branch) => ({
+                value: branch.name,
+                label: branch.name,
+              }))}
+            />
+          </div>
+          <Button
+            variant="secondary"
+            icon={ArrowDownToLine}
+            loading={app.pullingCheckouts}
+            disabled={app.pullingCheckouts}
+            onClick={() => app.pullLatest(subsystem.id)}
+            title="Fetch the latest refs for this subsystem and main"
+          >
+            {app.pullingCheckouts ? 'Pulling…' : 'Pull latest'}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={RefreshCw}
+            disabled={diff.loading}
+            onClick={diff.reload}
+            title="Recompute file diff against target branch"
+          >
+            Refresh
+          </Button>
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-3 px-3 pb-3 xl:grid-cols-[minmax(0,1fr)_380px]">
+      <div className="grid min-h-0 flex-1 gap-3 px-3 py-3 xl:grid-cols-[minmax(0,1fr)_380px]">
         <Panel
           className="min-h-0"
           title="Files differing from target"
           subtitle={`${subsystem.repository}@${subsystem.sourceBranch} · target ${app.targetBranch}`}
           bodyClassName="flex min-h-0 flex-1 flex-col"
         >
-          <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-1.5">
-            <input
-              className="input mono h-[25px] min-w-[140px] flex-1 text-[11px]"
-              value={filter}
-              onChange={(event) => setFilter(event.target.value)}
-              placeholder="Filter paths…"
-              aria-label="Filter paths"
-              spellCheck={false}
-              autoComplete="off"
-            />
-            <Select
-              ariaLabel="Bucket filter"
-              className="w-[150px]"
-              value={bucket}
-              onValueChange={(next) => setBucket(next as SubsystemDiffBucket | 'all')}
-              options={[
-                { value: 'all', label: 'All buckets' },
-                { value: 'missing', label: 'Missing' },
-                { value: 'behind', label: 'Behind' },
-                { value: 'main_side_changed', label: 'Main-side changed' },
-                { value: 'identical', label: 'Identical' },
-              ]}
-            />
+          <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
+            <div className="relative min-w-[160px] flex-1">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-disabled"
+                aria-hidden="true"
+              />
+              <input
+                className="input mono h-[25px] pl-8 text-[11px]"
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+                placeholder="Filter paths…"
+                aria-label="Filter paths"
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </div>
+            <div
+              role="group"
+              aria-label="Filter by diff bucket"
+              className="flex h-[25px] overflow-hidden rounded-md border border-line bg-surface"
+            >
+              {(
+                [
+                  { id: 'all', label: 'All', count: entries.length },
+                  { id: 'missing', label: 'Missing', count: counts.missing },
+                  { id: 'behind', label: 'Behind', count: counts.behind },
+                  { id: 'main_side_changed', label: 'Main-side', count: counts.main_side_changed },
+                  { id: 'identical', label: 'Identical', count: counts.identical },
+                ] as const
+              ).map((item, idx) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setBucket(item.id);
+                    if (item.id === 'identical') setHideIdentical(false);
+                  }}
+                  className={cx(
+                    'px-2 text-[11px] tabular-nums transition-colors',
+                    idx > 0 && 'border-l border-line',
+                    bucket === item.id
+                      ? 'bg-raised font-semibold text-fg'
+                      : 'text-muted hover:bg-hover hover:text-fg',
+                  )}
+                >
+                  {item.label} ({item.count})
+                </button>
+              ))}
+            </div>
             <label className="flex items-center gap-1.5 text-[11px] text-muted">
               <Checkbox
                 checked={hideIdentical}
@@ -291,10 +345,6 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
               />
               <span>Hide identical</span>
             </label>
-            <span className="mono ml-auto shrink-0 text-right text-[11px] text-muted tabular-nums">
-              {counts.missing} missing · {counts.behind} behind · {counts.main_side_changed}{' '}
-              main-side · {counts.identical} identical
-            </span>
           </div>
 
           {diff.loading && entries.length === 0 ? (

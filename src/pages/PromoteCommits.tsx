@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { GitPullRequestArrow, Package, TriangleAlert } from 'lucide-react';
+import {
+  ArrowDownToLine,
+  GitPullRequestArrow,
+  Package,
+  RefreshCw,
+  TriangleAlert,
+} from 'lucide-react';
 
 import { api } from '../api/invoke';
 import type {
@@ -11,6 +17,8 @@ import type {
 import { useApp, useAsyncData } from '../app/context';
 import { CommitTable } from '../components/CommitTable';
 import { CommitStatusBadge } from '../components/StatusBadge';
+import { SubsystemSelector } from '../components/SubsystemSelector';
+import { cx } from '../components/ui/cx';
 import {
   Button,
   EmptyState,
@@ -163,37 +171,57 @@ function PromoteCommitsPanel({
   const conflicting = (dependencies.data ?? []).filter((dependency) => dependency.conflict);
   const branches = (app.targetBranches.data?.branches ?? []).filter((branch) => branch.allowed);
 
+  const subsystems = app.subsystems.data ?? [];
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-center justify-between gap-3 px-5 pb-3 pt-4">
+      <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-2.5">
         <div className="min-w-0">
           <h1 className="text-[14px] font-semibold text-fg">Promote Commits</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Select
-            ariaLabel="Source subsystem"
-            className="w-[230px]"
-            value={subsystem.id}
-            onValueChange={(next) => app.selectSubsystem(next)}
-            options={(app.subsystems.data ?? []).map((entry) => ({
-              value: entry.id,
-              label: entry.name,
-            }))}
+          <SubsystemSelector
+            subsystems={subsystems}
+            selectedId={subsystem.id}
+            onSelect={(next) => app.selectSubsystem(next)}
           />
-          <Select
-            ariaLabel="Authorized target main-system branch"
-            className="w-[200px]"
-            value={app.targetBranch}
-            onValueChange={(next) => app.setTargetBranch(next)}
-            options={branches.map((branch) => ({
-              value: branch.name,
-              label: `target: ${branch.name}`,
-            }))}
-          />
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted">Target</span>
+            <Select
+              ariaLabel="Authorized target main-system branch"
+              className="w-[180px]"
+              value={app.targetBranch}
+              onValueChange={(next) => app.setTargetBranch(next)}
+              options={branches.map((branch) => ({
+                value: branch.name,
+                label: branch.name,
+              }))}
+            />
+          </div>
+          <Button
+            variant="secondary"
+            icon={ArrowDownToLine}
+            loading={app.pullingCheckouts}
+            disabled={app.pullingCheckouts}
+            onClick={() => app.pullLatest(subsystem.id)}
+            title="Fetch the latest refs for this subsystem and main"
+          >
+            {app.pullingCheckouts ? 'Pulling…' : 'Pull latest'}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={RefreshCw}
+            disabled={commitPage.loading}
+            onClick={commitPage.reload}
+            title="Reload commits for this branch"
+          >
+            Refresh
+          </Button>
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-3 px-3 pb-3 xl:grid-cols-[minmax(0,1fr)_380px]">
+      <div className="grid min-h-0 flex-1 gap-3 px-3 py-3 xl:grid-cols-[minmax(0,1fr)_380px]">
         <Panel
           className="min-h-0"
           title="Select commits"
@@ -243,20 +271,38 @@ function PromoteCommitsPanel({
                 </KeyValue>
               </dl>
 
-              <label className="block space-y-1.5">
-                <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+              <div className="space-y-1.5">
+                <span className="block text-[11px] font-semibold tracking-wide text-muted uppercase">
                   Mode
                 </span>
-                <Select
-                  ariaLabel="Promotion mode"
-                  value={mode}
-                  onValueChange={(next) => onModeChange(next as PromotionMode)}
-                  options={[
-                    { value: 'individual', label: 'Individual (recommended)' },
-                    { value: 'cumulative', label: 'Cumulative (requires an explicit baseline)' },
-                  ]}
-                />
-              </label>
+                <div
+                  role="group"
+                  aria-label="Promotion mode"
+                  className="grid h-[25px] grid-cols-2 overflow-hidden rounded-md border border-line bg-surface"
+                >
+                  {(
+                    [
+                      { id: 'individual', label: 'Individual' },
+                      { id: 'cumulative', label: 'Cumulative' },
+                    ] as const
+                  ).map((item, idx) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => onModeChange(item.id)}
+                      className={cx(
+                        'px-2.5 text-[11px] transition-colors',
+                        idx > 0 && 'border-l border-line',
+                        mode === item.id
+                          ? 'bg-raised font-semibold text-fg'
+                          : 'text-muted hover:bg-hover hover:text-fg',
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               {app.selectedShas.length === 0 ? (
                 <InlineAlert tone="info" title="No commits selected">

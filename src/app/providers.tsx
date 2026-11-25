@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { listen } from '@tauri-apps/api/event';
 
@@ -152,6 +152,39 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const dismissNotice = useCallback(() => setNotice(null), []);
 
   const bumpDataVersion = useCallback(() => setDataVersion((value) => value + 1), []);
+  const [pullingCheckouts, setPullingCheckouts] = useState(false);
+  const pullingRef = useRef(false);
+
+  const pullLatest = useCallback(
+    (subsystemId?: string | null) => {
+      if (pullingRef.current) return;
+      pullingRef.current = true;
+      setPullingCheckouts(true);
+      const targetId = subsystemId === undefined ? selectedSubsystemId : subsystemId;
+      void api
+        .refreshCheckouts(targetId)
+        .then((result) => {
+          pushNotice({
+            tone: result.failed.length > 0 ? 'warning' : 'success',
+            title: 'Repositories refreshed',
+            message: result.message,
+          });
+          bumpDataVersion();
+        })
+        .catch((error: unknown) => {
+          pushNotice({
+            tone: 'danger',
+            title: 'Refresh failed',
+            message: asApiError(error).message,
+          });
+        })
+        .finally(() => {
+          pullingRef.current = false;
+          setPullingCheckouts(false);
+        });
+    },
+    [selectedSubsystemId, pushNotice, bumpDataVersion],
+  );
 
   const selectSubsystem = useCallback((id: string) => {
     setSelectedSubsystemId(id);
@@ -405,6 +438,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       targetBranches,
       dataVersion,
       bumpDataVersion,
+      pullingCheckouts,
+      pullLatest,
       selectedSubsystemId,
       selectSubsystem,
       selectedSubsystem,
@@ -449,6 +484,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       setTargetBranch,
       dataVersion,
       bumpDataVersion,
+      pullingCheckouts,
+      pullLatest,
       selectedSubsystemId,
       selectSubsystem,
       selectedSubsystem,

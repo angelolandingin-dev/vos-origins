@@ -1,5 +1,12 @@
 import { Fragment, useCallback, useState } from 'react';
-import { ExternalLink, History, RefreshCw, ShieldCheck, TriangleAlert } from 'lucide-react';
+import {
+  ArrowDownToLine,
+  ExternalLink,
+  History,
+  RefreshCw,
+  ShieldCheck,
+  TriangleAlert,
+} from 'lucide-react';
 
 import { api } from '../api/invoke';
 import type { IntegrationPr } from '../api/types';
@@ -106,34 +113,51 @@ export function IntegrationHistory() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex min-h-[50px] flex-wrap items-center gap-3 border-b border-line px-5 py-2">
+      <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-2.5">
         <h1 className="text-[14px] font-semibold text-fg">Integration History</h1>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Select
-            ariaLabel="Target main-system branch"
-            className="w-[200px]"
-            value={app.targetBranch}
-            onValueChange={(next) => app.setTargetBranch(next)}
-            options={branches.map((branch) => ({
-              value: branch.name,
-              label: `branch: ${branch.name}`,
-            }))}
-          />
-          <Select
-            ariaLabel="Filter history by subsystem"
-            className="w-[220px]"
-            value={subsystemFilter}
-            onValueChange={(next) => setSubsystemFilter(next)}
-            options={[
-              { value: 'all', label: 'All subsystems' },
-              ...(app.subsystems.data ?? []).map((subsystem) => ({
-                value: subsystem.id,
-                label: subsystem.name,
-              })),
-            ]}
-          />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted">Branch</span>
+            <Select
+              ariaLabel="Target main-system branch"
+              className="w-[180px]"
+              value={app.targetBranch}
+              onValueChange={(next) => app.setTargetBranch(next)}
+              options={branches.map((branch) => ({
+                value: branch.name,
+                label: branch.name,
+              }))}
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted">Subsystem</span>
+            <Select
+              ariaLabel="Filter history by subsystem"
+              className="w-[210px]"
+              value={subsystemFilter}
+              onValueChange={(next) => setSubsystemFilter(next)}
+              options={[
+                { value: 'all', label: 'All subsystems' },
+                ...(app.subsystems.data ?? []).map((subsystem) => ({
+                  value: subsystem.id,
+                  label: subsystem.name,
+                })),
+              ]}
+            />
+          </div>
           <Button
             variant="secondary"
+            icon={ArrowDownToLine}
+            loading={app.pullingCheckouts}
+            disabled={app.pullingCheckouts}
+            onClick={() => app.pullLatest(subsystemFilter === 'all' ? null : subsystemFilter)}
+            title="Fetch the latest refs for the cached checkouts"
+          >
+            {app.pullingCheckouts ? 'Pulling…' : 'Pull latest'}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             icon={RefreshCw}
             onClick={() => {
               history.reload();

@@ -113,6 +113,8 @@ export interface AppContextValue {
   /** Changing this counter forces every page-level query to refetch. */
   dataVersion: number;
   bumpDataVersion: () => void;
+  pullingCheckouts: boolean;
+  pullLatest: (subsystemId?: string | null) => void;
 
   selectedSubsystemId: string | null;
   selectSubsystem: (id: string) => void;
