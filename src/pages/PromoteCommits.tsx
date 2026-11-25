@@ -5,6 +5,7 @@ import {
   Package,
   RefreshCw,
   TriangleAlert,
+  X,
 } from 'lucide-react';
 
 import { api } from '../api/invoke';
@@ -22,12 +23,15 @@ import { cx } from '../components/ui/cx';
 import {
   Button,
   EmptyState,
+  IconButton,
   InlineAlert,
   KeyValue,
   LoadingState,
-  Panel,
   Select,
+  Spinner,
 } from '../components/ui/primitives';
+import { splitWidthStyle } from '../components/ui/split-pane';
+import { SplitResizer } from '../components/ui/split-resizer';
 
 /** Promote Commits (spec §§3.3/5.1). Hands off to the shared dialog so the integration-PR acknowledgement lives in one place. */
 export function PromoteCommits() {
@@ -36,17 +40,21 @@ export function PromoteCommits() {
 
   if (!subsystem) {
     return (
-      <div className="p-5">
-        <EmptyState
-          icon={GitPullRequestArrow}
-          title="Select a subsystem first"
-          message="Open the Commit Browser and pick the subsystem whose commits you want to promote."
-          action={
-            <Button variant="primary" onClick={() => app.navigate('commit-browser')}>
-              Open Commit Browser
-            </Button>
-          }
-        />
+      <div className="flex h-full min-h-0 flex-1 items-center justify-center p-6">
+        {app.subsystems.loading ? (
+          <LoadingState label="Loading the subsystem registry…" />
+        ) : (
+          <EmptyState
+            icon={GitPullRequestArrow}
+            title="Select a subsystem first"
+            message="Open the Commit Browser and pick the subsystem whose commits you want to promote."
+            action={
+              <Button variant="primary" onClick={() => app.navigate('commit-browser')}>
+                Open Commit Browser
+              </Button>
+            }
+          />
+        )}
       </div>
     );
   }
@@ -108,6 +116,7 @@ function PromoteCommitsPanel({
   onModeChange,
 }: PromoteCommitsPanelProps) {
   const app = useApp();
+  const [splitWidth, setSplitWidth] = useState(680);
   const [pageNumber, setPageNumber] = useState(1);
 
   // Changing any filter restarts paging from the first page.
@@ -212,6 +221,7 @@ function PromoteCommitsPanel({
             variant="ghost"
             size="sm"
             icon={RefreshCw}
+            loading={commitPage.loading}
             disabled={commitPage.loading}
             onClick={commitPage.reload}
             title="Reload commits for this branch"
@@ -221,13 +231,30 @@ function PromoteCommitsPanel({
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-3 px-3 py-3 xl:grid-cols-[minmax(0,1fr)_380px]">
-        <Panel
-          className="min-h-0"
-          title="Select commits"
-          subtitle={`${subsystem.repository}@${subsystem.sourceBranch} · eligible first · target ${app.targetBranch}`}
-          bodyClassName="flex min-h-0 flex-1 flex-col"
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <section
+          aria-label="Select commits"
+          style={splitWidthStyle(splitWidth)}
+          className="flex min-h-0 flex-col border-b border-line bg-surface md:w-[var(--split-width)] md:shrink-0 md:border-r md:border-b-0"
         >
+          <div className="flex items-center justify-between gap-2 border-b border-line bg-raised px-3 py-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h2 className="truncate text-xs font-semibold text-fg">Select commits</h2>
+                {commitPage.loading && listing.length > 0 ? (
+                  <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted">
+                    <Spinner className="h-3 w-3" />
+                    Updating…
+                  </span>
+                ) : null}
+              </div>
+              <p className="mono truncate text-[11px] text-muted">
+                {subsystem.repository}@{subsystem.sourceBranch} · eligible first · target{' '}
+                {app.targetBranch}
+              </p>
+            </div>
+          </div>
+
           <CommitTable
             page={commitPage.data}
             loading={commitPage.loading}
@@ -250,24 +277,44 @@ function PromoteCommitsPanel({
             onPromoteSelected={() => app.openPromotionDialog(app.selectedShas, selectedCommits)}
             onClearSelection={app.clearSelection}
           />
-        </Panel>
+        </section>
 
-        <div className="scroll-area min-h-0 space-y-3">
-          <Panel title="Promotion summary" subtitle={`Selection for ${app.targetBranch}`}>
-            <div className="space-y-3 p-3">
+        <SplitResizer
+          width={splitWidth}
+          onWidthChange={setSplitWidth}
+          label="Resize promote commits panels"
+          min={420}
+          max={1040}
+        />
+
+        <section
+          aria-label="Promotion summary"
+          className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface"
+        >
+          <div className="flex items-center justify-between gap-2 border-b border-line bg-raised px-3 py-2">
+            <div className="min-w-0">
+              <h2 className="truncate text-xs font-semibold text-fg">Promotion summary</h2>
+              <p className="mono truncate text-[11px] text-muted">
+                {app.selectedShas.length} selected · target {app.targetBranch}
+              </p>
+            </div>
+            {app.selectedShas.length > 0 ? (
+              <Button variant="ghost" size="sm" onClick={app.clearSelection}>
+                Clear
+              </Button>
+            ) : null}
+          </div>
+
+          <div className="scroll-area min-h-0 flex-1 divide-y divide-line">
+            <div className="space-y-3 p-3.5">
               <dl className="divide-y divide-line border-y border-line px-1">
-                <KeyValue label="Source subsystem">
-                  <span className="mono text-right">{subsystem.id}</span>
+                <KeyValue label="Source">
+                  <span className="mono text-right">
+                    {subsystem.id} ({subsystem.sourceBranch})
+                  </span>
                 </KeyValue>
-                <KeyValue label="Source branch">
-                  <span className="mono text-right">{subsystem.sourceBranch}</span>
-                </KeyValue>
-                <KeyValue label="Target branch">
+                <KeyValue label="Target">
                   <span className="mono text-right text-accent-ink">{app.targetBranch}</span>
-                </KeyValue>
-                <KeyValue label="Mode">{mode}</KeyValue>
-                <KeyValue label="Selected SHAs">
-                  <span className="mono text-right">{app.selectedShas.length}</span>
                 </KeyValue>
               </dl>
 
@@ -303,11 +350,21 @@ function PromoteCommitsPanel({
                   ))}
                 </div>
               </div>
+            </div>
 
+            <div className="space-y-2 p-3.5">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                  Selected commits
+                </h3>
+                <span className="mono text-[11px] text-muted tabular-nums">
+                  {app.selectedShas.length}
+                </span>
+              </div>
               {app.selectedShas.length === 0 ? (
-                <InlineAlert tone="info" title="No commits selected">
-                  Tick commits in the table.
-                </InlineAlert>
+                <p className="text-[11px] text-muted">
+                  Tick commits in the table to build a promotion.
+                </p>
               ) : (
                 <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
                   {app.selectedShas.map((sha) => {
@@ -316,7 +373,7 @@ function PromoteCommitsPanel({
                       app.promotion.commits.find((candidate) => candidate.sha === sha) ??
                       listing.find((candidate) => candidate.sha === sha);
                     return (
-                      <li key={sha} className="flex h-[29px] items-center gap-2 px-2.5">
+                      <li key={sha} className="row-hover flex h-[29px] items-center gap-2 px-2.5">
                         <span className="mono shrink-0 text-[11px] text-accent-ink" title={sha}>
                           {sha.slice(0, 7)}
                         </span>
@@ -324,30 +381,22 @@ function PromoteCommitsPanel({
                           {commit?.subject ?? ''}
                         </span>
                         {commit ? <CommitStatusBadge status={commit.status} /> : null}
+                        <IconButton
+                          icon={X}
+                          label={`Remove ${sha.slice(0, 7)} from promotion`}
+                          onClick={() => app.toggleSha(sha)}
+                        />
                       </li>
                     );
                   })}
                 </ul>
               )}
-
-              <Button
-                variant="primary"
-                className="w-full"
-                icon={GitPullRequestArrow}
-                disabled={app.selectedShas.length === 0}
-                onClick={() =>
-                  app.openPromotionDialog(app.selectedShas, selectedCommits, {
-                    excludedPaths: app.promotion.excludedPaths,
-                  })
-                }
-              >
-                Continue to confirmation
-              </Button>
             </div>
-          </Panel>
 
-          <Panel title="Dependency review">
-            <div className="space-y-2 p-3">
+            <div className="space-y-2.5 p-3.5">
+              <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                Dependency review
+              </h3>
               {dependencies.loading ? (
                 <LoadingState label="Loading dependency changes…" />
               ) : (dependencies.data ?? []).length === 0 ? (
@@ -390,16 +439,43 @@ function PromoteCommitsPanel({
                 </InlineAlert>
               ) : null}
             </div>
-          </Panel>
-
-          <div className="border-t border-line px-1 pt-2">
-            <p className="text-[11px] leading-relaxed text-muted">
-              Promotion commits locally; pushing is manual.
-            </p>
-            <p className="text-[11px] leading-relaxed text-muted">Status is per target branch.</p>
           </div>
-        </div>
+        </section>
       </div>
+
+      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-raised px-4 py-2">
+        <div className="min-w-0 text-[11px] text-muted">
+          {app.selectedShas.length === 0 ? (
+            <span>
+              Tick commits to promote to <span className="mono">{app.targetBranch}</span>. Promotion
+              commits locally; pushing is manual.
+            </span>
+          ) : (
+            <span className="mono tabular-nums">
+              {app.selectedShas.length} commit{app.selectedShas.length === 1 ? '' : 's'} · {mode} ·
+              target {app.targetBranch}
+              {conflicting.length > 0 ? (
+                <span className="text-status-blocked-ink">
+                  {' '}
+                  · {conflicting.length} conflict{conflicting.length === 1 ? '' : 's'}
+                </span>
+              ) : null}
+            </span>
+          )}
+        </div>
+        <Button
+          variant="primary"
+          icon={GitPullRequestArrow}
+          disabled={app.selectedShas.length === 0}
+          onClick={() =>
+            app.openPromotionDialog(app.selectedShas, selectedCommits, {
+              excludedPaths: app.promotion.excludedPaths,
+            })
+          }
+        >
+          Continue to confirmation
+        </Button>
+      </footer>
     </div>
   );
 }
