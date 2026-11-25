@@ -11,6 +11,7 @@ import {
 import { api, asApiError } from '../api/invoke';
 import type {
   CommitSummary,
+  ReconcileFileAction,
   SubsystemDiffBucket,
   SubsystemDiffCommit,
   SubsystemDiffEntry,
@@ -19,6 +20,7 @@ import type {
 import { useApp, useAsyncData } from '../app/context';
 import { resolveDiffSelection } from '../components/diffResolve';
 import { ChangeKindIcon } from '../components/ChangeKindIcon';
+import { DiffViewer } from '../components/DiffViewer';
 import { PathLabel } from '../components/PathLabel';
 import { RevertsNewerLine } from '../components/RevertsNewer';
 import { revertsNewerText } from '../components/revertsNewerText';
@@ -50,6 +52,12 @@ import { SplitResizer } from '../components/ui/split-resizer';
  */
 
 const HISTORY_LIMIT = 20;
+
+function diffActionFor(entry: SubsystemDiffEntry): ReconcileFileAction {
+  if (entry.bucket === 'missing' || entry.change === 'added') return 'add';
+  if (entry.change === 'deleted') return 'delete';
+  return 'overwrite';
+}
 
 const BUCKET_META: Record<SubsystemDiffBucket, { label: string; dot: string }> = {
   missing: { label: 'Missing', dot: 'bg-status-blocked' },
@@ -115,12 +123,14 @@ export function SubsystemDiff() {
 
 function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
   const app = useApp();
-  const [splitWidth, setSplitWidth] = useState(680);
+  const [splitWidth, setSplitWidth] = useState(560);
   const [filter, setFilter] = useState('');
   const [bucket, setBucket] = useState<SubsystemDiffBucket | 'all'>('all');
   const [hideIdentical, setHideIdentical] = useState(true);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [focused, setFocused] = useState<string | null>(null);
+  const [detailTab, setDetailTab] = useState<'diff' | 'history'>('diff');
+  const [diffMode, setDiffMode] = useState<'unified' | 'side'>('unified');
   const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
   const [historyAll, setHistoryAll] = useState(false);
   const [resolving, setResolving] = useState(false);
@@ -159,6 +169,28 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
   );
   const union = useMemo(() => new Set(resolution.commits), [resolution]);
   const focusedEntry = (focused ? byPath.get(focused) : undefined) ?? null;
+  const fileDiff = useAsyncData(
+    () =>
+      focusedEntry && focusedEntry.bucket !== 'identical'
+        ? api.getReconcileFileDiff(
+            subsystem.id,
+            app.targetBranch,
+            'subsystem_to_main',
+            focusedEntry.path,
+            diffActionFor(focusedEntry),
+          )
+        : Promise.resolve(null),
+    [
+      subsystem.id,
+      app.targetBranch,
+      focusedEntry?.path,
+      focusedEntry?.bucket,
+      focusedEntry?.change,
+      app.dataVersion,
+    ],
+  );
+  const currentFileDiff =
+    focusedEntry && fileDiff.data?.path === focusedEntry.path ? fileDiff.data : null;
   const selectedReverts = useMemo(
     () => visible.filter((entry) => selected.has(entry.path) && entry.revertsNewer),
     [visible, selected],
@@ -438,24 +470,35 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                   return (
                     <li
                       key={entry.path}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => focusPath(entry.path)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          focusPath(entry.path);
+                        }
+                      }}
+                      title={entry.path}
                       className={cx(
-                        'row-hover flex h-[29px] items-center gap-2 px-2.5',
+                        'row-hover flex h-[29px] cursor-pointer items-center gap-2 px-2.5 focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-accent',
                         isFocused && 'row-selected',
                       )}
                     >
-                      <Checkbox
-                        checked={selected.has(entry.path)}
-                        onChange={() => togglePath(entry.path)}
-                        label={`Select ${entry.path} for promotion`}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => focusPath(entry.path)}
-                        title={entry.path}
-                        className="min-w-0 flex-1 text-left"
+                      <span
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                        className="flex shrink-0 items-center"
                       >
+                        <Checkbox
+                          checked={selected.has(entry.path)}
+                          onChange={() => togglePath(entry.path)}
+                          label={`Select ${entry.path} for promotion`}
+                        />
+                      </span>
+                      <div className="min-w-0 flex-1">
                         <PathLabel path={entry.path} />
-                      </button>
+                      </div>
                       {entry.revertsNewer ? (
                         <span title={revertsNewerText(entry.revertsNewer)}>
                           <TriangleAlert
@@ -503,28 +546,159 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
           width={splitWidth}
           onWidthChange={setSplitWidth}
           label="Resize subsystem diff panels"
-          min={420}
-          max={1040}
+          min={380}
+          max={900}
         />
 
         <section
-          aria-label="File detail"
+          aria-label="File diff and detail"
           className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface"
         >
-          <div className="flex items-center justify-between gap-2 border-b border-line bg-raised px-3 py-2">
-            <div className="min-w-0">
-              <h2 className="truncate text-xs font-semibold text-fg">File detail</h2>
-              <p
-                className="mono truncate text-[11px] text-muted"
-                title={focusedEntry ? focusedEntry.path : undefined}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-raised px-3 py-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              {focusedEntry ? (
+                <>
+                  <ChangeKindIcon change={focusedEntry.change} />
+                  <PathLabel path={focusedEntry.path} className="min-w-0 flex-1" />
+                  <BucketMark bucket={focusedEntry.bucket} />
+                </>
+              ) : (
+                <div className="min-w-0">
+                  <h2 className="truncate text-xs font-semibold text-fg">File diff</h2>
+                  <p className="truncate text-[11px] text-muted">
+                    Click a file on the left to view its diff
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex shrink-0 items-center gap-2">
+              <div
+                role="group"
+                aria-label="Detail view"
+                className="flex h-[25px] overflow-hidden rounded-md border border-line bg-surface"
               >
-                {focusedEntry ? focusedEntry.path : 'Select a file to inspect its history'}
-              </p>
+                {(
+                  [
+                    { id: 'diff', label: 'Diff' },
+                    {
+                      id: 'history',
+                      label: focusedEntry ? `History (${focusedEntry.commits.length})` : 'History',
+                    },
+                  ] as const
+                ).map((item, idx) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setDetailTab(item.id)}
+                    className={cx(
+                      'px-2 text-[11px] tabular-nums transition-colors',
+                      idx > 0 && 'border-l border-line',
+                      detailTab === item.id
+                        ? 'bg-raised font-semibold text-fg'
+                        : 'text-muted hover:bg-hover hover:text-fg',
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+
+              {detailTab === 'diff' && focusedEntry && focusedEntry.bucket !== 'identical' ? (
+                <div
+                  role="group"
+                  aria-label="Diff view mode"
+                  className="flex h-[25px] overflow-hidden rounded-md border border-line bg-surface"
+                >
+                  {(
+                    [
+                      { id: 'unified', label: 'Unified' },
+                      { id: 'side', label: 'Split' },
+                    ] as const
+                  ).map((item, idx) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setDiffMode(item.id)}
+                      className={cx(
+                        'px-2 text-[11px] transition-colors',
+                        idx > 0 && 'border-l border-line',
+                        diffMode === item.id
+                          ? 'bg-raised font-semibold text-fg'
+                          : 'text-muted hover:bg-hover hover:text-fg',
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </div>
 
-          <div className="scroll-area min-h-0 flex-1">
-            {focusedEntry ? (
+          {!focusedEntry ? (
+            <EmptyState
+              icon={FileText}
+              title="No file selected"
+              message="Click any file row on the left to inspect its diff against the target branch."
+            />
+          ) : detailTab === 'diff' ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              {fileDiff.loading && currentFileDiff ? (
+                <div
+                  role="progressbar"
+                  aria-label="Refreshing file diff"
+                  className="h-[2px] w-full shrink-0 overflow-hidden bg-accent-soft"
+                >
+                  <div className="h-full w-1/2 animate-pulse bg-accent" />
+                </div>
+              ) : null}
+
+              <div
+                className={cx(
+                  'scroll-area min-h-0 flex-1 transition-opacity',
+                  fileDiff.loading && currentFileDiff && 'opacity-55',
+                )}
+              >
+                {focusedEntry.revertsNewer ? (
+                  <div className="border-b border-line p-2.5">
+                    <InlineAlert tone="warning" title="Reverts newer work">
+                      <RevertsNewerLine warn={focusedEntry.revertsNewer} />
+                    </InlineAlert>
+                  </div>
+                ) : null}
+
+                {focusedEntry.bucket === 'identical' ? (
+                  <EmptyState
+                    icon={FileText}
+                    title="No content differences"
+                    message="The subsystem copy and target branch copy are identical."
+                  />
+                ) : (
+                  <DiffViewer
+                    diff={
+                      currentFileDiff
+                        ? {
+                            language: currentFileDiff.language,
+                            hunks: currentFileDiff.hunks,
+                            binary: currentFileDiff.binary,
+                            truncated: currentFileDiff.truncated,
+                            sourceUrl: '',
+                            note: currentFileDiff.note,
+                          }
+                        : null
+                    }
+                    loading={fileDiff.loading}
+                    error={fileDiff.error}
+                    onRetry={fileDiff.reload}
+                    mode={diffMode}
+                    onOpenExternal={app.openExternal}
+                  />
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="scroll-area min-h-0 flex-1">
               <div className="p-3.5">
                 <FileDetail
                   key={focusedEntry.path}
@@ -536,101 +710,95 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                   onToggleTick={toggleTick}
                 />
               </div>
-            ) : (
-              <EmptyState
-                icon={FileText}
-                title="No file selected"
-                message="Click a file on the left to inspect its latest commit and branch history."
-              />
-            )}
 
-            {resolution.mainSideSelected.length > 0 ||
-            selectedReverts.length > 0 ||
-            resolution.commits.length > 0 ||
-            resolution.excludedPaths.length > 0 ? (
-              <div className="space-y-2.5 border-t border-line p-3.5">
-                {resolution.mainSideSelected.length > 0 ? (
-                  <InlineAlert
-                    tone="warning"
-                    title={`${resolution.mainSideSelected.length} selected path${resolution.mainSideSelected.length === 1 ? ' was' : 's were'} changed in main only`}
-                  >
-                    <p>
-                      No subsystem commit produced main&apos;s copy — the resolved commits are the
-                      subsystem&apos;s own versions, and promoting overwrites main&apos;s copy
-                      (recorded as replaced).
-                    </p>
-                  </InlineAlert>
-                ) : null}
+              {resolution.mainSideSelected.length > 0 ||
+              selectedReverts.length > 0 ||
+              resolution.commits.length > 0 ||
+              resolution.excludedPaths.length > 0 ? (
+                <div className="space-y-2.5 border-t border-line p-3.5">
+                  {resolution.mainSideSelected.length > 0 ? (
+                    <InlineAlert
+                      tone="warning"
+                      title={`${resolution.mainSideSelected.length} selected path${resolution.mainSideSelected.length === 1 ? ' was' : 's were'} changed in main only`}
+                    >
+                      <p>
+                        No subsystem commit produced main&apos;s copy — the resolved commits are the
+                        subsystem&apos;s own versions, and promoting overwrites main&apos;s copy
+                        (recorded as replaced).
+                      </p>
+                    </InlineAlert>
+                  ) : null}
 
-                {selectedReverts.length > 0 ? (
-                  <InlineAlert
-                    tone="warning"
-                    title={`Reverts newer work — ${selectedReverts.length} selected path${selectedReverts.length === 1 ? '' : 's'}`}
-                  >
-                    <div className="space-y-1.5">
-                      {selectedReverts.map((entry) =>
-                        entry.revertsNewer ? (
-                          <div key={entry.path}>
-                            <PathLabel path={entry.path} muted />
-                            <RevertsNewerLine warn={entry.revertsNewer} />
-                          </div>
-                        ) : null,
-                      )}
-                    </div>
-                  </InlineAlert>
-                ) : null}
+                  {selectedReverts.length > 0 ? (
+                    <InlineAlert
+                      tone="warning"
+                      title={`Reverts newer work — ${selectedReverts.length} selected path${selectedReverts.length === 1 ? '' : 's'}`}
+                    >
+                      <div className="space-y-1.5">
+                        {selectedReverts.map((entry) =>
+                          entry.revertsNewer ? (
+                            <div key={entry.path}>
+                              <PathLabel path={entry.path} muted />
+                              <RevertsNewerLine warn={entry.revertsNewer} />
+                            </div>
+                          ) : null,
+                        )}
+                      </div>
+                    </InlineAlert>
+                  ) : null}
 
-                {resolution.commits.length > 0 ? (
-                  <details className="overflow-hidden rounded-md border border-line bg-surface">
-                    <summary className="flex h-[29px] cursor-pointer items-center justify-between gap-2 px-2.5 text-[11px]">
-                      <span className="font-semibold tracking-wide text-muted uppercase">
-                        Resolved commits
-                      </span>
-                      <span className="mono text-muted tabular-nums">
-                        {resolution.commits.length}
-                      </span>
-                    </summary>
-                    <ul className="max-h-32 divide-y divide-line overflow-y-auto border-t border-line">
-                      {resolution.commits.map((sha) => (
-                        <li
-                          key={sha}
-                          className="mono flex h-[29px] items-center truncate px-2.5 text-[11px] text-muted tabular-nums"
-                          title={sha}
-                        >
-                          <span className="truncate">{sha.slice(0, 7)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                ) : null}
-
-                {resolution.excludedPaths.length > 0 ? (
-                  <>
+                  {resolution.commits.length > 0 ? (
                     <details className="overflow-hidden rounded-md border border-line bg-surface">
                       <summary className="flex h-[29px] cursor-pointer items-center justify-between gap-2 px-2.5 text-[11px]">
                         <span className="font-semibold tracking-wide text-muted uppercase">
-                          Pre-excluded
+                          Resolved commits
                         </span>
                         <span className="mono text-muted tabular-nums">
-                          {resolution.excludedPaths.length}
+                          {resolution.commits.length}
                         </span>
                       </summary>
                       <ul className="max-h-32 divide-y divide-line overflow-y-auto border-t border-line">
-                        {resolution.excludedPaths.map((path) => (
-                          <li key={path} className="flex h-[29px] items-center px-2.5">
-                            <PathLabel path={path} className="flex-1 text-[11px]" muted />
+                        {resolution.commits.map((sha) => (
+                          <li
+                            key={sha}
+                            className="mono flex h-[29px] items-center truncate px-2.5 text-[11px] text-muted tabular-nums"
+                            title={sha}
+                          >
+                            <span className="truncate">{sha.slice(0, 7)}</span>
                           </li>
                         ))}
                       </ul>
                     </details>
-                    <p className="text-[11px] leading-relaxed text-muted">
-                      Adjustable in the confirmation dialog — uncheck any path to include it.
-                    </p>
-                  </>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
+                  ) : null}
+
+                  {resolution.excludedPaths.length > 0 ? (
+                    <>
+                      <details className="overflow-hidden rounded-md border border-line bg-surface">
+                        <summary className="flex h-[29px] cursor-pointer items-center justify-between gap-2 px-2.5 text-[11px]">
+                          <span className="font-semibold tracking-wide text-muted uppercase">
+                            Pre-excluded
+                          </span>
+                          <span className="mono text-muted tabular-nums">
+                            {resolution.excludedPaths.length}
+                          </span>
+                        </summary>
+                        <ul className="max-h-32 divide-y divide-line overflow-y-auto border-t border-line">
+                          {resolution.excludedPaths.map((path) => (
+                            <li key={path} className="flex h-[29px] items-center px-2.5">
+                              <PathLabel path={path} className="flex-1 text-[11px]" muted />
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                      <p className="text-[11px] leading-relaxed text-muted">
+                        Adjustable in the confirmation dialog — uncheck any path to include it.
+                      </p>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          )}
         </section>
       </div>
 
