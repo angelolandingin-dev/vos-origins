@@ -27,17 +27,12 @@ import { Button, EmptyState, ErrorState, LoadingState, Select } from '../compone
 export function Reconcile() {
   const app = useApp();
   const [direction, setDirection] = useState<ReconcileDirection>('subsystem_to_main');
-  const [subsystemChoice, setSubsystemChoice] = useState<string | null>(null);
-  const [branchChoice, setBranchChoice] = useState<string | null>(null);
 
   const enabledSubsystems = useMemo(
     () => (app.subsystems.data ?? []).filter((subsystem) => subsystem.enabled),
     [app.subsystems.data],
   );
   const subsystemId = useMemo(() => {
-    if (subsystemChoice && enabledSubsystems.some((s) => s.id === subsystemChoice)) {
-      return subsystemChoice;
-    }
     if (
       app.selectedSubsystem?.enabled &&
       enabledSubsystems.some((s) => s.id === app.selectedSubsystem?.id)
@@ -45,7 +40,7 @@ export function Reconcile() {
       return app.selectedSubsystem.id;
     }
     return enabledSubsystems[0]?.id ?? '';
-  }, [subsystemChoice, enabledSubsystems, app.selectedSubsystem]);
+  }, [enabledSubsystems, app.selectedSubsystem]);
 
   const selectedSubsystem = useMemo(
     () => enabledSubsystems.find((s) => s.id === subsystemId) ?? null,
@@ -53,7 +48,7 @@ export function Reconcile() {
   );
 
   const targetBranches = app.targetBranches;
-  const mainBranch = branchChoice ?? targetBranches.data?.targetBranch ?? '';
+  const mainBranch = app.targetBranch || targetBranches.data?.targetBranch || '';
 
   if (enabledSubsystems.length === 0 && !app.subsystems.loading) {
     return (
@@ -80,7 +75,7 @@ export function Reconcile() {
       subsystemId={subsystemId}
       subsystemName={selectedSubsystem?.name ?? subsystemId}
       subsystems={enabledSubsystems}
-      onSubsystemChange={(next) => setSubsystemChoice(next)}
+      onSubsystemChange={(next) => app.selectSubsystem(next)}
       mainBranch={mainBranch}
       branchOptions={(targetBranches.data?.branches ?? []).map((b) => ({
         value: b.name,
@@ -91,7 +86,7 @@ export function Reconcile() {
       branchesLoading={targetBranches.loading}
       branchesError={targetBranches.error}
       onReloadBranches={targetBranches.reload}
-      onMainBranchChange={(next) => setBranchChoice(next)}
+      onMainBranchChange={(next) => app.setTargetBranch(next)}
     />
   );
 }

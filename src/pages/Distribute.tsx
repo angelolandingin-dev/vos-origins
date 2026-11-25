@@ -53,8 +53,6 @@ import {
 /** Distribute: move one trunk commit's changes into one subsystem via a pull request. */
 export function Distribute() {
   const app = useApp();
-  const [branchChoice, setBranchChoice] = useState<string | null>(null);
-  const [subsystemChoice, setSubsystemChoice] = useState<string | null>(null);
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
@@ -72,16 +70,13 @@ export function Distribute() {
   const [outcome, setOutcome] = useState<DistributionOutcome | null>(null);
 
   const targetBranches = app.targetBranches;
-  const trunkBranch = branchChoice ?? targetBranches.data?.targetBranch ?? '';
+  const trunkBranch = app.targetBranch || targetBranches.data?.targetBranch || '';
 
   const enabledSubsystems = useMemo(
     () => (app.subsystems.data ?? []).filter((subsystem) => subsystem.enabled),
     [app.subsystems.data],
   );
   const subsystemId = useMemo(() => {
-    if (subsystemChoice && enabledSubsystems.some((s) => s.id === subsystemChoice)) {
-      return subsystemChoice;
-    }
     if (
       app.selectedSubsystem?.enabled &&
       enabledSubsystems.some((s) => s.id === app.selectedSubsystem?.id)
@@ -89,7 +84,7 @@ export function Distribute() {
       return app.selectedSubsystem.id;
     }
     return enabledSubsystems[0]?.id ?? '';
-  }, [subsystemChoice, enabledSubsystems, app.selectedSubsystem]);
+  }, [enabledSubsystems, app.selectedSubsystem]);
 
   const selectedSubsystem = useMemo(
     () => enabledSubsystems.find((s) => s.id === subsystemId) ?? null,
@@ -184,7 +179,7 @@ export function Distribute() {
   };
 
   const changeTrunkBranch = (next: string) => {
-    setBranchChoice(next);
+    app.setTargetBranch(next);
     setSelectedSha(null);
     setSearch('');
     setPageNumber(1);
@@ -193,7 +188,7 @@ export function Distribute() {
   };
 
   const changeSubsystem = (next: string) => {
-    setSubsystemChoice(next);
+    app.selectSubsystem(next);
     resetRunState();
   };
 
