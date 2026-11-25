@@ -4,6 +4,7 @@ export type Route =
   | 'subsystem-diff'
   | 'promote-commits'
   | 'distribute'
+  | 'reconcile'
   | 'integration-history'
   | 'settings';
 
@@ -35,6 +36,11 @@ export const NAV_ITEMS: NavItem[] = [
     description: 'Send selected trunk commits down to subsystem pull requests',
   },
   {
+    id: 'reconcile',
+    label: 'Reconcile',
+    description: 'Mirror selected folders between a subsystem and main',
+  },
+  {
     id: 'integration-history',
     label: 'Integration History',
     description: 'Merged, pending, reverted and restored per branch',
@@ -62,6 +68,10 @@ export const ROUTE_META: Record<Route, { title: string; subtitle: string }> = {
   distribute: {
     title: 'Distribute',
     subtitle: 'Send selected trunk commits down to subsystem pull requests',
+  },
+  reconcile: {
+    title: 'Reconcile',
+    subtitle: 'Mirror selected folders between a subsystem and main',
   },
   'integration-history': {
     title: 'Integration History',

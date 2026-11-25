@@ -6,6 +6,7 @@ import { CommitBrowser } from '../pages/CommitBrowser';
 import { IntegrationHistory } from '../pages/IntegrationHistory';
 import { Distribute } from '../pages/Distribute';
 import { PromoteCommits } from '../pages/PromoteCommits';
+import { Reconcile } from '../pages/Reconcile';
 import { Settings } from '../pages/Settings';
 import { SubsystemDiff } from '../pages/SubsystemDiff';
 import { useApp } from './context';
@@ -73,6 +74,7 @@ export default function App() {
         {route === 'subsystem-diff' ? <SubsystemDiff /> : null}
         {route === 'promote-commits' ? <PromoteCommits /> : null}
         {route === 'distribute' ? <Distribute /> : null}
+        {route === 'reconcile' ? <Reconcile /> : null}
         {route === 'integration-history' ? <IntegrationHistory /> : null}
         {route === 'settings' ? <Settings /> : null}
       </AppShell>

@@ -3,6 +3,7 @@ pub mod checkouts;
 pub mod commit_index;
 pub mod engine;
 pub mod live_read;
+pub mod reconcile_scope;
 pub mod registration;
 pub mod registry;
 pub mod subsystem_diff;

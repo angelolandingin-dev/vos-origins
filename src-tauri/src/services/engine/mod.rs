@@ -13,6 +13,7 @@ pub mod history;
 pub mod lockfile;
 pub mod preflight;
 pub mod provenance;
+pub mod reconcile;
 pub mod semver;
 
 use std::collections::HashSet;
@@ -320,7 +321,7 @@ fn delete_vos_sources_refs(repo_dir: &Path) {
     }
 }
 
-fn is_global_match(path: &str, global_files: &[String]) -> bool {
+pub(crate) fn is_global_match(path: &str, global_files: &[String]) -> bool {
     let norm = path.replace('\\', "/");
     for entry in global_files {
         let e = entry.replace('\\', "/");
@@ -339,7 +340,7 @@ fn is_global_match(path: &str, global_files: &[String]) -> bool {
 /// worktree whose path differs from `repo_dir`? `local_direct` refuses the
 /// `update-ref` fast path in that case — moving the ref from here would
 /// desync that worktree.
-fn is_branch_checked_out_elsewhere(repo_dir: &Path, branch: &str) -> bool {
+pub(crate) fn is_branch_checked_out_elsewhere(repo_dir: &Path, branch: &str) -> bool {
     let Ok(out) = git::run(repo_dir, &["worktree", "list", "--porcelain"]) else {
         return false;
     };

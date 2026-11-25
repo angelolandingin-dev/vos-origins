@@ -73,6 +73,10 @@ pub fn build_distribution_message(input: &ProvenanceInput<'_>) -> String {
     build_message_with_prefix("distribute", input)
 }
 
+pub fn build_reconcile_message(input: &ProvenanceInput<'_>) -> String {
+    build_message_with_prefix("reconcile", input)
+}
+
 fn build_message_with_prefix(prefix: &str, input: &ProvenanceInput<'_>) -> String {
     let header = format!(
         "{prefix}({}): {}",

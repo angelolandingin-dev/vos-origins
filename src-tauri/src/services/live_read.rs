@@ -2449,7 +2449,9 @@ fn is_diff_metadata(raw: &str) -> bool {
 /// Parse unified-diff hunk lines into hunks plus `+`/`−` counts. Shared by the
 /// single-file diff and the whole-commit diff so the two can never disagree on
 /// what a hunk is or how many lines it added.
-fn parse_unified_hunks<'a>(lines: impl Iterator<Item = &'a str>) -> (Vec<DiffHunk>, u32, u32) {
+pub(crate) fn parse_unified_hunks<'a>(
+    lines: impl Iterator<Item = &'a str>,
+) -> (Vec<DiffHunk>, u32, u32) {
     let mut hunks: Vec<DiffHunk> = Vec::new();
     let mut current: Option<DiffHunk> = None;
     let mut old_line = 1_u32;
@@ -2526,7 +2528,7 @@ fn parse_unified_hunks<'a>(lines: impl Iterator<Item = &'a str>) -> (Vec<DiffHun
 /// Bound hunks to [`MAX_DIFF_LINES`] total lines across the file, returning
 /// whether anything was dropped. Shared so single-file and whole-commit diffs
 /// bound identically.
-fn bound_hunks(hunks: &mut [DiffHunk]) -> bool {
+pub(crate) fn bound_hunks(hunks: &mut [DiffHunk]) -> bool {
     let mut budget = MAX_DIFF_LINES;
     let mut truncated = false;
     for hunk in hunks.iter_mut() {
@@ -2546,7 +2548,7 @@ fn bound_hunks(hunks: &mut [DiffHunk]) -> bool {
     truncated
 }
 
-fn truncation_note() -> String {
+pub(crate) fn truncation_note() -> String {
     format!("Response bounded at {MAX_DIFF_LINES} lines to keep the window responsive; open the file on GitHub for the rest.")
 }
 

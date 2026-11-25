@@ -413,7 +413,7 @@ fn parse_raw_diff_row(line: &str) -> Option<CommitDelta> {
     })
 }
 
-fn unquote_git_path(raw: &str) -> String {
+pub(crate) fn unquote_git_path(raw: &str) -> String {
     let trimmed = raw.trim();
     if !(trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2) {
         return trimmed.to_string();
@@ -1123,7 +1123,7 @@ fn populate_worktree(
     Ok(commit_sha)
 }
 
-fn prune_empty_parents(file_path: &Path, stop_at: &Path) {
+pub(crate) fn prune_empty_parents(file_path: &Path, stop_at: &Path) {
     let mut current = file_path.parent();
     while let Some(dir) = current {
         if dir == stop_at || !dir.starts_with(stop_at) {
@@ -1136,7 +1136,7 @@ fn prune_empty_parents(file_path: &Path, stop_at: &Path) {
     }
 }
 
-fn committed_paths(worktree: &Path, sha: &str) -> HashSet<String> {
+pub(crate) fn committed_paths(worktree: &Path, sha: &str) -> HashSet<String> {
     let out = git::run(
         worktree,
         &[
@@ -1291,7 +1291,7 @@ fn distribution_body(input: &RunInput<'_>, applied: &[String], deleted: &[String
     body
 }
 
-fn is_lockfile(path: &str) -> bool {
+pub(crate) fn is_lockfile(path: &str) -> bool {
     matches!(
         path.rsplit('/')
             .next()
@@ -1338,13 +1338,13 @@ pub fn tree_index(repo_dir: &Path, rev: &str) -> HashMap<String, TreeEntry> {
     index
 }
 
-fn read_manifest(repo_dir: &Path, rev: &str) -> Value {
+pub(crate) fn read_manifest(repo_dir: &Path, rev: &str) -> Value {
     git::read_blob(repo_dir, rev, "package.json")
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| serde_json::json!({}))
 }
 
-fn imported_names(files: &[CodeFile]) -> HashSet<String> {
+pub(crate) fn imported_names(files: &[CodeFile]) -> HashSet<String> {
     let mut names = HashSet::new();
     for file in files {
         for specifier in deps::extract_import_specifiers(&file.content) {
@@ -1410,7 +1410,7 @@ fn declared(manifest: &Value, name: &str) -> Option<(String, String)> {
     None
 }
 
-fn dependency_plan(
+pub(crate) fn dependency_plan(
     main: &Value,
     child: &Value,
     candidates: &HashSet<String>,
@@ -1464,7 +1464,10 @@ fn dependency_plan(
     plan
 }
 
-fn reconciled_manifest(child: &Value, plan: &[DistributionDependency]) -> AppResult<Value> {
+pub(crate) fn reconciled_manifest(
+    child: &Value,
+    plan: &[DistributionDependency],
+) -> AppResult<Value> {
     let mut manifest = child.clone();
     let Some(root) = manifest.as_object_mut() else {
         return Err(AppError::invalid_request(
@@ -1496,7 +1499,7 @@ fn reconciled_manifest(child: &Value, plan: &[DistributionDependency]) -> AppRes
     Ok(manifest)
 }
 
-fn prerequisite_blockers(
+pub(crate) fn prerequisite_blockers(
     files: &[CodeFile],
     manifest: &Value,
     plan: &[DistributionDependency],

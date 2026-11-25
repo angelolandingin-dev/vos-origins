@@ -713,3 +713,122 @@ export interface DistributionRunRequest {
   excludedPaths?: string[];
   message?: string | null;
 }
+
+/** Bidirectional folder reconciliation (`RECONCILE-DESIGN.md`). */
+export type ReconcileDirection = 'subsystem_to_main' | 'main_to_subsystem';
+
+export type ReconcileNodeKind = 'directory' | 'file';
+
+export interface ReconcileDirectoryNode {
+  kind: ReconcileNodeKind;
+  path: string;
+  name: string;
+  parent: string | null;
+  depth: number;
+  hasChildren: boolean;
+  added: number;
+  modified: number;
+  deleted: number;
+  unchanged: number;
+  totalSourceFiles: number;
+  existsInDest: boolean;
+}
+
+export interface ReconcileTreeSnapshot {
+  direction: ReconcileDirection;
+  subsystemId: string;
+  sourceRepo: string;
+  sourceBranch: string;
+  sourceSha: string;
+  destRepo: string;
+  destBranch: string;
+  destSha: string;
+  directories: ReconcileDirectoryNode[];
+  savedFolders: string[];
+}
+
+export type ReconcileFileAction = 'add' | 'overwrite' | 'delete';
+
+export interface ReconcileFile {
+  path: string;
+  folder: string;
+  action: ReconcileFileAction;
+}
+
+export interface ReconcileSkip {
+  path: string;
+  reason: string;
+}
+
+export interface ReconcilePlan {
+  direction: ReconcileDirection;
+  subsystemId: string;
+  subsystemName: string;
+  sourceRepo: string;
+  sourceBranch: string;
+  sourceSha: string;
+  destRepo: string;
+  destBranch: string;
+  destSha: string;
+  branch: string;
+  delivery: PromotionDelivery;
+  folders: string[];
+  files: ReconcileFile[];
+  unchangedCount: number;
+  skipped: ReconcileSkip[];
+  dependencies: DistributionDependency[];
+  blockers: DistributionBlocker[];
+  warnings: string[];
+}
+
+export interface ReconcilePreviewRequest {
+  subsystemId: string;
+  mainBranch: string;
+  direction: ReconcileDirection;
+  folders: string[];
+  excludedPaths?: string[];
+  delivery?: PromotionDelivery;
+}
+
+export interface ReconcileFileDiff {
+  path: string;
+  action: ReconcileFileAction;
+  language: string;
+  hunks: DiffHunk[];
+  binary: boolean;
+  truncated: boolean;
+  sourceUrl: string | null;
+  note: string | null;
+}
+
+export interface ReconcileRunRequest {
+  subsystemId: string;
+  mainBranch: string;
+  direction: ReconcileDirection;
+  folders: string[];
+  excludedPaths?: string[];
+  delivery?: PromotionDelivery;
+  message?: string | null;
+  confirmationAcknowledged: boolean;
+}
+
+export interface ReconcileOutcome {
+  ok: boolean;
+  direction: ReconcileDirection;
+  subsystemId: string;
+  sourceBranch: string;
+  sourceSha: string;
+  destBranch: string;
+  branch: string;
+  delivery: PromotionDelivery;
+  commitSha: string | null;
+  pullRequest: DistributionPullRequest | null;
+  applied: string[];
+  overwritten: string[];
+  deleted: string[];
+  dependencies: DistributionDependency[];
+  blockers: DistributionBlocker[];
+  warnings: string[];
+  localCommands: string[];
+  message: string | null;
+}
