@@ -11,17 +11,13 @@ import {
 
 import { api, isTauriRuntime } from '../api/invoke';
 import type { CacheStats } from '../api/types';
-import { useApp, useAsyncData } from '../app/context';
-import type { UpdateInfo } from '../app/updater';
-import { currentVersion, findUpdate, installUpdate } from '../app/updater';
+import { useApp, useAsyncData, type SettingsGroup } from '../app/context';
+import { currentVersion, installUpdate } from '../app/updater';
 import { Button, InlineAlert, KeyValue, LoadingState, Panel } from '../components/ui/primitives';
 import { ThemeControl } from '../components/ThemeControl';
 import { formatDateTime } from '../components/ui/format';
 import { RegistryEditor } from '../components/RegistryEditor';
 import { cx } from '../components/ui/cx';
-
-type SettingsGroup =
-  'connection' | 'registry' | 'storage' | 'updates' | 'appearance' | 'diagnostics';
 
 const GROUPS: Array<{ id: SettingsGroup; label: string }> = [
   { id: 'connection', label: 'Connection' },
@@ -37,25 +33,22 @@ export function Settings() {
   const app = useApp();
   const [cacheMessage, setCacheMessage] = useState<string | null>(null);
   const [version, setVersion] = useState<string | null>(null);
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [checked, setChecked] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [percent, setPercent] = useState<number | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const railRef = useRef<HTMLDivElement>(null);
+
+  const update = app.availableUpdate;
+  const checking = app.checkingUpdate;
+  const checked = app.updateChecked;
 
   useEffect(() => {
     void currentVersion().then(setVersion);
   }, []);
 
   const runCheck = async () => {
-    setChecking(true);
     setUpdateError(null);
-    const found = await findUpdate();
-    setUpdate(found);
-    setChecked(true);
-    setChecking(false);
+    await app.checkForUpdates();
   };
 
   const runInstall = async () => {
@@ -119,8 +112,7 @@ export function Settings() {
 
   // Derived, never forced: an unauthenticated tool opens on Diagnostics until the user picks a group.
   const needsAttention = Boolean(status && !status.authenticated);
-  const [groupOverride, setGroupOverride] = useState<SettingsGroup | null>(null);
-  const group: SettingsGroup = groupOverride ?? (needsAttention ? 'diagnostics' : 'connection');
+  const group: SettingsGroup = app.settingsGroup ?? (needsAttention ? 'diagnostics' : 'connection');
 
   // Same roving-focus idiom as the AppShell nav, extended to the vertical axis.
   const onRailKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -182,7 +174,7 @@ export function Settings() {
                   id={`settings-tab-${item.id}`}
                   aria-selected={active}
                   aria-controls={`settings-panel-${item.id}`}
-                  onClick={() => setGroupOverride(item.id)}
+                  onClick={() => app.setSettingsGroup(item.id)}
                   className={cx(
                     'relative flex h-[29px] shrink-0 items-center px-3 text-xs whitespace-nowrap transition-colors focus-visible:-outline-offset-4',
                     active

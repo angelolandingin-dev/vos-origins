@@ -17,8 +17,10 @@ import {
   type AppContextValue,
   type Notice,
   type PromotionState,
+  type SettingsGroup,
 } from './context';
 import type { Route } from './navigation';
+import { findUpdate, type UpdateInfo } from './updater';
 
 const DEFAULT_TARGET_BRANCH = 'staging';
 
@@ -40,6 +42,27 @@ type PromotionInternal = Omit<
 
 export function AppDataProvider({ children }: { children: ReactNode }) {
   const [route, setRoute] = useState<Route>('commit-browser');
+  const [settingsGroup, setSettingsGroup] = useState<SettingsGroup | null>(null);
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
+  const [updateChecked, setUpdateChecked] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  const openSettings = useCallback((group: SettingsGroup) => {
+    setSettingsGroup(group);
+    setRoute('settings');
+  }, []);
+
+  const checkForUpdates = useCallback(async (): Promise<UpdateInfo | null> => {
+    setCheckingUpdate(true);
+    try {
+      const found = await findUpdate();
+      setAvailableUpdate(found);
+      setUpdateChecked(true);
+      return found;
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }, []);
   const [dataVersion, setDataVersion] = useState(0);
   const [selectedSubsystemIdSetting, setSelectedSubsystemId] = useState<string | null>(null);
   const [targetBranchSetting, setTargetBranchState] = useState<string | null>(
@@ -431,6 +454,13 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     () => ({
       route,
       navigate: setRoute,
+      settingsGroup,
+      setSettingsGroup,
+      openSettings,
+      availableUpdate,
+      updateChecked,
+      checkingUpdate,
+      checkForUpdates,
       auth,
       refreshAuth: auth.reload,
       subsystems,
@@ -478,6 +508,12 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     }),
     [
       route,
+      settingsGroup,
+      openSettings,
+      availableUpdate,
+      updateChecked,
+      checkingUpdate,
+      checkForUpdates,
       auth,
       subsystems,
       targetBranches,

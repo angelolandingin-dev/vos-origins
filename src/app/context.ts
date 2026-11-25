@@ -23,6 +23,10 @@ import type {
   TargetBranchList,
 } from '../api/types';
 import type { Route } from './navigation';
+import type { UpdateInfo } from './updater';
+
+export type SettingsGroup =
+  'connection' | 'registry' | 'storage' | 'updates' | 'appearance' | 'diagnostics';
 
 /** No components in this module so Fast Refresh can replace provider and screens independently. */
 
@@ -38,6 +42,7 @@ export interface Notice {
   tone: 'info' | 'success' | 'warning' | 'danger';
   title: string;
   message?: ReactNode;
+  onClick?: () => void;
 }
 
 /**
@@ -103,6 +108,14 @@ export interface PromotionState {
 export interface AppContextValue {
   route: Route;
   navigate: (route: Route) => void;
+  settingsGroup: SettingsGroup | null;
+  setSettingsGroup: (group: SettingsGroup | null) => void;
+  openSettings: (group: SettingsGroup) => void;
+
+  availableUpdate: UpdateInfo | null;
+  updateChecked: boolean;
+  checkingUpdate: boolean;
+  checkForUpdates: () => Promise<UpdateInfo | null>;
 
   auth: AsyncResult<AuthStatus>;
   refreshAuth: () => void;
