@@ -144,7 +144,7 @@ function LineNumber({
   return (
     <span
       className={cx(
-        'flex w-11 shrink-0 items-center justify-end pr-2.5 text-right text-[11px] leading-[21px] text-disabled tabular-nums select-none',
+        'flex w-11 shrink-0 items-start justify-end pr-2.5 text-right text-[11px] leading-[21px] text-disabled tabular-nums select-none',
         gutterClasses(kind),
         divider && 'border-r border-line/40',
       )}
@@ -247,112 +247,107 @@ function DiffRows({
   mode: 'side' | 'unified';
 }) {
   return (
-    <div className="overflow-x-auto bg-ground">
-      <div className={mode === 'unified' ? 'w-max min-w-full' : 'w-full'}>
-        {rows.map((row, index) => {
-          if (row.kind === 'hunk') {
-            return (
-              <div
-                key={index}
-                style={{ minHeight: HUNK_HEIGHT }}
-                className="mono flex items-stretch border-y border-line/60 bg-diff-hunk text-[11px] leading-[28px] text-diff-hunk-text first:border-t-0"
-              >
-                <span
-                  aria-hidden="true"
-                  className={cx(
-                    'shrink-0 border-r border-line/40 bg-diff-hunk-gutter',
-                    mode === 'unified' ? 'w-[88px]' : 'w-11',
-                  )}
-                />
-                <span className="min-w-0 flex-1 truncate px-3" title={row.header}>
-                  {row.header}
-                </span>
-              </div>
-            );
-          }
-
-          if (row.kind === 'unified') {
-            const { line } = row;
-            const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
-            return (
-              <div
-                key={index}
-                style={{ height: ROW_HEIGHT }}
-                className={cx(
-                  'mono flex items-stretch text-[12px] leading-[21px]',
-                  lineClasses(line.kind),
-                )}
-              >
-                <LineNumber kind={line.kind} value={line.oldLine} />
-                <LineNumber kind={line.kind} value={line.newLine} divider />
-                <span
-                  className={cx(
-                    'flex w-6 shrink-0 items-center justify-center select-none',
-                    signClasses(line.kind),
-                  )}
-                >
-                  {sign}
-                </span>
-                <span className="min-w-0 flex-1 pr-4 pl-1 whitespace-pre [tab-size:2]">
-                  {line.text ? <TokenizedCode text={line.text} language={language} /> : ' '}
-                </span>
-              </div>
-            );
-          }
-
+    <div className="w-full bg-ground">
+      {rows.map((row, index) => {
+        if (row.kind === 'hunk') {
           return (
             <div
               key={index}
-              style={{ height: ROW_HEIGHT }}
-              className="mono grid grid-cols-2 text-[12px] leading-[21px]"
+              style={{ minHeight: HUNK_HEIGHT }}
+              className="mono flex items-stretch border-y border-line/60 bg-diff-hunk text-[11px] leading-[28px] text-diff-hunk-text first:border-t-0"
             >
-              {(['left', 'right'] as const).map((side) => {
-                const line = side === 'left' ? row.left : row.right;
-                if (!line) {
-                  return (
-                    <div
-                      key={side}
-                      className={cx(
-                        'flex min-w-0',
-                        lineClasses('empty'),
-                        side === 'right' && 'border-l border-line',
-                      )}
-                    />
-                  );
-                }
-                const lineNumber = side === 'left' ? line.oldLine : line.newLine;
-                const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
+              <span
+                aria-hidden="true"
+                className={cx(
+                  'shrink-0 border-r border-line/40 bg-diff-hunk-gutter',
+                  mode === 'unified' ? 'w-[88px]' : 'w-11',
+                )}
+              />
+              <span className="min-w-0 flex-1 truncate px-3" title={row.header}>
+                {row.header}
+              </span>
+            </div>
+          );
+        }
+
+        if (row.kind === 'unified') {
+          const { line } = row;
+          const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
+          return (
+            <div
+              key={index}
+              style={{ minHeight: ROW_HEIGHT }}
+              className={cx(
+                'mono flex items-stretch text-[12px] leading-[21px]',
+                lineClasses(line.kind),
+              )}
+            >
+              <LineNumber kind={line.kind} value={line.oldLine} />
+              <LineNumber kind={line.kind} value={line.newLine} divider />
+              <span
+                className={cx(
+                  'flex w-6 shrink-0 items-start justify-center leading-[21px] select-none',
+                  signClasses(line.kind),
+                )}
+              >
+                {sign}
+              </span>
+              <span className="min-w-0 flex-1 pr-4 pl-1 break-words whitespace-pre-wrap [tab-size:2]">
+                {line.text ? <TokenizedCode text={line.text} language={language} /> : ' '}
+              </span>
+            </div>
+          );
+        }
+
+        return (
+          <div
+            key={index}
+            style={{ minHeight: ROW_HEIGHT }}
+            className="mono grid grid-cols-2 text-[12px] leading-[21px]"
+          >
+            {(['left', 'right'] as const).map((side) => {
+              const line = side === 'left' ? row.left : row.right;
+              if (!line) {
                 return (
                   <div
                     key={side}
                     className={cx(
-                      'flex min-w-0 items-stretch overflow-hidden',
-                      lineClasses(line.kind),
+                      'flex min-w-0',
+                      lineClasses('empty'),
                       side === 'right' && 'border-l border-line',
                     )}
-                  >
-                    <LineNumber kind={line.kind} value={lineNumber} divider />
-                    <span
-                      className={cx(
-                        'flex w-6 shrink-0 items-center justify-center select-none',
-                        signClasses(line.kind),
-                      )}
-                    >
-                      {sign}
-                    </span>
-                    <span
-                      className="min-w-0 flex-1 overflow-hidden pr-3 pl-1 whitespace-pre [tab-size:2]"
-                      title={line.text}
-                    >
-                      {line.text ? <TokenizedCode text={line.text} language={language} /> : ' '}
-                    </span>
-                  </div>
+                  />
                 );
-              })}
-            </div>
-          );
-        })}
-      </div>
+              }
+              const lineNumber = side === 'left' ? line.oldLine : line.newLine;
+              const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
+              return (
+                <div
+                  key={side}
+                  className={cx(
+                    'flex min-w-0 items-stretch',
+                    lineClasses(line.kind),
+                    side === 'right' && 'border-l border-line',
+                  )}
+                >
+                  <LineNumber kind={line.kind} value={lineNumber} divider />
+                  <span
+                    className={cx(
+                      'flex w-6 shrink-0 items-start justify-center leading-[21px] select-none',
+                      signClasses(line.kind),
+                    )}
+                  >
+                    {sign}
+                  </span>
+                  <span className="min-w-0 flex-1 pr-4 pl-1 break-words whitespace-pre-wrap [tab-size:2]">
+                    {line.text ? <TokenizedCode text={line.text} language={language} /> : ' '}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
     </div>
   );
 }
