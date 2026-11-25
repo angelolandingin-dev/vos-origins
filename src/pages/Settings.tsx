@@ -1,32 +1,58 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import {
+  Copy,
   Download,
   ExternalLink,
+  FolderGit2,
+  HardDrive,
   KeyRound,
+  Palette,
+  Plug,
   RefreshCw,
   ShieldAlert,
   Terminal,
   Trash2,
+  type LucideIcon,
 } from 'lucide-react';
 
 import { api, isTauriRuntime } from '../api/invoke';
 import type { CacheStats } from '../api/types';
 import { useApp, useAsyncData, type SettingsGroup } from '../app/context';
 import { currentVersion, installUpdate } from '../app/updater';
-import { Button, InlineAlert, KeyValue, LoadingState, Panel } from '../components/ui/primitives';
+import { Button, InlineAlert, KeyValue, LoadingState } from '../components/ui/primitives';
 import { ThemeControl } from '../components/ThemeControl';
 import { formatDateTime } from '../components/ui/format';
 import { RegistryEditor } from '../components/RegistryEditor';
 import { cx } from '../components/ui/cx';
 
-const GROUPS: Array<{ id: SettingsGroup; label: string }> = [
-  { id: 'connection', label: 'Connection' },
-  { id: 'registry', label: 'Registry' },
-  { id: 'storage', label: 'Storage' },
-  { id: 'updates', label: 'Updates' },
-  { id: 'appearance', label: 'Appearance' },
-  { id: 'diagnostics', label: 'Diagnostics' },
+const GROUPS: Array<{ id: SettingsGroup; label: string; icon: LucideIcon }> = [
+  { id: 'connection', label: 'Connection', icon: Plug },
+  { id: 'registry', label: 'Registry', icon: FolderGit2 },
+  { id: 'storage', label: 'Storage', icon: HardDrive },
+  { id: 'updates', label: 'Updates', icon: Download },
+  { id: 'appearance', label: 'Appearance', icon: Palette },
+  { id: 'diagnostics', label: 'Diagnostics', icon: Terminal },
 ];
+
+function SectionHeader({
+  title,
+  subtitle,
+  actions,
+}: {
+  title: string;
+  subtitle: string;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-raised px-5 py-3">
+      <div className="min-w-0">
+        <h2 className="truncate text-xs font-semibold text-fg">{title}</h2>
+        <p className="truncate text-[11px] text-muted">{subtitle}</p>
+      </div>
+      {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
+    </div>
+  );
+}
 
 /** Settings (spec §3.3). */
 export function Settings() {
@@ -134,11 +160,17 @@ export function Settings() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex min-h-[50px] flex-wrap items-center gap-3 border-b border-line px-5 py-2">
+      <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-2.5">
         <h1 className="truncate text-[14px] font-semibold text-fg">Settings</h1>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Button variant="secondary" icon={RefreshCw} onClick={app.bumpDataVersion}>
-            Refresh everything
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={RefreshCw}
+            onClick={app.bumpDataVersion}
+            title="Refetch auth status, registry, and cache stats"
+          >
+            Refresh
           </Button>
         </div>
       </header>
@@ -154,7 +186,7 @@ export function Settings() {
       <div className="flex min-h-0 flex-1">
         <nav
           aria-label="Settings"
-          className="w-[250px] shrink-0 overflow-y-auto border-r border-line bg-surface"
+          className="w-[210px] shrink-0 overflow-y-auto border-r border-line bg-surface p-2"
         >
           <div
             ref={railRef}
@@ -162,10 +194,17 @@ export function Settings() {
             aria-label="Settings groups"
             aria-orientation="vertical"
             onKeyDown={onRailKeyDown}
-            className="flex flex-col divide-y divide-line"
+            className="flex flex-col space-y-0.5"
           >
             {GROUPS.map((item) => {
               const active = item.id === group;
+              const Icon = item.icon;
+              const badgeTone =
+                item.id === 'updates' && app.availableUpdate
+                  ? 'bg-accent'
+                  : item.id === 'diagnostics' && needsAttention
+                    ? 'bg-status-unknown'
+                    : null;
               return (
                 <button
                   key={item.id}
@@ -176,17 +215,18 @@ export function Settings() {
                   aria-controls={`settings-panel-${item.id}`}
                   onClick={() => app.setSettingsGroup(item.id)}
                   className={cx(
-                    'relative flex h-[29px] shrink-0 items-center px-3 text-xs whitespace-nowrap transition-colors focus-visible:-outline-offset-4',
+                    'flex h-[29px] shrink-0 items-center gap-2 rounded-md px-2.5 text-xs whitespace-nowrap transition-colors focus-visible:control-focus',
                     active
-                      ? 'font-semibold text-fg'
-                      : 'font-normal text-muted hover:bg-hover hover:text-fg',
+                      ? 'bg-selection font-semibold text-fg'
+                      : 'text-muted hover:bg-hover hover:text-fg',
                   )}
                 >
-                  <span className="truncate">{item.label}</span>
-                  {active ? (
+                  <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
+                  {badgeTone ? (
                     <span
                       aria-hidden="true"
-                      className="absolute inset-y-1 left-0 w-[3px] bg-accent"
+                      className={cx('h-1.5 w-1.5 shrink-0 rounded-full', badgeTone)}
                     />
                   ) : null}
                 </button>
@@ -195,24 +235,31 @@ export function Settings() {
           </div>
         </nav>
 
-        <div className="scroll-area min-h-0 flex-1 p-5">
+        <div className="scroll-area min-h-0 flex-1 bg-surface">
           <section
             role="tabpanel"
             id={`settings-panel-${group}`}
             aria-labelledby={`settings-tab-${group}`}
+            className="min-h-full"
           >
             {group === 'connection' ? (
-              <Panel
-                title="GitHub CLI"
-                subtitle="Uses your existing gh login"
-                actions={
-                  <Button size="sm" variant="secondary" icon={RefreshCw} onClick={app.refreshAuth}>
-                    Re-check
-                  </Button>
-                }
-              >
-                <div className="p-3">
-                  <dl className="rounded-md border border-line bg-raised px-3 py-1">
+              <>
+                <SectionHeader
+                  title="GitHub CLI"
+                  subtitle="Uses your existing gh login"
+                  actions={
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon={RefreshCw}
+                      onClick={app.refreshAuth}
+                    >
+                      Re-check
+                    </Button>
+                  }
+                />
+                <div className="max-w-3xl p-5">
+                  <dl className="divide-y divide-line rounded-md border border-line bg-surface px-3">
                     <KeyValue label="gh installed">{status?.ghInstalled ? 'yes' : 'no'}</KeyValue>
                     <KeyValue label="Version">
                       <span className="mono">{status?.ghVersion ?? '—'}</span>
@@ -247,21 +294,26 @@ export function Settings() {
                     <KeyValue label="Checked at">{formatDateTime(status?.checkedAt)}</KeyValue>
                   </dl>
                 </div>
-              </Panel>
+              </>
             ) : null}
 
-            {group === 'registry' ? <RegistryEditor /> : null}
+            {group === 'registry' ? (
+              <div className="p-4">
+                <RegistryEditor />
+              </div>
+            ) : null}
 
             {group === 'storage' ? (
-              <Panel
-                title="Local cache"
-                subtitle="Disposable and rebuildable — never authoritative"
-              >
-                <div className="space-y-3 p-3">
+              <>
+                <SectionHeader
+                  title="Local cache"
+                  subtitle="Disposable and rebuildable — never authoritative"
+                />
+                <div className="max-w-3xl space-y-4 p-5">
                   {cache.loading && !cache.data ? (
                     <LoadingState label="Reading cache statistics…" />
                   ) : (
-                    <dl className="rounded-md border border-line bg-raised px-3 py-1">
+                    <dl className="divide-y divide-line rounded-md border border-line bg-surface px-3">
                       <KeyValue label="Entries">
                         <span className="mono tabular-nums">
                           {cache.data?.entries ?? 0} / {cache.data?.capacity ?? 0}
@@ -281,7 +333,9 @@ export function Settings() {
                     </dl>
                   )}
 
-                  <p className="truncate text-[11px] text-muted">{cache.data?.note}</p>
+                  {cache.data?.note ? (
+                    <p className="text-[11px] text-muted">{cache.data.note}</p>
+                  ) : null}
 
                   {cacheMessage ? (
                     <InlineAlert tone="success" title="Cache action">
@@ -301,27 +355,28 @@ export function Settings() {
                     </Button>
                   </div>
                 </div>
-              </Panel>
+              </>
             ) : null}
 
             {group === 'updates' ? (
-              <Panel
-                title="Updates"
-                subtitle="Signed releases published on GitHub"
-                actions={
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    icon={RefreshCw}
-                    onClick={() => void runCheck()}
-                    disabled={checking || installing}
-                  >
-                    {checking ? 'Checking…' : 'Check for updates'}
-                  </Button>
-                }
-              >
-                <div className="space-y-3 p-3">
-                  <dl className="rounded-md border border-line bg-raised px-3 py-1">
+              <>
+                <SectionHeader
+                  title="Updates"
+                  subtitle="Signed releases published on GitHub"
+                  actions={
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon={RefreshCw}
+                      onClick={() => void runCheck()}
+                      disabled={checking || installing}
+                    >
+                      {checking ? 'Checking…' : 'Check for updates'}
+                    </Button>
+                  }
+                />
+                <div className="max-w-3xl space-y-4 p-5">
+                  <dl className="divide-y divide-line rounded-md border border-line bg-surface px-3">
                     <KeyValue label="Installed version">
                       <span className="mono">{version ?? '—'}</span>
                     </KeyValue>
@@ -331,13 +386,14 @@ export function Settings() {
                   </dl>
 
                   {update ? (
-                    <div className="space-y-2 rounded-md border border-line bg-raised p-3">
+                    <div className="space-y-2.5 rounded-md border border-line bg-surface p-3.5">
                       <div className="flex items-center justify-between gap-3">
                         <p className="text-xs font-semibold text-fg">
                           Version <span className="mono">{update.version}</span> is available
                         </p>
                         <Button
                           size="sm"
+                          variant="primary"
                           icon={Download}
                           onClick={() => void runInstall()}
                           disabled={installing}
@@ -346,7 +402,7 @@ export function Settings() {
                         </Button>
                       </div>
                       {update.notes ? (
-                        <pre className="mono max-h-[180px] overflow-auto rounded-md border border-line bg-ground p-2 leading-relaxed whitespace-pre-wrap text-muted">
+                        <pre className="mono max-h-[220px] overflow-auto rounded-md border border-line bg-ground p-2.5 leading-relaxed whitespace-pre-wrap text-muted">
                           {update.notes}
                         </pre>
                       ) : null}
@@ -385,19 +441,20 @@ export function Settings() {
                     </InlineAlert>
                   ) : null}
                 </div>
-              </Panel>
+              </>
             ) : null}
 
             {group === 'appearance' ? (
-              <Panel title="Appearance" subtitle="Display and theme">
-                <div className="space-y-3 p-3">
-                  <div className="flex items-center gap-3 rounded-md border border-line bg-raised p-3">
+              <>
+                <SectionHeader title="Appearance" subtitle="Display and theme" />
+                <div className="max-w-3xl space-y-3 p-5">
+                  <div className="flex items-center gap-3 rounded-md border border-line bg-surface p-3">
                     <div className="flex-1">
                       <p className="text-xs font-semibold text-fg">Theme</p>
                     </div>
                     <ThemeControl />
                   </div>
-                  <div className="flex items-center gap-3 rounded-md border border-line bg-raised p-3">
+                  <div className="flex items-center gap-3 rounded-md border border-line bg-surface p-3">
                     <ShieldAlert
                       className="h-4 w-4 shrink-0 text-status-unknown"
                       aria-hidden="true"
@@ -410,45 +467,46 @@ export function Settings() {
                     </div>
                   </div>
                 </div>
-              </Panel>
+              </>
             ) : null}
 
             {group === 'diagnostics' ? (
-              <Panel
-                title="Diagnostics"
-                subtitle="Copy this when reporting a problem"
-                actions={
-                  <>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      icon={ExternalLink}
-                      onClick={() =>
-                        status?.mainRepository &&
-                        app.openExternal(`https://github.com/${status.mainRepository}`)
-                      }
-                      disabled={!status?.mainRepository}
-                    >
-                      Open main repository
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      icon={RefreshCw}
-                      onClick={() => {
-                        void navigator.clipboard?.writeText(diagnostics);
-                        app.pushNotice({
-                          tone: 'success',
-                          title: 'Diagnostics copied to the clipboard',
-                        });
-                      }}
-                    >
-                      Copy diagnostics
-                    </Button>
-                  </>
-                }
-              >
-                <div className="space-y-3 p-3">
+              <>
+                <SectionHeader
+                  title="Diagnostics"
+                  subtitle="Copy this when reporting a problem"
+                  actions={
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={ExternalLink}
+                        onClick={() =>
+                          status?.mainRepository &&
+                          app.openExternal(`https://github.com/${status.mainRepository}`)
+                        }
+                        disabled={!status?.mainRepository}
+                      >
+                        Open main repository
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={Copy}
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(diagnostics);
+                          app.pushNotice({
+                            tone: 'success',
+                            title: 'Diagnostics copied to the clipboard',
+                          });
+                        }}
+                      >
+                        Copy diagnostics
+                      </Button>
+                    </>
+                  }
+                />
+                <div className="max-w-3xl space-y-4 p-5">
                   <pre className="mono max-h-[260px] overflow-auto rounded-md border border-line bg-ground p-3 leading-relaxed whitespace-pre-wrap text-muted">
                     {diagnostics}
                   </pre>
@@ -462,12 +520,12 @@ export function Settings() {
                     </InlineAlert>
                   ) : null}
 
-                  <div className="rounded-md border border-line bg-ground p-3">
+                  <div className="rounded-md border border-line bg-surface p-3">
                     <p className="flex items-center gap-2 text-[11px] font-semibold tracking-wide text-muted uppercase">
                       <Terminal className="h-3.5 w-3.5" aria-hidden="true" />
                       Required setup
                     </p>
-                    <pre className="mono mt-2 whitespace-pre-wrap leading-relaxed text-fg">
+                    <pre className="mono mt-2 leading-relaxed whitespace-pre-wrap text-fg">
                       {`gh auth login --hostname github.com --scopes repo
 gh auth status
 git --version
@@ -480,7 +538,7 @@ npm --version`}
                     </p>
                   </div>
                 </div>
-              </Panel>
+              </>
             ) : null}
           </section>
         </div>
