@@ -1,24 +1,77 @@
-import { ExternalLink, FileCode2, TriangleAlert } from 'lucide-react';
+import { FileCode2, TriangleAlert } from 'lucide-react';
 
 import type { ApiError } from '../api/invoke';
 import type { CommitDiff, DiffHunk, DiffLine } from '../api/types';
-import { tokenizeDiffLine, type SyntaxTokenKind } from './diffSyntax';
+import {
+  applyDiffHighlights,
+  computeInlineDiff,
+  tokenizeDiffLine,
+  type DiffRange,
+  type SyntaxTokenKind,
+} from './diffSyntax';
 import { cx } from './ui/cx';
-import { EmptyState, ErrorState, IconButton, InlineAlert, LoadingState } from './ui/primitives';
+import { EmptyState, ErrorState, InlineAlert, LoadingState } from './ui/primitives';
 
-const ROW_HEIGHT = 21;
-const HUNK_HEIGHT = 28;
+const ROW_HEIGHT = 20;
+const HUNK_HEIGHT = 26;
 
 type Row =
   | { kind: 'hunk'; header: string }
-  | { kind: 'unified'; line: DiffLine }
-  | { kind: 'side'; left?: DiffLine; right?: DiffLine };
+  | { kind: 'unified'; line: DiffLine; highlights?: DiffRange[] }
+  | {
+      kind: 'side';
+      left?: DiffLine;
+      right?: DiffLine;
+      leftHighlights?: DiffRange[];
+      rightHighlights?: DiffRange[];
+    };
 
 function buildUnifiedRows(hunks: DiffHunk[]): Row[] {
   const rows: Row[] = [];
   for (const hunk of hunks) {
     rows.push({ kind: 'hunk', header: hunk.header });
-    for (const line of hunk.lines) rows.push({ kind: 'unified', line });
+    const lines = hunk.lines;
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index];
+      if (!line) break;
+      if (line.kind !== 'removed') {
+        rows.push({ kind: 'unified', line });
+        index += 1;
+        continue;
+      }
+
+      const removed: DiffLine[] = [];
+      const added: DiffLine[] = [];
+      while (index < lines.length && lines[index]?.kind === 'removed') {
+        const next = lines[index];
+        if (!next) break;
+        removed.push(next);
+        index += 1;
+      }
+      while (index < lines.length && lines[index]?.kind === 'added') {
+        const next = lines[index];
+        if (!next) break;
+        added.push(next);
+        index += 1;
+      }
+
+      const pairCount = Math.min(removed.length, added.length);
+      const removedHighlights: Array<DiffRange[] | undefined> = [];
+      const addedHighlights: Array<DiffRange[] | undefined> = [];
+      for (let i = 0; i < pairCount; i += 1) {
+        const inline = computeInlineDiff(removed[i]!.text, added[i]!.text);
+        removedHighlights.push(inline.oldRanges);
+        addedHighlights.push(inline.newRanges);
+      }
+
+      for (let i = 0; i < removed.length; i += 1) {
+        rows.push({ kind: 'unified', line: removed[i]!, highlights: removedHighlights[i] });
+      }
+      for (let i = 0; i < added.length; i += 1) {
+        rows.push({ kind: 'unified', line: added[i]!, highlights: addedHighlights[i] });
+      }
+    }
   }
   return rows;
 }
@@ -57,7 +110,16 @@ function buildSideBySideRows(hunks: DiffHunk[]): Row[] {
       }
       const count = Math.max(removed.length, added.length);
       for (let offset = 0; offset < count; offset += 1) {
-        rows.push({ kind: 'side', left: removed[offset], right: added[offset] });
+        const left = removed[offset];
+        const right = added[offset];
+        const inline = left && right ? computeInlineDiff(left.text, right.text) : null;
+        rows.push({
+          kind: 'side',
+          left,
+          right,
+          leftHighlights: inline?.oldRanges,
+          rightHighlights: inline?.newRanges,
+        });
       }
     }
   }
@@ -119,12 +181,45 @@ function syntaxClasses(kind: SyntaxTokenKind): string {
   }
 }
 
-function TokenizedCode({ text, language }: { text: string; language: string }) {
-  const tokens = tokenizeDiffLine(text, language);
+function TokenizedCode({
+  text,
+  language,
+  lineKind,
+  highlights,
+}: {
+  text: string;
+  language: string;
+  lineKind: DiffLine['kind'];
+  highlights?: DiffRange[];
+}) {
+  const baseTokens = tokenizeDiffLine(text, language);
+  const tokens = highlights?.length ? applyDiffHighlights(baseTokens, highlights) : null;
+  const emphasisClass =
+    lineKind === 'added'
+      ? 'rounded-[2px] bg-diff-add-emphasis'
+      : lineKind === 'removed'
+        ? 'rounded-[2px] bg-diff-del-emphasis'
+        : '';
+
+  if (!tokens) {
+    return (
+      <>
+        {baseTokens.map((token, idx) => (
+          <span key={idx} className={syntaxClasses(token.kind)}>
+            {token.text}
+          </span>
+        ))}
+      </>
+    );
+  }
+
   return (
     <>
       {tokens.map((token, idx) => (
-        <span key={idx} className={syntaxClasses(token.kind)}>
+        <span
+          key={idx}
+          className={cx(syntaxClasses(token.kind), token.emphasized && emphasisClass)}
+        >
           {token.text}
         </span>
       ))}
@@ -144,7 +239,7 @@ function LineNumber({
   return (
     <span
       className={cx(
-        'flex w-11 shrink-0 items-start justify-end pr-2.5 text-right text-[11px] leading-[21px] text-disabled tabular-nums select-none',
+        'flex w-9 shrink-0 items-start justify-end pr-2 text-right text-[11px] leading-[20px] text-disabled tabular-nums select-none',
         gutterClasses(kind),
         divider && 'border-r border-line/40',
       )}
@@ -179,7 +274,7 @@ export function DiffViewer({
   error,
   onRetry,
   mode,
-  onOpenExternal,
+  onOpenExternal: _onOpenExternal,
 }: DiffViewerProps) {
   if (loading && !diff) return <LoadingState label="Fetching the file diff…" />;
   if (error) return <ErrorState error={error} onRetry={onRetry} compact />;
@@ -197,23 +292,11 @@ export function DiffViewer({
 
   return (
     <div className="flex min-h-0 flex-col">
-      <div className="flex h-[28px] shrink-0 items-center gap-2 border-b border-line bg-raised px-3">
-        <span className="min-w-0 truncate text-[11px] font-medium text-muted">{diff.language}</span>
-        <span className="mono shrink-0 text-right text-[11px] text-disabled tabular-nums">
-          {rows.length} rows
-        </span>
-        {diff.binary ? (
-          <span className="shrink-0 text-[11px] text-status-unknown-ink">binary</span>
-        ) : null}
-
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          <IconButton
-            icon={ExternalLink}
-            label="Open this file on GitHub"
-            onClick={() => onOpenExternal(diff.sourceUrl)}
-          />
+      {diff.binary ? (
+        <div className="border-b border-line bg-raised px-3 py-1 text-[11px] text-status-unknown-ink">
+          Binary file ({diff.language})
         </div>
-      </div>
+      ) : null}
 
       {diff.note ? (
         <div className="px-2.5 pt-2">
@@ -254,13 +337,13 @@ function DiffRows({
             <div
               key={index}
               style={{ minHeight: HUNK_HEIGHT }}
-              className="mono flex items-stretch border-y border-line/60 bg-diff-hunk text-[11px] leading-[28px] text-diff-hunk-text first:border-t-0"
+              className="mono flex items-stretch border-y border-line/60 bg-diff-hunk text-[11px] leading-[26px] text-diff-hunk-text first:border-t-0"
             >
               <span
                 aria-hidden="true"
                 className={cx(
                   'shrink-0 border-r border-line/40 bg-diff-hunk-gutter',
-                  mode === 'unified' ? 'w-[88px]' : 'w-11',
+                  mode === 'unified' ? 'w-[72px]' : 'w-9',
                 )}
               />
               <span className="min-w-0 flex-1 truncate px-3" title={row.header}>
@@ -271,14 +354,14 @@ function DiffRows({
         }
 
         if (row.kind === 'unified') {
-          const { line } = row;
+          const { line, highlights } = row;
           const sign = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
           return (
             <div
               key={index}
               style={{ minHeight: ROW_HEIGHT }}
               className={cx(
-                'mono flex items-stretch text-[12px] leading-[21px]',
+                'mono flex items-stretch text-[12px] leading-[20px]',
                 lineClasses(line.kind),
               )}
             >
@@ -286,14 +369,23 @@ function DiffRows({
               <LineNumber kind={line.kind} value={line.newLine} divider />
               <span
                 className={cx(
-                  'flex w-6 shrink-0 items-start justify-center leading-[21px] select-none',
+                  'flex w-4 shrink-0 items-start justify-center leading-[20px] select-none',
                   signClasses(line.kind),
                 )}
               >
                 {sign}
               </span>
-              <span className="min-w-0 flex-1 pr-4 pl-1 break-words whitespace-pre-wrap [tab-size:2]">
-                {line.text ? <TokenizedCode text={line.text} language={language} /> : ' '}
+              <span className="min-w-0 flex-1 pr-3 pl-1 break-words whitespace-pre-wrap [tab-size:2]">
+                {line.text ? (
+                  <TokenizedCode
+                    text={line.text}
+                    language={language}
+                    lineKind={line.kind}
+                    highlights={highlights}
+                  />
+                ) : (
+                  ' '
+                )}
               </span>
             </div>
           );
@@ -303,10 +395,11 @@ function DiffRows({
           <div
             key={index}
             style={{ minHeight: ROW_HEIGHT }}
-            className="mono grid grid-cols-2 text-[12px] leading-[21px]"
+            className="mono grid grid-cols-2 text-[12px] leading-[20px]"
           >
             {(['left', 'right'] as const).map((side) => {
               const line = side === 'left' ? row.left : row.right;
+              const highlights = side === 'left' ? row.leftHighlights : row.rightHighlights;
               if (!line) {
                 return (
                   <div
@@ -333,14 +426,23 @@ function DiffRows({
                   <LineNumber kind={line.kind} value={lineNumber} divider />
                   <span
                     className={cx(
-                      'flex w-6 shrink-0 items-start justify-center leading-[21px] select-none',
+                      'flex w-4 shrink-0 items-start justify-center leading-[20px] select-none',
                       signClasses(line.kind),
                     )}
                   >
                     {sign}
                   </span>
-                  <span className="min-w-0 flex-1 pr-4 pl-1 break-words whitespace-pre-wrap [tab-size:2]">
-                    {line.text ? <TokenizedCode text={line.text} language={language} /> : ' '}
+                  <span className="min-w-0 flex-1 pr-3 pl-1 break-words whitespace-pre-wrap [tab-size:2]">
+                    {line.text ? (
+                      <TokenizedCode
+                        text={line.text}
+                        language={language}
+                        lineKind={line.kind}
+                        highlights={highlights}
+                      />
+                    ) : (
+                      ' '
+                    )}
                   </span>
                 </div>
               );

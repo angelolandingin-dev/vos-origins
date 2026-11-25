@@ -411,3 +411,221 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
 
   return tokens;
 }
+
+export interface DiffRange {
+  start: number;
+  end: number;
+}
+
+export interface HighlightedSyntaxToken extends SyntaxToken {
+  emphasized: boolean;
+}
+
+interface TextSegment {
+  text: string;
+  start: number;
+  end: number;
+}
+
+function segmentDiffLine(text: string): TextSegment[] {
+  const segments: TextSegment[] = [];
+  const pattern = /\s+|[A-Za-z0-9_$]+|./g;
+  let match = pattern.exec(text);
+  while (match !== null) {
+    const value = match[0];
+    segments.push({
+      text: value,
+      start: match.index,
+      end: match.index + value.length,
+    });
+    match = pattern.exec(text);
+  }
+  return segments;
+}
+
+function mergeRanges(ranges: DiffRange[]): DiffRange[] {
+  if (ranges.length <= 1) return ranges;
+  const merged: DiffRange[] = [{ ...ranges[0]! }];
+  for (let i = 1; i < ranges.length; i += 1) {
+    const next = ranges[i]!;
+    const prev = merged[merged.length - 1]!;
+    if (next.start <= prev.end) {
+      prev.end = Math.max(prev.end, next.end);
+    } else {
+      merged.push({ ...next });
+    }
+  }
+  return merged;
+}
+
+function nonWsLength(text: string): number {
+  let count = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch !== ' ' && ch !== '\t') count += 1;
+  }
+  return count;
+}
+
+function rangeChars(ranges: DiffRange[]): number {
+  let sum = 0;
+  for (const r of ranges) sum += r.end - r.start;
+  return sum;
+}
+
+export function computeInlineDiff(
+  oldText: string,
+  newText: string,
+): { oldRanges: DiffRange[]; newRanges: DiffRange[] } {
+  if (oldText === newText) {
+    return { oldRanges: [], newRanges: [] };
+  }
+
+  const oldSegs = segmentDiffLine(oldText);
+  const newSegs = segmentDiffLine(newText);
+
+  let prefix = 0;
+  const minSegs = Math.min(oldSegs.length, newSegs.length);
+  while (prefix < minSegs && oldSegs[prefix]?.text === newSegs[prefix]?.text) {
+    prefix += 1;
+  }
+
+  let oldEnd = oldSegs.length;
+  let newEnd = newSegs.length;
+  while (
+    oldEnd > prefix &&
+    newEnd > prefix &&
+    oldSegs[oldEnd - 1]?.text === newSegs[newEnd - 1]?.text
+  ) {
+    oldEnd -= 1;
+    newEnd -= 1;
+  }
+
+  const oldMid = oldSegs.slice(prefix, oldEnd);
+  const newMid = newSegs.slice(prefix, newEnd);
+
+  let oldRanges: DiffRange[] = [];
+  let newRanges: DiffRange[] = [];
+
+  if (oldMid.length === 0) {
+    if (newMid.length > 0) {
+      newRanges = [{ start: newMid[0]!.start, end: newMid[newMid.length - 1]!.end }];
+    }
+  } else if (newMid.length === 0) {
+    oldRanges = [{ start: oldMid[0]!.start, end: oldMid[oldMid.length - 1]!.end }];
+  } else if (oldMid.length > 120 || newMid.length > 120) {
+    oldRanges = [{ start: oldMid[0]!.start, end: oldMid[oldMid.length - 1]!.end }];
+    newRanges = [{ start: newMid[0]!.start, end: newMid[newMid.length - 1]!.end }];
+  } else {
+    const m = oldMid.length;
+    const n = newMid.length;
+    const cols = n + 1;
+    const dp = new Uint16Array((m + 1) * cols);
+
+    for (let i = m - 1; i >= 0; i -= 1) {
+      for (let j = n - 1; j >= 0; j -= 1) {
+        if (oldMid[i]?.text === newMid[j]?.text) {
+          dp[i * cols + j] = (dp[(i + 1) * cols + (j + 1)] ?? 0) + 1;
+        } else {
+          const down = dp[(i + 1) * cols + j] ?? 0;
+          const right = dp[i * cols + (j + 1)] ?? 0;
+          dp[i * cols + j] = down >= right ? down : right;
+        }
+      }
+    }
+
+    let i = 0;
+    let j = 0;
+    while (i < m && j < n) {
+      if (oldMid[i]?.text === newMid[j]?.text) {
+        i += 1;
+        j += 1;
+      } else if ((dp[(i + 1) * cols + j] ?? 0) >= (dp[i * cols + (j + 1)] ?? 0)) {
+        const seg = oldMid[i]!;
+        oldRanges.push({ start: seg.start, end: seg.end });
+        i += 1;
+      } else {
+        const seg = newMid[j]!;
+        newRanges.push({ start: seg.start, end: seg.end });
+        j += 1;
+      }
+    }
+    while (i < m) {
+      const seg = oldMid[i]!;
+      oldRanges.push({ start: seg.start, end: seg.end });
+      i += 1;
+    }
+    while (j < n) {
+      const seg = newMid[j]!;
+      newRanges.push({ start: seg.start, end: seg.end });
+      j += 1;
+    }
+
+    oldRanges = mergeRanges(oldRanges);
+    newRanges = mergeRanges(newRanges);
+  }
+
+  // Avoid saturating completely rewritten lines with full-width bright emphasis.
+  const oldBase = Math.max(1, nonWsLength(oldText));
+  const newBase = Math.max(1, nonWsLength(newText));
+  if (rangeChars(oldRanges) / oldBase > 0.75 && rangeChars(newRanges) / newBase > 0.75) {
+    return { oldRanges: [], newRanges: [] };
+  }
+
+  return { oldRanges, newRanges };
+}
+
+export function applyDiffHighlights(
+  tokens: SyntaxToken[],
+  ranges: DiffRange[],
+): HighlightedSyntaxToken[] {
+  if (ranges.length === 0) {
+    return tokens.map((token) => ({ ...token, emphasized: false }));
+  }
+
+  const result: HighlightedSyntaxToken[] = [];
+  let offset = 0;
+  let rangeIndex = 0;
+
+  for (const token of tokens) {
+    let cursor = 0;
+    const tokenLen = token.text.length;
+    while (cursor < tokenLen) {
+      const absStart = offset + cursor;
+      const absEnd = offset + tokenLen;
+
+      while (rangeIndex < ranges.length && ranges[rangeIndex]!.end <= absStart) {
+        rangeIndex += 1;
+      }
+
+      const active = ranges[rangeIndex];
+      if (!active || active.start >= absEnd) {
+        result.push({
+          kind: token.kind,
+          text: token.text.slice(cursor),
+          emphasized: false,
+        });
+        cursor = tokenLen;
+      } else if (absStart < active.start) {
+        const splitAt = active.start - offset;
+        result.push({
+          kind: token.kind,
+          text: token.text.slice(cursor, splitAt),
+          emphasized: false,
+        });
+        cursor = splitAt;
+      } else {
+        const splitAt = Math.min(tokenLen, active.end - offset);
+        result.push({
+          kind: token.kind,
+          text: token.text.slice(cursor, splitAt),
+          emphasized: true,
+        });
+        cursor = splitAt;
+      }
+    }
+    offset += tokenLen;
+  }
+
+  return result;
+}

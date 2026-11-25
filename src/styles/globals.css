@@ -76,8 +76,10 @@
    */
   --color-diff-add: var(--diff-add);
   --color-diff-add-line: var(--diff-add-line);
+  --color-diff-add-emphasis: var(--diff-add-emphasis);
   --color-diff-del: var(--diff-del);
   --color-diff-del-line: var(--diff-del-line);
+  --color-diff-del-emphasis: var(--diff-del-emphasis);
   --color-diff-hunk: var(--diff-hunk);
   --color-diff-hunk-gutter: var(--diff-hunk-gutter);
   --color-diff-hunk-text: var(--diff-hunk-text);
@@ -90,11 +92,8 @@
   --color-syntax-entity: var(--syntax-entity);
   --color-syntax-number: var(--syntax-number);
 
-  --font-sans:
-    'Segoe UI Variable Text', 'Segoe UI Variable', system-ui, -apple-system, 'Segoe UI', Roboto,
-    'Helvetica Neue', Arial, sans-serif;
-  --font-mono:
-    'Cascadia Mono', 'Cascadia Code', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 
   --text-badge: 0.5625rem;
   --text-badge--line-height: 1;
@@ -194,8 +193,10 @@
   /* GitHub Desktop (desktop/desktop app/styles/_variables.scss, primer-support@4.0.0). */
   --diff-add: #e6ffed; /* --diff-add-background-color: darken($green-000, 2%) */
   --diff-add-line: #cdffd8; /* --diff-add-gutter-background-color: darken($green-100, 3%) */
+  --diff-add-emphasis: #acf2bd;
   --diff-del: #ffeef0; /* --diff-delete-background-color: $red-000 */
   --diff-del-line: #ffdce0; /* --diff-delete-gutter-background-color: $red-100 */
+  --diff-del-emphasis: #fdb8c0;
   --diff-hunk: #f1f8ff;
   --diff-hunk-gutter: #dbedff;
   --diff-hunk-text: #586069;
@@ -226,7 +227,7 @@
   --active: #383f47;
   --selection: #444d56;
 
-  --text: #e6edf3;
+  --text: #d0d7de;
   --muted: #959da5;
   --disabled: #6e7681;
 
@@ -264,22 +265,24 @@
   --status-unknown-soft: #2f2400;
   --status-unknown-ink: #e3b341;
 
-  /* GitHub Desktop dark (app/styles/themes/_dark.scss) — judged separately from light. */
-  --diff-add: #113a1b; /* darken($green-900, 3%) */
-  --diff-add-line: #0b2612; /* darken($green-900, 8%) */
-  --diff-del: #450c0f; /* darken($red-900, 15%) */
-  --diff-del-line: #30090a; /* darken($red-900, 20%) */
-  --diff-hunk: #2b3137;
-  --diff-hunk-gutter: #24292e;
+  /* GitHub Desktop dark — tuned to keep row washes calm behind inline highlights. */
+  --diff-add: #122d1b;
+  --diff-add-line: #0d2214;
+  --diff-add-emphasis: #225e34;
+  --diff-del: #3c1418;
+  --diff-del-line: #2c0e11;
+  --diff-del-emphasis: #7a232b;
+  --diff-hunk: #262c33;
+  --diff-hunk-gutter: #20252b;
   --diff-hunk-text: #8b949e;
 
-  --syntax-keyword: #ff7b72;
-  --syntax-string: #a5d6ff;
+  --syntax-keyword: #f97583;
+  --syntax-string: #9ecbff;
   --syntax-comment: #8b949e;
-  --syntax-tag: #7ee787;
-  --syntax-attr: #79c0ff;
-  --syntax-entity: #d2a8ff;
-  --syntax-number: #79c0ff;
+  --syntax-tag: #85e89d;
+  --syntax-attr: #79b8ff;
+  --syntax-entity: #b392f0;
+  --syntax-number: #79b8ff;
 }
 
 /* System-following dark theme (only when the user has not chosen explicitly). */
@@ -300,7 +303,7 @@
     --active: #383f47;
     --selection: #444d56;
 
-    --text: #e6edf3;
+    --text: #d0d7de;
     --muted: #959da5;
     --disabled: #6e7681;
 
@@ -338,22 +341,24 @@
     --status-unknown-soft: #2f2400;
     --status-unknown-ink: #e3b341;
 
-    /* GitHub Desktop dark (app/styles/themes/_dark.scss) — judged separately from light. */
-    --diff-add: #113a1b; /* darken($green-900, 3%) */
-    --diff-add-line: #0b2612; /* darken($green-900, 8%) */
-    --diff-del: #450c0f; /* darken($red-900, 15%) */
-    --diff-del-line: #30090a; /* darken($red-900, 20%) */
-    --diff-hunk: #2b3137;
-    --diff-hunk-gutter: #24292e;
+    /* GitHub Desktop dark — tuned to keep row washes calm behind inline highlights. */
+    --diff-add: #122d1b;
+    --diff-add-line: #0d2214;
+    --diff-add-emphasis: #225e34;
+    --diff-del: #3c1418;
+    --diff-del-line: #2c0e11;
+    --diff-del-emphasis: #7a232b;
+    --diff-hunk: #262c33;
+    --diff-hunk-gutter: #20252b;
     --diff-hunk-text: #8b949e;
 
-    --syntax-keyword: #ff7b72;
-    --syntax-string: #a5d6ff;
+    --syntax-keyword: #f97583;
+    --syntax-string: #9ecbff;
     --syntax-comment: #8b949e;
-    --syntax-tag: #7ee787;
-    --syntax-attr: #79c0ff;
-    --syntax-entity: #d2a8ff;
-    --syntax-number: #79c0ff;
+    --syntax-tag: #85e89d;
+    --syntax-attr: #79b8ff;
+    --syntax-entity: #b392f0;
+    --syntax-number: #79b8ff;
   }
 }
 
@@ -494,8 +499,6 @@
     @apply bg-ground font-sans text-fg;
     font-size: 12px;
     line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
     overflow: hidden;
   }
 
