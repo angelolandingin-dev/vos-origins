@@ -418,7 +418,7 @@ export function Modal({
   description?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
 }) {
   const titleId = useId();
   const descriptionId = useId();
@@ -451,6 +451,7 @@ export function Modal({
     sm: 'sm:max-w-[400px]',
     md: 'sm:max-w-[520px]',
     lg: 'sm:max-w-[600px]',
+    xl: 'sm:max-w-[960px]',
   };
 
   return (

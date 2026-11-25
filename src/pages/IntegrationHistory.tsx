@@ -1,8 +1,16 @@
-import { Fragment, useCallback, useState } from 'react';
-import { ExternalLink, History, RefreshCw, ShieldCheck, TriangleAlert } from 'lucide-react';
+import { Fragment, useCallback, useMemo, useState } from 'react';
+import {
+  ArrowDownToLine,
+  ExternalLink,
+  History,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  TriangleAlert,
+} from 'lucide-react';
 
 import { api } from '../api/invoke';
-import type { IntegrationPr } from '../api/types';
+import type { IntegrationHistoryKind, IntegrationPr } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
 import { IntegrationEventAuditPage } from '../components/IntegrationEventAuditPanel';
 import { INTEGRATION_KIND_META } from '../components/integrationKindMeta';
@@ -16,8 +24,8 @@ import {
   IconButton,
   InlineAlert,
   LoadingState,
-  Panel,
   Select,
+  Spinner,
 } from '../components/ui/primitives';
 
 /** Integration History (spec §§3.3/8.3). Pending PRs are never shown as integrated; provenance problems surface. */
@@ -37,6 +45,9 @@ export function IntegrationHistory() {
   const [subsystemFilter, setSubsystemFilter] = useState<string>('all');
   const [limit, setLimit] = useState<number>(HISTORY_LIMITS[0] ?? 50);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [view, setView] = useState<'events' | 'prs'>('events');
+  const [search, setSearch] = useState('');
+  const [kindFilter, setKindFilter] = useState<'all' | IntegrationHistoryKind>('all');
 
   const history = useAsyncData(
     () =>
@@ -63,11 +74,33 @@ export function IntegrationHistory() {
     [app],
   );
 
-  const entries = history.data?.entries ?? [];
+  const entries = useMemo(() => history.data?.entries ?? [], [history.data]);
+  const prsList = useMemo(() => prs.data ?? [], [prs.data]);
   const total = history.data?.total ?? 0;
   const shown = entries.length;
   const selectedEntry =
     entries.find((entry) => entry.id === selectedId && entry.mainCommitSha) ?? null;
+
+  const filteredEntries = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return entries.filter((entry) => {
+      if (kindFilter !== 'all' && entry.kind !== kindFilter) return false;
+      if (!needle) return true;
+      return `${entry.subsystemId} ${entry.detail} ${entry.actor} ${entry.mainCommitSha ?? ''} ${entry.sourceShas.join(' ')} ${entry.pullRequestNumber ?? ''}`
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [entries, kindFilter, search]);
+
+  const filteredPrs = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return prsList;
+    return prsList.filter((pr) =>
+      `${pr.number} ${pr.title} ${pr.subsystemId} ${pr.headBranch} ${pr.author} ${pr.sourceShas.join(' ')}`
+        .toLowerCase()
+        .includes(needle),
+    );
+  }, [prsList, search]);
 
   // Fetched on selection only, keyed by the selected event.
   // The audit replaces the list within the tab while open: selecting a row
@@ -100,41 +133,72 @@ export function IntegrationHistory() {
   const countLine = history.data
     ? shown === total
       ? `${total} event(s)`
-      : `Showing ${shown} of ${total} events`
+      : `Showing ${shown} of ${total}`
     : undefined;
   const capped = limit >= HISTORY_CAP && total > shown;
+  const isRefreshing =
+    (view === 'events' && history.loading && shown > 0) ||
+    (view === 'prs' && prs.loading && prsList.length > 0);
+  const kindEntries = Object.entries(INTEGRATION_KIND_META) as Array<
+    [IntegrationHistoryKind, (typeof INTEGRATION_KIND_META)[IntegrationHistoryKind]]
+  >;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex min-h-[50px] flex-wrap items-center gap-3 border-b border-line px-5 py-2">
-        <h1 className="text-[14px] font-semibold text-fg">Integration History</h1>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Select
-            ariaLabel="Target main-system branch"
-            className="w-[200px]"
-            value={app.targetBranch}
-            onValueChange={(next) => app.setTargetBranch(next)}
-            options={branches.map((branch) => ({
-              value: branch.name,
-              label: `branch: ${branch.name}`,
-            }))}
-          />
-          <Select
-            ariaLabel="Filter history by subsystem"
-            className="w-[220px]"
-            value={subsystemFilter}
-            onValueChange={(next) => setSubsystemFilter(next)}
-            options={[
-              { value: 'all', label: 'All subsystems' },
-              ...(app.subsystems.data ?? []).map((subsystem) => ({
-                value: subsystem.id,
-                label: subsystem.name,
-              })),
-            ]}
-          />
+      <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <h1 className="text-[14px] font-semibold text-fg">Integration History</h1>
+          {selectedBranch ? (
+            <span className="mono hidden truncate text-[11px] text-muted sm:inline">
+              tip {selectedBranch.headSha.slice(0, 7)}
+            </span>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted">Branch</span>
+            <Select
+              ariaLabel="Target main-system branch"
+              className="w-[180px]"
+              value={app.targetBranch}
+              onValueChange={(next) => app.setTargetBranch(next)}
+              options={branches.map((branch) => ({
+                value: branch.name,
+                label: branch.name,
+              }))}
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-muted">Subsystem</span>
+            <Select
+              ariaLabel="Filter history by subsystem"
+              className="w-[210px]"
+              value={subsystemFilter}
+              onValueChange={(next) => setSubsystemFilter(next)}
+              options={[
+                { value: 'all', label: 'All subsystems' },
+                ...(app.subsystems.data ?? []).map((subsystem) => ({
+                  value: subsystem.id,
+                  label: subsystem.name,
+                })),
+              ]}
+            />
+          </div>
           <Button
             variant="secondary"
+            icon={ArrowDownToLine}
+            loading={app.pullingCheckouts}
+            disabled={app.pullingCheckouts}
+            onClick={() => app.pullLatest(subsystemFilter === 'all' ? null : subsystemFilter)}
+            title="Fetch the latest refs for the cached checkouts"
+          >
+            {app.pullingCheckouts ? 'Pulling…' : 'Pull latest'}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             icon={RefreshCw}
+            loading={history.loading || prs.loading}
             onClick={() => {
               history.reload();
               prs.reload();
@@ -146,8 +210,8 @@ export function IntegrationHistory() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
-        {selectedEntry ? (
+      {selectedEntry ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
           <IntegrationEventAuditPage
             entry={selectedEntry}
             audit={visibleAudit}
@@ -158,24 +222,118 @@ export function IntegrationHistory() {
             mainRepository={app.auth.data?.mainRepository ?? null}
             onBack={closeAudit}
           />
-        ) : (
-          <>
-            <InlineAlert
-              tone="info"
-              title="Status comes from reachable Git history — no ledger, no shadow database"
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col bg-surface">
+          <div className="flex flex-wrap items-center gap-2 border-b border-line bg-raised px-3 py-2">
+            <div
+              role="group"
+              aria-label="History view"
+              className="flex h-[25px] overflow-hidden rounded-md border border-line bg-surface"
             >
-              <span className="mono">
-                {app.targetBranch}
-                {selectedBranch ? ` · tip ${selectedBranch.headSha.slice(0, 7)}` : ''}
-              </span>
-            </InlineAlert>
+              {(
+                [
+                  { id: 'events', label: `Events (${shown})` },
+                  { id: 'prs', label: `Pull requests (${prsList.length})` },
+                ] as const
+              ).map((tab, idx) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setView(tab.id)}
+                  className={cx(
+                    'px-2.5 text-[11px] tabular-nums transition-colors',
+                    idx > 0 && 'border-l border-line',
+                    view === tab.id
+                      ? 'bg-raised font-semibold text-fg'
+                      : 'text-muted hover:bg-hover hover:text-fg',
+                  )}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
 
-            <Panel
-              title={`Promotion events on ${app.targetBranch}`}
-              subtitle={countLine}
-              bodyClassName="scroll-area overflow-x-auto"
+            <div className="relative min-w-[200px] flex-1">
+              <Search
+                className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-disabled"
+                aria-hidden="true"
+              />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Filter by SHA, subsystem, detail, or actor…"
+                aria-label="Filter history"
+                className="input pl-8"
+              />
+            </div>
+
+            {view === 'events' ? (
+              <div
+                role="group"
+                aria-label="Filter events by kind"
+                className="flex h-[25px] overflow-hidden rounded-md border border-line bg-surface"
+              >
+                <button
+                  type="button"
+                  onClick={() => setKindFilter('all')}
+                  className={cx(
+                    'px-2 text-[11px] transition-colors',
+                    kindFilter === 'all'
+                      ? 'bg-raised font-semibold text-fg'
+                      : 'text-muted hover:bg-hover hover:text-fg',
+                  )}
+                >
+                  All
+                </button>
+                {kindEntries.map(([id, meta]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setKindFilter(id)}
+                    className={cx(
+                      'border-l border-line px-2 text-[11px] transition-colors',
+                      kindFilter === id
+                        ? 'bg-raised font-semibold text-fg'
+                        : 'text-muted hover:bg-hover hover:text-fg',
+                    )}
+                  >
+                    {meta.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-muted">
+              {isRefreshing ? (
+                <span className="flex items-center gap-1">
+                  <Spinner className="h-3 w-3" />
+                  Updating…
+                </span>
+              ) : null}
+              {countLine ? <span className="mono tabular-nums">{countLine}</span> : null}
+            </div>
+          </div>
+
+          {isRefreshing ? (
+            <div
+              role="progressbar"
+              aria-label="Refreshing integration history"
+              className="h-[2px] w-full shrink-0 overflow-hidden bg-accent-soft"
             >
-              {history.loading && shown === 0 ? (
+              <div className="h-full w-1/2 animate-pulse bg-accent" />
+            </div>
+          ) : null}
+
+          <div
+            className={cx(
+              'scroll-area min-h-0 flex-1 transition-opacity',
+              isRefreshing && 'pointer-events-none opacity-55',
+            )}
+          >
+            {view === 'events' ? (
+              history.loading && shown === 0 ? (
                 <LoadingState label="Loading integration history…" />
               ) : history.error ? (
                 <ErrorState error={history.error} onRetry={history.reload} />
@@ -184,6 +342,23 @@ export function IntegrationHistory() {
                   icon={History}
                   title="No integration events for this branch"
                   message="Promotions appear here after an integration PR is merged."
+                />
+              ) : filteredEntries.length === 0 ? (
+                <EmptyState
+                  icon={Search}
+                  title="No matching events"
+                  message="Clear the search or event-kind filter to see all loaded events."
+                  action={
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setSearch('');
+                        setKindFilter('all');
+                      }}
+                    >
+                      Reset filters
+                    </Button>
+                  }
                 />
               ) : (
                 <>
@@ -197,30 +372,30 @@ export function IntegrationHistory() {
                     </InlineAlert>
                   ) : null}
                   <table className="w-full border-separate border-spacing-0 text-xs">
-                    <thead>
+                    <thead className="sticky top-0 z-10">
                       <tr className="table-head">
-                        <th scope="col" className="py-2 pl-4 text-left">
+                        <th scope="col" className="border-b border-line py-2 pl-4 text-left">
                           Event
                         </th>
-                        <th scope="col" className="py-2 pr-3 text-left">
+                        <th scope="col" className="border-b border-line py-2 pr-3 text-left">
                           Subsystem
                         </th>
-                        <th scope="col" className="py-2 pr-3 text-left">
+                        <th scope="col" className="border-b border-line py-2 pr-3 text-left">
                           Source SHA(s)
                         </th>
-                        <th scope="col" className="py-2 pr-3 text-left">
+                        <th scope="col" className="border-b border-line py-2 pr-3 text-left">
                           Main commit / PR
                         </th>
-                        <th scope="col" className="py-2 pr-3 text-left">
+                        <th scope="col" className="border-b border-line py-2 pr-3 text-left">
                           Detail
                         </th>
-                        <th scope="col" className="py-2 pr-4 text-right">
+                        <th scope="col" className="border-b border-line py-2 pr-4 text-right">
                           When
                         </th>
                       </tr>
                     </thead>
                     <tbody>
-                      {entries.map((entry) => {
+                      {filteredEntries.map((entry) => {
                         const auditable = entry.mainCommitSha != null;
                         const selected = selectedId === entry.id;
                         const select = () => setSelectedId(entry.id);
@@ -247,7 +422,7 @@ export function IntegrationHistory() {
                               selected && 'bg-selection',
                             )}
                           >
-                            <td className="py-2.5 pl-4">
+                            <td className="border-b border-line py-2.5 pl-4">
                               <StatusBadge
                                 kind={INTEGRATION_KIND_META[entry.kind].kind}
                                 label={INTEGRATION_KIND_META[entry.kind].label}
@@ -258,9 +433,11 @@ export function IntegrationHistory() {
                                 </span>
                               ) : null}
                             </td>
-                            <td className="truncate py-2.5 pr-3 text-fg">{entry.subsystemId}</td>
+                            <td className="truncate border-b border-line py-2.5 pr-3 text-fg">
+                              {entry.subsystemId}
+                            </td>
                             <td
-                              className="mono truncate py-2.5 pr-3 text-muted tabular-nums"
+                              className="mono truncate border-b border-line py-2.5 pr-3 text-muted tabular-nums"
                               title={entry.sourceShas.join('\n')}
                             >
                               {entry.sourceShas.length === 0
@@ -282,7 +459,7 @@ export function IntegrationHistory() {
                                     </Fragment>
                                   ))}
                             </td>
-                            <td className="py-2.5 pr-3">
+                            <td className="border-b border-line py-2.5 pr-3">
                               {entry.mainCommitSha ? (
                                 <span className="mono block text-muted tabular-nums">
                                   {entry.mainCommitSha.slice(0, 7)}
@@ -308,12 +485,12 @@ export function IntegrationHistory() {
                               )}
                             </td>
                             <td
-                              className="max-w-[38ch] truncate py-2.5 pr-3 text-muted"
+                              className="max-w-[38ch] truncate border-b border-line py-2.5 pr-3 text-muted"
                               title={entry.detail}
                             >
                               {entry.detail}
                             </td>
-                            <td className="mono py-2.5 pr-4 text-right whitespace-nowrap text-muted tabular-nums">
+                            <td className="mono border-b border-line py-2.5 pr-4 text-right whitespace-nowrap text-muted tabular-nums">
                               {formatDateTime(entry.occurredAt)}
                               <span className="block truncate text-[11px] text-disabled">
                                 {entry.actor}
@@ -325,7 +502,7 @@ export function IntegrationHistory() {
                     </tbody>
                   </table>
                   {shown < total ? (
-                    <div className="flex justify-center border-t border-line px-4 py-2">
+                    <div className="flex justify-center border-b border-line px-4 py-2">
                       <Button
                         size="sm"
                         variant="secondary"
@@ -342,71 +519,72 @@ export function IntegrationHistory() {
                     </div>
                   ) : null}
                 </>
-              )}
-            </Panel>
-
-            <Panel
-              title="Integration pull requests"
-              subtitle="Open, merged and closed integration PRs whose base is the selected branch"
-            >
-              {prs.loading && (prs.data?.length ?? 0) === 0 ? (
-                <LoadingState label="Loading pull requests…" />
-              ) : prs.error ? (
-                <ErrorState error={prs.error} onRetry={prs.reload} />
-              ) : (prs.data?.length ?? 0) === 0 ? (
-                <EmptyState
-                  icon={ShieldCheck}
-                  title="No integration PRs for this branch"
-                  message="Integration PRs created by this tool appear here."
-                />
-              ) : (
-                <ul className="divide-y divide-line">
-                  {(prs.data ?? []).map((pr) => (
-                    <li key={pr.number} className="space-y-1.5 px-4 py-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {prStateBadge(pr)}
-                        <span className="mono text-right text-fg tabular-nums">#{pr.number}</span>
-                        <span className="min-w-0 flex-1 truncate text-xs text-fg">{pr.title}</span>
-                        <span className="meta">{pr.subsystemId}</span>
-                        <span className="mono truncate text-disabled">base {pr.baseBranch}</span>
-                        <IconButton
-                          icon={ExternalLink}
-                          label={`Open PR #${pr.number}`}
-                          onClick={() => app.openExternal(pr.htmlUrl)}
-                        />
-                      </div>
-                      <p className="mono truncate text-disabled tabular-nums">
-                        {pr.headBranch} · source{' '}
-                        {pr.sourceShas.map((sha) => sha.slice(0, 7)).join(', ')} · {pr.author} ·{' '}
-                        {formatDateTime(pr.updatedAt)}
-                        {pr.mergedAt
-                          ? ` · merged ${formatDateTime(pr.mergedAt)} by ${pr.mergedBy ?? 'unknown'}`
-                          : ''}
+              )
+            ) : prs.loading && prsList.length === 0 ? (
+              <LoadingState label="Loading pull requests…" />
+            ) : prs.error ? (
+              <ErrorState error={prs.error} onRetry={prs.reload} />
+            ) : prsList.length === 0 ? (
+              <EmptyState
+                icon={ShieldCheck}
+                title="No integration PRs for this branch"
+                message="Integration PRs created by this tool appear here."
+              />
+            ) : filteredPrs.length === 0 ? (
+              <EmptyState
+                icon={Search}
+                title="No matching pull requests"
+                message="Clear the search filter to see all loaded integration pull requests."
+                action={
+                  <Button size="sm" onClick={() => setSearch('')}>
+                    Clear search
+                  </Button>
+                }
+              />
+            ) : (
+              <ul className="divide-y divide-line">
+                {filteredPrs.map((pr) => (
+                  <li key={pr.number} className="space-y-1.5 px-4 py-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {prStateBadge(pr)}
+                      <span className="mono text-right text-fg tabular-nums">#{pr.number}</span>
+                      <span className="min-w-0 flex-1 truncate text-xs text-fg">{pr.title}</span>
+                      <span className="meta">{pr.subsystemId}</span>
+                      <span className="mono truncate text-disabled">base {pr.baseBranch}</span>
+                      <IconButton
+                        icon={ExternalLink}
+                        label={`Open PR #${pr.number}`}
+                        onClick={() => app.openExternal(pr.htmlUrl)}
+                      />
+                    </div>
+                    <p className="mono truncate text-disabled tabular-nums">
+                      {pr.headBranch} · source{' '}
+                      {pr.sourceShas.map((sha) => sha.slice(0, 7)).join(', ')} · {pr.author} ·{' '}
+                      {formatDateTime(pr.updatedAt)}
+                      {pr.mergedAt
+                        ? ` · merged ${formatDateTime(pr.mergedAt)} by ${pr.mergedBy ?? 'unknown'}`
+                        : ''}
+                    </p>
+                    {!pr.provenanceOk ? (
+                      <p
+                        className={cx(
+                          'flex items-start gap-2 rounded-md border border-status-unknown/40 bg-status-unknown-soft px-2.5 py-2 text-[11px] text-status-unknown-ink',
+                        )}
+                      >
+                        <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        <span className="truncate">
+                          <span className="font-semibold">Provenance integrity:</span>{' '}
+                          {pr.provenanceNote}
+                        </span>
                       </p>
-                      {!pr.provenanceOk ? (
-                        <p
-                          className={cx(
-                            'flex items-start gap-2 rounded-md border border-status-unknown/40 bg-status-unknown-soft px-2.5 py-2 text-[11px] text-status-unknown-ink',
-                          )}
-                        >
-                          <TriangleAlert
-                            className="mt-0.5 h-3.5 w-3.5 shrink-0"
-                            aria-hidden="true"
-                          />
-                          <span className="truncate">
-                            <span className="font-semibold">Provenance integrity:</span>{' '}
-                            {pr.provenanceNote}
-                          </span>
-                        </p>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Panel>
-          </>
-        )}
-      </div>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

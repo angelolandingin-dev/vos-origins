@@ -12,11 +12,13 @@ export function SubsystemSelector({
   selectedId,
   onSelect,
   counts,
+  disabled = false,
 }: {
   subsystems: SubsystemSummary[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   counts?: Record<string, number>;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -32,10 +34,17 @@ export function SubsystemSelector({
   }, [open]);
 
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen} modal={false}>
+    <PopoverPrimitive.Root
+      open={disabled ? false : open}
+      onOpenChange={(next) => {
+        if (!disabled) setOpen(next);
+      }}
+      modal={false}
+    >
       <PopoverPrimitive.Trigger asChild>
         <button
           type="button"
+          disabled={disabled}
           aria-label="Select subsystem"
           aria-haspopup="listbox"
           aria-expanded={open}
@@ -43,6 +52,7 @@ export function SubsystemSelector({
           className={cx(
             'inline-flex h-[25px] max-w-full items-center gap-1.5 rounded-md border border-line-strong bg-surface px-2 text-xs text-fg transition-colors',
             'hover:bg-hover focus-visible:border-accent focus-visible:outline-none',
+            'disabled:cursor-not-allowed disabled:opacity-60',
           )}
         >
           {connectivity ? (

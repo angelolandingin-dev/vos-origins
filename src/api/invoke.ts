@@ -20,6 +20,14 @@ import type {
   DistributionPlan,
   DistributionPreviewRequest,
   DistributionRunRequest,
+  ReconcileDirection,
+  ReconcileFileAction,
+  ReconcileFileDiff,
+  ReconcileOutcome,
+  ReconcilePlan,
+  ReconcilePreviewRequest,
+  ReconcileRunRequest,
+  ReconcileTreeSnapshot,
   TrunkCommit,
   PromotionDispatchResult,
   PromotionPreflight,
@@ -163,6 +171,40 @@ export const api = {
 
   runDistribution: (request: DistributionRunRequest) =>
     call<DistributionOutcome>('run_distribution', { request }),
+
+  getReconcileScope: (subsystemId: string) =>
+    call<string[]>('get_reconcile_scope', { subsystemId }),
+
+  saveReconcileScope: (subsystemId: string, folders: string[]) =>
+    call<string[]>('save_reconcile_scope', { subsystemId, folders }),
+
+  inspectReconcileTree: (subsystemId: string, mainBranch: string, direction: ReconcileDirection) =>
+    call<ReconcileTreeSnapshot>('inspect_reconcile_tree', {
+      subsystemId,
+      mainBranch,
+      direction,
+    }),
+
+  previewReconcile: (request: ReconcilePreviewRequest) =>
+    call<ReconcilePlan>('preview_reconcile', { request }),
+
+  getReconcileFileDiff: (
+    subsystemId: string,
+    mainBranch: string,
+    direction: ReconcileDirection,
+    path: string,
+    action: ReconcileFileAction,
+  ) =>
+    call<ReconcileFileDiff>('get_reconcile_file_diff', {
+      subsystemId,
+      mainBranch,
+      direction,
+      path,
+      action,
+    }),
+
+  runReconcile: (request: ReconcileRunRequest) =>
+    call<ReconcileOutcome>('run_reconcile', { request }),
 
   listIntegrationPrs: (targetBranch: string, subsystemId: string | null) =>
     call<IntegrationPr[]>('list_integration_prs', { targetBranch, subsystemId }),

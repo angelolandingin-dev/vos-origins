@@ -423,11 +423,28 @@ export function AppShell({
 
       {notice ? (
         <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex justify-end">
-          <div className="pointer-events-auto flex max-w-[20rem] items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2 text-xs text-fg animate-fade-in">
-            <p className="min-w-0 flex-1 truncate" title={notice.title}>
-              <span className="font-semibold">{notice.title}</span>
-              {notice.message ? <span className="text-muted"> — {notice.message}</span> : null}
-            </p>
+          <div
+            className={cx(
+              'pointer-events-auto flex max-w-[20rem] items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2 text-xs text-fg animate-fade-in',
+              notice.onClick && 'transition-colors hover:border-accent/60',
+            )}
+          >
+            {notice.onClick ? (
+              <button
+                type="button"
+                onClick={notice.onClick}
+                className="min-w-0 flex-1 cursor-pointer truncate text-left hover:underline"
+                title={notice.title}
+              >
+                <span className="font-semibold">{notice.title}</span>
+                {notice.message ? <span className="text-muted"> — {notice.message}</span> : null}
+              </button>
+            ) : (
+              <p className="min-w-0 flex-1 truncate" title={notice.title}>
+                <span className="font-semibold">{notice.title}</span>
+                {notice.message ? <span className="text-muted"> — {notice.message}</span> : null}
+              </p>
+            )}
             <IconButton icon={X} label="Dismiss message" onClick={onDismissNotice} />
           </div>
         </div>

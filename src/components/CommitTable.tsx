@@ -271,7 +271,22 @@ export function CommitTable({
         </div>
       )}
 
-      <div className="scroll-area min-h-0 flex-1">
+      {loading && commits.length > 0 ? (
+        <div
+          role="progressbar"
+          aria-label="Refreshing commits"
+          className="h-[2px] w-full shrink-0 overflow-hidden bg-accent-soft"
+        >
+          <div className="h-full w-1/2 animate-pulse bg-accent" />
+        </div>
+      ) : null}
+
+      <div
+        className={cx(
+          'scroll-area min-h-0 flex-1 transition-opacity',
+          loading && commits.length > 0 && 'pointer-events-none opacity-55',
+        )}
+      >
         {loading && commits.length === 0 ? (
           <LoadingState label="Loading commits…" />
         ) : error ? (

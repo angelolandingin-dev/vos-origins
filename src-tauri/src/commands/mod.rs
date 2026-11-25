@@ -6,6 +6,7 @@ pub mod diff;
 pub mod distribution;
 pub mod history;
 pub mod promotion;
+pub mod reconcile;
 pub mod registry;
 pub mod system;
 

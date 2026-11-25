@@ -495,7 +495,7 @@ fn map_preflight_error(error: crate::services::engine::preflight::PreflightError
 /// Returns the dir plus whether the managed-cache fallback was used.
 /// An explicitly configured but invalid path fails closed (never silently
 /// falls through to a different clone).
-fn resolve_local_target(registry: &Registry, token: &str) -> AppResult<(PathBuf, bool)> {
+pub(crate) fn resolve_local_target(registry: &Registry, token: &str) -> AppResult<(PathBuf, bool)> {
     if let Some(configured) = registry
         .local_main_repository_path
         .as_deref()
@@ -554,7 +554,7 @@ fn resolve_local_target(registry: &Registry, token: &str) -> AppResult<(PathBuf,
     Ok((dir, true))
 }
 
-async fn resolve_push_pr_target(
+pub(crate) async fn resolve_push_pr_target(
     registry: &Registry,
     token: &str,
 ) -> AppResult<(PathBuf, Option<PathBuf>)> {
@@ -864,7 +864,7 @@ fn append_shared_findings(report: &PromotionReport, findings: &mut Vec<Validatio
     }
 }
 
-fn cleanup_clone(dir: &mut Option<PathBuf>) {
+pub(crate) fn cleanup_clone(dir: &mut Option<PathBuf>) {
     if let Some(path) = dir.take() {
         let _ = std::fs::remove_dir_all(path);
     }

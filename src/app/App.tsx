@@ -6,17 +6,17 @@ import { CommitBrowser } from '../pages/CommitBrowser';
 import { IntegrationHistory } from '../pages/IntegrationHistory';
 import { Distribute } from '../pages/Distribute';
 import { PromoteCommits } from '../pages/PromoteCommits';
+import { Reconcile } from '../pages/Reconcile';
 import { Settings } from '../pages/Settings';
 import { SubsystemDiff } from '../pages/SubsystemDiff';
 import { useApp } from './context';
-import { findUpdate } from './updater';
 
 let fixtureNoticeShown = false;
 let updateNoticeShown = false;
 
 export default function App() {
   const app = useApp();
-  const { route, pushNotice } = app;
+  const { route, pushNotice, dismissNotice, openSettings, checkForUpdates } = app;
   const authStatus = app.auth.data;
 
   // One silent check per session: it tells the operator a release exists, never
@@ -24,15 +24,19 @@ export default function App() {
   useEffect(() => {
     if (updateNoticeShown) return;
     updateNoticeShown = true;
-    void findUpdate().then((info) => {
+    void checkForUpdates().then((info) => {
       if (!info) return;
       pushNotice({
         tone: 'info',
         title: `Version ${info.version} is available`,
-        message: 'Install it from Settings › Updates.',
+        message: 'Click to open Settings › Updates.',
+        onClick: () => {
+          dismissNotice();
+          openSettings('updates');
+        },
       });
     });
-  }, [pushNotice]);
+  }, [checkForUpdates, dismissNotice, openSettings, pushNotice]);
 
   // A fixture-mode banner must be visible exactly once per session start. The
   // module-level flag survives the dev server's double-invoked mount, which
@@ -73,6 +77,7 @@ export default function App() {
         {route === 'subsystem-diff' ? <SubsystemDiff /> : null}
         {route === 'promote-commits' ? <PromoteCommits /> : null}
         {route === 'distribute' ? <Distribute /> : null}
+        {route === 'reconcile' ? <Reconcile /> : null}
         {route === 'integration-history' ? <IntegrationHistory /> : null}
         {route === 'settings' ? <Settings /> : null}
       </AppShell>

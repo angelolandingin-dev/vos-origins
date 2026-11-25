@@ -1,14 +1,5 @@
 import { useMemo, useState } from 'react';
-import {
-  Check,
-  Columns2,
-  Copy,
-  ExternalLink,
-  FileCode2,
-  GitPullRequestArrow,
-  Rows3,
-  Search,
-} from 'lucide-react';
+import { Check, Copy, ExternalLink, FileCode2, GitPullRequestArrow, Search } from 'lucide-react';
 
 import type { ApiError } from '../api/invoke';
 import { api } from '../api/invoke';
@@ -27,7 +18,6 @@ import {
   ErrorState,
   IconButton,
   LoadingState,
-  Panel,
   Spinner,
 } from './ui/primitives';
 import { SPLIT_DEFAULT_WIDTH, splitWidthStyle } from './ui/split-pane';
@@ -100,19 +90,20 @@ export function CommitDiffView({
   const isPromotable = statusKind === 'eligible' || statusKind === 'reverted';
 
   return (
-    <Panel
-      className="min-h-0 min-w-0 flex-1"
-      bodyClassName="flex min-h-0 flex-1 flex-col"
-      bodyStyle={splitWidthStyle(filesWidth)}
-      title={
-        <span className="flex min-w-0 items-center gap-2">
+    <section
+      aria-label="Commit diff"
+      style={splitWidthStyle(filesWidth)}
+      className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface"
+    >
+      <header className="flex min-h-[38px] flex-wrap items-center justify-between gap-2 border-b border-line bg-raised px-3 py-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           {details ? (
             <>
               <button
                 type="button"
                 onClick={() => void copySha()}
                 title={`${details.sha}\nClick to copy the full SHA (abbreviated values are display-only)`}
-                className="mono shrink-0 rounded-[3px] text-accent-ink hover:underline"
+                className="mono shrink-0 rounded-[3px] text-xs font-semibold text-accent-ink hover:underline"
               >
                 {details.shortSha}
               </button>
@@ -135,20 +126,21 @@ export function CommitDiffView({
                 label="Open this commit on GitHub"
                 onClick={() => app.openExternal(details.sourceUrl)}
               />
-              <span className="min-w-0 flex-1 truncate text-xs font-medium" title={details.subject}>
+              <span
+                className="min-w-0 flex-1 truncate text-xs font-medium text-fg"
+                title={details.subject}
+              >
                 {details.subject}
               </span>
             </>
           ) : (
-            <span className="mono shrink-0 text-muted" title={sha}>
+            <span className="mono shrink-0 text-xs text-muted" title={sha}>
               {sha.slice(0, 7)}
             </span>
           )}
-        </span>
-      }
-      actions={
-        details ? (
-          <>
+        </div>
+        {details ? (
+          <div className="flex shrink-0 items-center gap-2">
             <span className="mono shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
               +{details.additions}
             </span>
@@ -156,18 +148,33 @@ export function CommitDiffView({
               −{details.deletions}
             </span>
             <CommitStatusBadge status={details.status} />
-            <Button
-              size="sm"
-              variant="secondary"
-              icon={mode === 'side' ? Columns2 : Rows3}
-              onClick={() => setMode(mode === 'side' ? 'unified' : 'side')}
-              title={mode === 'side' ? 'Switch to unified diff' : 'Switch to side-by-side diff'}
-              aria-label={
-                mode === 'side' ? 'Switch to unified diff' : 'Switch to side-by-side diff'
-              }
+            <div
+              role="group"
+              aria-label="Diff view mode"
+              className="flex h-[25px] overflow-hidden rounded-md border border-line bg-surface"
             >
-              {mode === 'side' ? 'Side-by-side' : 'Unified'}
-            </Button>
+              {(
+                [
+                  { id: 'unified', label: 'Unified' },
+                  { id: 'side', label: 'Split' },
+                ] as const
+              ).map((option, idx) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setMode(option.id)}
+                  className={cx(
+                    'px-2 text-[11px] transition-colors',
+                    idx > 0 && 'border-l border-line',
+                    mode === option.id
+                      ? 'bg-raised font-semibold text-fg'
+                      : 'text-muted hover:bg-hover hover:text-fg',
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
             <Button
               size="sm"
               variant="primary"
@@ -186,10 +193,20 @@ export function CommitDiffView({
                 ? `Promote… (${activeExcluded.length} excluded)`
                 : 'Promote…'}
             </Button>
-          </>
-        ) : null
-      }
-    >
+          </div>
+        ) : null}
+      </header>
+
+      {loading && details ? (
+        <div
+          role="progressbar"
+          aria-label="Refreshing commit diff"
+          className="h-[2px] w-full shrink-0 overflow-hidden bg-accent-soft"
+        >
+          <div className="h-full w-1/2 animate-pulse bg-accent" />
+        </div>
+      ) : null}
+
       {loading && !details ? (
         <LoadingState label="Loading the commit…" />
       ) : error ? (
@@ -201,7 +218,12 @@ export function CommitDiffView({
           message="Pick a commit in the list to inspect its changed files and diff."
         />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <div
+          className={cx(
+            'flex min-h-0 flex-1 flex-col transition-opacity md:flex-row',
+            loading && 'opacity-55',
+          )}
+        >
           {/*
             `md:shrink` (not `shrink-0`) lets the files column give width back
             when the window is narrower than the dragged split, so a wide split
@@ -355,7 +377,7 @@ export function CommitDiffView({
           </div>
         </div>
       )}
-    </Panel>
+    </section>
   );
 }
 

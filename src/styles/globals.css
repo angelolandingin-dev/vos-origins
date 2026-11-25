@@ -76,8 +76,21 @@
    */
   --color-diff-add: var(--diff-add);
   --color-diff-add-line: var(--diff-add-line);
+  --color-diff-add-emphasis: var(--diff-add-emphasis);
   --color-diff-del: var(--diff-del);
   --color-diff-del-line: var(--diff-del-line);
+  --color-diff-del-emphasis: var(--diff-del-emphasis);
+  --color-diff-hunk: var(--diff-hunk);
+  --color-diff-hunk-gutter: var(--diff-hunk-gutter);
+  --color-diff-hunk-text: var(--diff-hunk-text);
+
+  --color-syntax-keyword: var(--syntax-keyword);
+  --color-syntax-string: var(--syntax-string);
+  --color-syntax-comment: var(--syntax-comment);
+  --color-syntax-tag: var(--syntax-tag);
+  --color-syntax-attr: var(--syntax-attr);
+  --color-syntax-entity: var(--syntax-entity);
+  --color-syntax-number: var(--syntax-number);
 
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
@@ -180,8 +193,21 @@
   /* GitHub Desktop (desktop/desktop app/styles/_variables.scss, primer-support@4.0.0). */
   --diff-add: #e6ffed; /* --diff-add-background-color: darken($green-000, 2%) */
   --diff-add-line: #cdffd8; /* --diff-add-gutter-background-color: darken($green-100, 3%) */
+  --diff-add-emphasis: #acf2bd;
   --diff-del: #ffeef0; /* --diff-delete-background-color: $red-000 */
   --diff-del-line: #ffdce0; /* --diff-delete-gutter-background-color: $red-100 */
+  --diff-del-emphasis: #fdb8c0;
+  --diff-hunk: #f1f8ff;
+  --diff-hunk-gutter: #dbedff;
+  --diff-hunk-text: #586069;
+
+  --syntax-keyword: #d73a49;
+  --syntax-string: #032f62;
+  --syntax-comment: #6a737d;
+  --syntax-tag: #22863a;
+  --syntax-attr: #005cc5;
+  --syntax-entity: #6f42c1;
+  --syntax-number: #005cc5;
 }
 
 /* Forced dark theme. */
@@ -201,7 +227,7 @@
   --active: #383f47;
   --selection: #444d56;
 
-  --text: #f6f8fa;
+  --text: #f0f6fc;
   --muted: #959da5;
   --disabled: #6e7681;
 
@@ -239,11 +265,24 @@
   --status-unknown-soft: #2f2400;
   --status-unknown-ink: #e3b341;
 
-  /* GitHub Desktop dark (app/styles/themes/_dark.scss) — judged separately from light. */
-  --diff-add: #113a1b; /* darken($green-900, 3%) */
-  --diff-add-line: #0b2612; /* darken($green-900, 8%) */
-  --diff-del: #450c0f; /* darken($red-900, 15%) */
-  --diff-del-line: #30090a; /* darken($red-900, 20%) */
+  /* GitHub Desktop dark — exact sampled RGB washes for green add and red delete rows. */
+  --diff-add: #123a18;
+  --diff-add-line: #0a2610;
+  --diff-add-emphasis: #236830;
+  --diff-del: #450d0f;
+  --diff-del-line: #30090a;
+  --diff-del-emphasis: #861e24;
+  --diff-hunk: #262c33;
+  --diff-hunk-gutter: #20252b;
+  --diff-hunk-text: #8b949e;
+
+  --syntax-keyword: #f97583;
+  --syntax-string: #deac89;
+  --syntax-comment: #8b949e;
+  --syntax-tag: #85e89d;
+  --syntax-attr: #79b8ff;
+  --syntax-entity: #f0f6fc;
+  --syntax-number: #79b8ff;
 }
 
 /* System-following dark theme (only when the user has not chosen explicitly). */
@@ -264,7 +303,7 @@
     --active: #383f47;
     --selection: #444d56;
 
-    --text: #f6f8fa;
+    --text: #f0f6fc;
     --muted: #959da5;
     --disabled: #6e7681;
 
@@ -302,11 +341,24 @@
     --status-unknown-soft: #2f2400;
     --status-unknown-ink: #e3b341;
 
-    /* GitHub Desktop dark (app/styles/themes/_dark.scss) — judged separately from light. */
-    --diff-add: #113a1b; /* darken($green-900, 3%) */
-    --diff-add-line: #0b2612; /* darken($green-900, 8%) */
-    --diff-del: #450c0f; /* darken($red-900, 15%) */
-    --diff-del-line: #30090a; /* darken($red-900, 20%) */
+    /* GitHub Desktop dark — exact sampled RGB washes for green add and red delete rows. */
+    --diff-add: #123a18;
+    --diff-add-line: #0a2610;
+    --diff-add-emphasis: #236830;
+    --diff-del: #450d0f;
+    --diff-del-line: #30090a;
+    --diff-del-emphasis: #861e24;
+    --diff-hunk: #262c33;
+    --diff-hunk-gutter: #20252b;
+    --diff-hunk-text: #8b949e;
+
+    --syntax-keyword: #f97583;
+    --syntax-string: #deac89;
+    --syntax-comment: #8b949e;
+    --syntax-tag: #85e89d;
+    --syntax-attr: #79b8ff;
+    --syntax-entity: #f0f6fc;
+    --syntax-number: #79b8ff;
   }
 }
 

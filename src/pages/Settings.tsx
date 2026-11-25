@@ -1,61 +1,80 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import {
+  Copy,
   Download,
   ExternalLink,
+  FolderGit2,
+  HardDrive,
   KeyRound,
+  Palette,
+  Plug,
   RefreshCw,
   ShieldAlert,
   Terminal,
   Trash2,
+  type LucideIcon,
 } from 'lucide-react';
 
 import { api, isTauriRuntime } from '../api/invoke';
 import type { CacheStats } from '../api/types';
-import { useApp, useAsyncData } from '../app/context';
-import type { UpdateInfo } from '../app/updater';
-import { currentVersion, findUpdate, installUpdate } from '../app/updater';
-import { Button, InlineAlert, KeyValue, LoadingState, Panel } from '../components/ui/primitives';
+import { useApp, useAsyncData, type SettingsGroup } from '../app/context';
+import { currentVersion, installUpdate } from '../app/updater';
+import { Button, InlineAlert, KeyValue, LoadingState } from '../components/ui/primitives';
 import { ThemeControl } from '../components/ThemeControl';
 import { formatDateTime } from '../components/ui/format';
 import { RegistryEditor } from '../components/RegistryEditor';
 import { cx } from '../components/ui/cx';
 
-type SettingsGroup =
-  'connection' | 'registry' | 'storage' | 'updates' | 'appearance' | 'diagnostics';
-
-const GROUPS: Array<{ id: SettingsGroup; label: string }> = [
-  { id: 'connection', label: 'Connection' },
-  { id: 'registry', label: 'Registry' },
-  { id: 'storage', label: 'Storage' },
-  { id: 'updates', label: 'Updates' },
-  { id: 'appearance', label: 'Appearance' },
-  { id: 'diagnostics', label: 'Diagnostics' },
+const GROUPS: Array<{ id: SettingsGroup; label: string; icon: LucideIcon }> = [
+  { id: 'connection', label: 'Connection', icon: Plug },
+  { id: 'registry', label: 'Registry', icon: FolderGit2 },
+  { id: 'storage', label: 'Storage', icon: HardDrive },
+  { id: 'updates', label: 'Updates', icon: Download },
+  { id: 'appearance', label: 'Appearance', icon: Palette },
+  { id: 'diagnostics', label: 'Diagnostics', icon: Terminal },
 ];
+
+function SectionHeader({
+  title,
+  subtitle,
+  actions,
+}: {
+  title: string;
+  subtitle: string;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-raised px-5 py-3">
+      <div className="min-w-0">
+        <h2 className="truncate text-xs font-semibold text-fg">{title}</h2>
+        <p className="truncate text-[11px] text-muted">{subtitle}</p>
+      </div>
+      {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
+    </div>
+  );
+}
 
 /** Settings (spec §3.3). */
 export function Settings() {
   const app = useApp();
   const [cacheMessage, setCacheMessage] = useState<string | null>(null);
   const [version, setVersion] = useState<string | null>(null);
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [checked, setChecked] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [percent, setPercent] = useState<number | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const railRef = useRef<HTMLDivElement>(null);
+
+  const update = app.availableUpdate;
+  const checking = app.checkingUpdate;
+  const checked = app.updateChecked;
 
   useEffect(() => {
     void currentVersion().then(setVersion);
   }, []);
 
   const runCheck = async () => {
-    setChecking(true);
     setUpdateError(null);
-    const found = await findUpdate();
-    setUpdate(found);
-    setChecked(true);
-    setChecking(false);
+    await app.checkForUpdates();
   };
 
   const runInstall = async () => {
@@ -119,8 +138,7 @@ export function Settings() {
 
   // Derived, never forced: an unauthenticated tool opens on Diagnostics until the user picks a group.
   const needsAttention = Boolean(status && !status.authenticated);
-  const [groupOverride, setGroupOverride] = useState<SettingsGroup | null>(null);
-  const group: SettingsGroup = groupOverride ?? (needsAttention ? 'diagnostics' : 'connection');
+  const group: SettingsGroup = app.settingsGroup ?? (needsAttention ? 'diagnostics' : 'connection');
 
   // Same roving-focus idiom as the AppShell nav, extended to the vertical axis.
   const onRailKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -142,11 +160,17 @@ export function Settings() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex min-h-[50px] flex-wrap items-center gap-3 border-b border-line px-5 py-2">
+      <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-2.5">
         <h1 className="truncate text-[14px] font-semibold text-fg">Settings</h1>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Button variant="secondary" icon={RefreshCw} onClick={app.bumpDataVersion}>
-            Refresh everything
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={RefreshCw}
+            onClick={app.bumpDataVersion}
+            title="Refetch auth status, registry, and cache stats"
+          >
+            Refresh
           </Button>
         </div>
       </header>
@@ -162,7 +186,7 @@ export function Settings() {
       <div className="flex min-h-0 flex-1">
         <nav
           aria-label="Settings"
-          className="w-[250px] shrink-0 overflow-y-auto border-r border-line bg-surface"
+          className="w-[210px] shrink-0 overflow-y-auto border-r border-line bg-surface p-2"
         >
           <div
             ref={railRef}
@@ -170,10 +194,17 @@ export function Settings() {
             aria-label="Settings groups"
             aria-orientation="vertical"
             onKeyDown={onRailKeyDown}
-            className="flex flex-col divide-y divide-line"
+            className="flex flex-col space-y-0.5"
           >
             {GROUPS.map((item) => {
               const active = item.id === group;
+              const Icon = item.icon;
+              const badgeTone =
+                item.id === 'updates' && app.availableUpdate
+                  ? 'bg-accent'
+                  : item.id === 'diagnostics' && needsAttention
+                    ? 'bg-status-unknown'
+                    : null;
               return (
                 <button
                   key={item.id}
@@ -182,19 +213,20 @@ export function Settings() {
                   id={`settings-tab-${item.id}`}
                   aria-selected={active}
                   aria-controls={`settings-panel-${item.id}`}
-                  onClick={() => setGroupOverride(item.id)}
+                  onClick={() => app.setSettingsGroup(item.id)}
                   className={cx(
-                    'relative flex h-[29px] shrink-0 items-center px-3 text-xs whitespace-nowrap transition-colors focus-visible:-outline-offset-4',
+                    'flex h-[29px] shrink-0 items-center gap-2 rounded-md px-2.5 text-xs whitespace-nowrap transition-colors focus-visible:control-focus',
                     active
-                      ? 'font-semibold text-fg'
-                      : 'font-normal text-muted hover:bg-hover hover:text-fg',
+                      ? 'bg-selection font-semibold text-fg'
+                      : 'text-muted hover:bg-hover hover:text-fg',
                   )}
                 >
-                  <span className="truncate">{item.label}</span>
-                  {active ? (
+                  <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
+                  {badgeTone ? (
                     <span
                       aria-hidden="true"
-                      className="absolute inset-y-1 left-0 w-[3px] bg-accent"
+                      className={cx('h-1.5 w-1.5 shrink-0 rounded-full', badgeTone)}
                     />
                   ) : null}
                 </button>
@@ -203,161 +235,285 @@ export function Settings() {
           </div>
         </nav>
 
-        <div className="scroll-area min-h-0 flex-1 p-5">
+        <div
+          className={cx(
+            'min-h-0 flex-1 bg-surface',
+            group === 'registry' ? 'flex flex-col' : 'scroll-area',
+          )}
+        >
           <section
             role="tabpanel"
             id={`settings-panel-${group}`}
             aria-labelledby={`settings-tab-${group}`}
+            className={group === 'registry' ? 'flex min-h-0 flex-1 flex-col' : 'min-h-full'}
           >
             {group === 'connection' ? (
-              <Panel
-                title="GitHub CLI"
-                subtitle="Uses your existing gh login"
-                actions={
-                  <Button size="sm" variant="secondary" icon={RefreshCw} onClick={app.refreshAuth}>
-                    Re-check
-                  </Button>
-                }
-              >
-                <div className="p-3">
-                  <dl className="rounded-md border border-line bg-raised px-3 py-1">
-                    <KeyValue label="gh installed">{status?.ghInstalled ? 'yes' : 'no'}</KeyValue>
-                    <KeyValue label="Version">
-                      <span className="mono">{status?.ghVersion ?? '—'}</span>
-                    </KeyValue>
-                    <KeyValue label="Hostname">
-                      <span className="mono">{status?.hostname ?? 'github.com'}</span>
-                    </KeyValue>
-                    <KeyValue label="Authenticated">
-                      {status?.authenticated ? 'yes' : 'no'}
-                    </KeyValue>
-                    <KeyValue label="Account">
-                      <span className="mono">{status?.accountLogin ?? 'not signed in'}</span>
-                    </KeyValue>
-                    <KeyValue label="Token scopes">
-                      <span className="mono">{status?.scopes.join(', ') || 'not reported'}</span>
-                    </KeyValue>
-                    <KeyValue label="Token available">
-                      {status?.tokenAvailable ? 'yes' : 'no'}
-                    </KeyValue>
-                    <KeyValue label="git">
-                      <span className="mono">
-                        {status?.gitInstalled ? (status?.gitVersion ?? 'installed') : 'missing'}
-                      </span>
-                    </KeyValue>
-                    <KeyValue label="Package manager">
-                      <span className="mono">
-                        {status?.packageManager
-                          ? `${status.packageManager} ${status.packageManagerVersion ?? ''}`.trim()
-                          : 'missing'}
-                      </span>
-                    </KeyValue>
-                    <KeyValue label="Checked at">{formatDateTime(status?.checkedAt)}</KeyValue>
-                  </dl>
+              <>
+                <SectionHeader
+                  title="GitHub CLI & toolchain"
+                  subtitle="Uses your existing gh login and local Git environment"
+                  actions={
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      icon={RefreshCw}
+                      onClick={app.refreshAuth}
+                    >
+                      Re-check
+                    </Button>
+                  }
+                />
+                <div className="max-w-5xl space-y-5 p-5">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-md border border-line bg-raised p-3">
+                      <p className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        GitHub CLI
+                      </p>
+                      <p className="mt-1.5 flex items-center gap-2 text-xs font-semibold text-fg">
+                        <span
+                          aria-hidden="true"
+                          className={cx(
+                            'h-2 w-2 shrink-0 rounded-full',
+                            status?.authenticated ? 'bg-status-applied' : 'bg-status-unknown',
+                          )}
+                        />
+                        {status?.authenticated ? 'Connected' : 'Not ready'}
+                      </p>
+                      <p className="mono mt-1 truncate text-[11px] text-muted">
+                        {status?.ghInstalled ? `gh ${status.ghVersion ?? 'installed'}` : 'missing'}
+                      </p>
+                    </div>
+
+                    <div className="rounded-md border border-line bg-raised p-3">
+                      <p className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        Account
+                      </p>
+                      <p className="mono mt-1.5 truncate text-xs font-semibold text-fg">
+                        {status?.accountLogin ?? 'not signed in'}
+                      </p>
+                      <p className="mono mt-1 truncate text-[11px] text-muted">
+                        {status?.hostname ?? 'github.com'}
+                      </p>
+                    </div>
+
+                    <div className="rounded-md border border-line bg-raised p-3">
+                      <p className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        Git
+                      </p>
+                      <p className="mono mt-1.5 truncate text-xs font-semibold text-fg">
+                        {status?.gitInstalled ? 'Installed' : 'Missing'}
+                      </p>
+                      <p className="mono mt-1 truncate text-[11px] text-muted">
+                        {status?.gitVersion ?? 'unavailable'}
+                      </p>
+                    </div>
+
+                    <div className="rounded-md border border-line bg-raised p-3">
+                      <p className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        Package manager
+                      </p>
+                      <p className="mono mt-1.5 truncate text-xs font-semibold text-fg">
+                        {status?.packageManager ?? 'missing'}
+                      </p>
+                      <p className="mono mt-1 truncate text-[11px] text-muted">
+                        {status?.packageManagerVersion ?? 'unavailable'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <dl className="divide-y divide-line rounded-md border border-line bg-surface px-3.5">
+                      <KeyValue label="gh installed">{status?.ghInstalled ? 'yes' : 'no'}</KeyValue>
+                      <KeyValue label="Authenticated">
+                        {status?.authenticated ? 'yes' : 'no'}
+                      </KeyValue>
+                      <KeyValue label="Token available">
+                        {status?.tokenAvailable ? 'yes' : 'no'}
+                      </KeyValue>
+                      <KeyValue label="Token scopes">
+                        <span className="mono">{status?.scopes.join(', ') || 'not reported'}</span>
+                      </KeyValue>
+                    </dl>
+
+                    <dl className="divide-y divide-line rounded-md border border-line bg-surface px-3.5">
+                      <KeyValue label="Hostname">
+                        <span className="mono">{status?.hostname ?? 'github.com'}</span>
+                      </KeyValue>
+                      <KeyValue label="Main repository">
+                        <span className="mono">{status?.mainRepository ?? '—'}</span>
+                      </KeyValue>
+                      <KeyValue label="Checked at">{formatDateTime(status?.checkedAt)}</KeyValue>
+                    </dl>
+                  </div>
                 </div>
-              </Panel>
+              </>
             ) : null}
 
             {group === 'registry' ? <RegistryEditor /> : null}
 
             {group === 'storage' ? (
-              <Panel
-                title="Local cache"
-                subtitle="Disposable and rebuildable — never authoritative"
-              >
-                <div className="space-y-3 p-3">
+              <>
+                <SectionHeader
+                  title="Local cache"
+                  subtitle="Disposable and rebuildable — Git history and GitHub remain authoritative"
+                  actions={
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon={RefreshCw}
+                      onClick={() => cache.reload()}
+                    >
+                      Re-read statistics
+                    </Button>
+                  }
+                />
+                <div className="max-w-5xl space-y-5 p-5">
                   {cache.loading && !cache.data ? (
                     <LoadingState label="Reading cache statistics…" />
                   ) : (
-                    <dl className="rounded-md border border-line bg-raised px-3 py-1">
-                      <KeyValue label="Entries">
-                        <span className="mono tabular-nums">
-                          {cache.data?.entries ?? 0} / {cache.data?.capacity ?? 0}
-                        </span>
-                      </KeyValue>
-                      <KeyValue label="Hits / misses">
-                        <span className="mono tabular-nums">
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-md border border-line bg-raised p-3.5">
+                        <p className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                          Cache entries
+                        </p>
+                        <p className="mono mt-1.5 text-sm font-semibold text-fg tabular-nums">
+                          {cache.data?.entries ?? 0}{' '}
+                          <span className="text-xs font-normal text-muted">
+                            / {cache.data?.capacity ?? 0}
+                          </span>
+                        </p>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line">
+                          <div
+                            className="h-full bg-accent transition-[width]"
+                            style={{
+                              width: `${
+                                cache.data?.capacity
+                                  ? Math.min(
+                                      100,
+                                      Math.round((cache.data.entries / cache.data.capacity) * 100),
+                                    )
+                                  : 0
+                              }%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="rounded-md border border-line bg-raised p-3.5">
+                        <p className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                          Hits / misses
+                        </p>
+                        <p className="mono mt-1.5 text-sm font-semibold text-fg tabular-nums">
                           {cache.data?.hits ?? 0} / {cache.data?.misses ?? 0}
-                        </span>
-                      </KeyValue>
-                      <KeyValue label="Oldest entry">
-                        <span className="mono">{cache.data?.oldestEntryAt ?? '—'}</span>
-                      </KeyValue>
-                      <KeyValue label="Rebuildable">
-                        {cache.data?.rebuildable ? 'yes' : 'no'}
-                      </KeyValue>
-                    </dl>
+                        </p>
+                        <p className="mt-1 text-[11px] text-muted">Session cache lookups</p>
+                      </div>
+
+                      <div className="rounded-md border border-line bg-raised p-3.5">
+                        <p className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                          Oldest entry
+                        </p>
+                        <p className="mono mt-1.5 truncate text-sm font-semibold text-fg">
+                          {cache.data?.oldestEntryAt ?? '—'}
+                        </p>
+                        <p className="mt-1 text-[11px] text-muted">
+                          Rebuildable: {cache.data?.rebuildable ? 'yes' : 'no'}
+                        </p>
+                      </div>
+                    </div>
                   )}
 
-                  <p className="truncate text-[11px] text-muted">{cache.data?.note}</p>
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-3.5">
+                    <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-muted">
+                      {cache.data?.note ??
+                        'Clearing local caches or cached clones only forces a fresh fetch on the next read.'}
+                    </p>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <Button variant="secondary" icon={Trash2} onClick={clearCache}>
+                        Clear cache
+                      </Button>
+                      <Button variant="secondary" icon={Trash2} onClick={clearCheckouts}>
+                        Clear cached clones
+                      </Button>
+                    </div>
+                  </div>
 
                   {cacheMessage ? (
                     <InlineAlert tone="success" title="Cache action">
                       {cacheMessage}
                     </InlineAlert>
                   ) : null}
-
-                  <div className="flex flex-wrap gap-2">
-                    <Button variant="secondary" icon={Trash2} onClick={clearCache}>
-                      Clear cache
-                    </Button>
-                    <Button variant="secondary" icon={Trash2} onClick={clearCheckouts}>
-                      Clear cached clones
-                    </Button>
-                    <Button variant="secondary" icon={RefreshCw} onClick={() => cache.reload()}>
-                      Re-read statistics
-                    </Button>
-                  </div>
                 </div>
-              </Panel>
+              </>
             ) : null}
 
             {group === 'updates' ? (
-              <Panel
-                title="Updates"
-                subtitle="Signed releases published on GitHub"
-                actions={
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    icon={RefreshCw}
-                    onClick={() => void runCheck()}
-                    disabled={checking || installing}
-                  >
-                    {checking ? 'Checking…' : 'Check for updates'}
-                  </Button>
-                }
-              >
-                <div className="space-y-3 p-3">
-                  <dl className="rounded-md border border-line bg-raised px-3 py-1">
-                    <KeyValue label="Installed version">
-                      <span className="mono">{version ?? '—'}</span>
-                    </KeyValue>
-                    <KeyValue label="Channel">
-                      <span className="mono">stable</span>
-                    </KeyValue>
-                  </dl>
-
-                  {update ? (
-                    <div className="space-y-2 rounded-md border border-line bg-raised p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-xs font-semibold text-fg">
-                          Version <span className="mono">{update.version}</span> is available
-                        </p>
+              <>
+                <SectionHeader title="Updates" subtitle="Signed releases published on GitHub" />
+                <div className="max-w-5xl space-y-4 p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-line bg-raised p-4">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="mono text-sm font-semibold text-fg">
+                          {version ? `v${version}` : '—'}
+                        </span>
+                        <span className="mono rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] text-muted">
+                          stable
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-muted">
+                        {checking
+                          ? 'Checking GitHub releases for a newer build…'
+                          : update
+                            ? `Version ${update.version} is ready to download and install.`
+                            : checked
+                              ? 'This build is up to date.'
+                              : 'Not checked since startup.'}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={RefreshCw}
+                        onClick={() => void runCheck()}
+                        disabled={checking || installing}
+                      >
+                        {checking ? 'Checking…' : 'Check for updates'}
+                      </Button>
+                      {update ? (
                         <Button
                           size="sm"
+                          variant="primary"
                           icon={Download}
                           onClick={() => void runInstall()}
                           disabled={installing}
                         >
                           {installing ? 'Installing…' : 'Install and restart'}
                         </Button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {update ? (
+                    <div className="space-y-3 rounded-md border border-line bg-surface p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-xs font-semibold text-fg">
+                          Release notes · <span className="mono">{update.version}</span>
+                        </h3>
+                        {!installing ? (
+                          <span className="text-[11px] text-muted">
+                            Restarts automatically after install
+                          </span>
+                        ) : null}
                       </div>
                       {update.notes ? (
-                        <pre className="mono max-h-[180px] overflow-auto rounded-md border border-line bg-ground p-2 leading-relaxed whitespace-pre-wrap text-muted">
+                        <pre className="mono max-h-[260px] overflow-auto rounded-md border border-line bg-ground p-3 leading-relaxed whitespace-pre-wrap text-muted">
                           {update.notes}
                         </pre>
-                      ) : null}
+                      ) : (
+                        <p className="text-[11px] text-muted">No release notes attached.</p>
+                      )}
                       {installing ? (
                         <div
                           role="progressbar"
@@ -372,19 +528,8 @@ export function Settings() {
                             style={{ width: `${percent ?? 0}%` }}
                           />
                         </div>
-                      ) : (
-                        <p className="text-[11px] text-muted">
-                          The installer runs on its own and the app reopens on the new version.
-                        </p>
-                      )}
+                      ) : null}
                     </div>
-                  ) : null}
-
-                  {!update && checked && !checking ? (
-                    <p className="text-[11px] text-muted">
-                      This build is the newest release.
-                      {version ? ` Running ${version}.` : ''}
-                    </p>
                   ) : null}
 
                   {updateError ? (
@@ -393,74 +538,77 @@ export function Settings() {
                     </InlineAlert>
                   ) : null}
                 </div>
-              </Panel>
+              </>
             ) : null}
 
             {group === 'appearance' ? (
-              <Panel title="Appearance" subtitle="Display and theme">
-                <div className="space-y-3 p-3">
-                  <div className="flex items-center gap-3 rounded-md border border-line bg-raised p-3">
-                    <div className="flex-1">
-                      <p className="text-xs font-semibold text-fg">Theme</p>
+              <>
+                <SectionHeader title="Appearance" subtitle="Display, theme, and desktop runtime" />
+                <div className="max-w-5xl p-5">
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-raised p-4">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-fg">Theme</p>
+                        <p className="mt-0.5 text-[11px] text-muted">
+                          Follow OS preference or lock to Light or Dark.
+                        </p>
+                      </div>
+                      <ThemeControl />
                     </div>
-                    <ThemeControl />
-                  </div>
-                  <div className="flex items-center gap-3 rounded-md border border-line bg-raised p-3">
-                    <ShieldAlert
-                      className="h-4 w-4 shrink-0 text-status-unknown"
-                      aria-hidden="true"
-                    />
-                    <div className="flex-1">
-                      <p className="text-xs font-semibold text-fg">Tauri permissions</p>
-                      <p className="truncate text-[11px] text-muted">
-                        Core IPC, title-bar window controls, and signed updates.
-                      </p>
+                    <div className="flex items-start gap-3 rounded-md border border-line bg-raised p-4">
+                      <ShieldAlert
+                        className="mt-0.5 h-4 w-4 shrink-0 text-status-unknown"
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-fg">Tauri permissions</p>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
+                          Core IPC, custom title-bar controls, and signed GitHub releases.
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </Panel>
+              </>
             ) : null}
 
             {group === 'diagnostics' ? (
-              <Panel
-                title="Diagnostics"
-                subtitle="Copy this when reporting a problem"
-                actions={
-                  <>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      icon={ExternalLink}
-                      onClick={() =>
-                        status?.mainRepository &&
-                        app.openExternal(`https://github.com/${status.mainRepository}`)
-                      }
-                      disabled={!status?.mainRepository}
-                    >
-                      Open main repository
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      icon={RefreshCw}
-                      onClick={() => {
-                        void navigator.clipboard?.writeText(diagnostics);
-                        app.pushNotice({
-                          tone: 'success',
-                          title: 'Diagnostics copied to the clipboard',
-                        });
-                      }}
-                    >
-                      Copy diagnostics
-                    </Button>
-                  </>
-                }
-              >
-                <div className="space-y-3 p-3">
-                  <pre className="mono max-h-[260px] overflow-auto rounded-md border border-line bg-ground p-3 leading-relaxed whitespace-pre-wrap text-muted">
-                    {diagnostics}
-                  </pre>
-
+              <>
+                <SectionHeader
+                  title="Diagnostics"
+                  subtitle="Environment snapshot and required local tooling"
+                  actions={
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={ExternalLink}
+                        onClick={() =>
+                          status?.mainRepository &&
+                          app.openExternal(`https://github.com/${status.mainRepository}`)
+                        }
+                        disabled={!status?.mainRepository}
+                      >
+                        Open main repository
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={Copy}
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(diagnostics);
+                          app.pushNotice({
+                            tone: 'success',
+                            title: 'Diagnostics copied to the clipboard',
+                          });
+                        }}
+                      >
+                        Copy diagnostics
+                      </Button>
+                    </>
+                  }
+                />
+                <div className="max-w-5xl space-y-4 p-5">
                   {status?.remedy ? (
                     <InlineAlert
                       tone={status.authenticated ? 'warning' : 'danger'}
@@ -470,25 +618,41 @@ export function Settings() {
                     </InlineAlert>
                   ) : null}
 
-                  <div className="rounded-md border border-line bg-ground p-3">
-                    <p className="flex items-center gap-2 text-[11px] font-semibold tracking-wide text-muted uppercase">
-                      <Terminal className="h-3.5 w-3.5" aria-hidden="true" />
-                      Required setup
-                    </p>
-                    <pre className="mono mt-2 whitespace-pre-wrap leading-relaxed text-fg">
-                      {`gh auth login --hostname github.com --scopes repo
+                  <div className="grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+                    <div className="flex flex-col space-y-2">
+                      <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        Environment report
+                      </h3>
+                      <pre className="mono max-h-[460px] flex-1 overflow-auto rounded-md border border-line bg-ground p-3.5 leading-relaxed whitespace-pre-wrap text-muted">
+                        {diagnostics}
+                      </pre>
+                    </div>
+
+                    <div className="space-y-3">
+                      <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        Required setup
+                      </h3>
+                      <div className="rounded-md border border-line bg-raised p-4">
+                        <p className="flex items-center gap-2 text-xs font-semibold text-fg">
+                          <Terminal className="h-3.5 w-3.5 text-muted" aria-hidden="true" />
+                          CLI prerequisites
+                        </p>
+                        <pre className="mono mt-2.5 rounded-md border border-line bg-ground p-3 leading-relaxed whitespace-pre-wrap text-fg">
+                          {`gh auth login --hostname github.com --scopes repo
 gh auth status
 git --version
 npm --version`}
-                    </pre>
-                    <p className="mt-2 flex items-start gap-2 text-[11px] text-muted">
-                      <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                      Promotion needs a token with write access to the main repository (the{' '}
-                      <span className="mono">repo</span> scope).
-                    </p>
+                        </pre>
+                        <p className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed text-muted">
+                          <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                          Promotion needs a token with write access to the main repository (the{' '}
+                          <span className="mono">repo</span> scope).
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </Panel>
+              </>
             ) : null}
           </section>
         </div>
