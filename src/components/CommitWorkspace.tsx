@@ -24,7 +24,6 @@ import {
   InlineAlert,
   KeyValue,
   LoadingState,
-  Panel,
   Tabs,
 } from './ui/primitives';
 import {
@@ -261,50 +260,13 @@ function CommitWorkspacePanel({
   );
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 gap-2.5">
-      <Panel
-        className="min-h-0 min-w-0 flex-1"
-        bodyClassName="flex min-h-0 flex-1 flex-col"
-        title={
-          <span className="flex items-center gap-2">
-            <span className="flex h-4 w-4 items-center justify-center text-muted">
-              <Boxes className="h-4 w-4" aria-hidden="true" />
-            </span>
-            <span className="truncate">{subsystem.name}</span>
-          </span>
-        }
-        subtitle={<span className="mono">{subsystem.repository}</span>}
-        actions={
-          <>
-            <span className="hidden items-center gap-2 lg:flex">
-              <GitBranch className="h-4 w-4 text-disabled" aria-hidden="true" />
-              <span
-                className="mono inline-flex h-[25px] max-w-[150px] items-center truncate rounded-md border border-line bg-surface px-2 text-xs text-muted"
-                title="The source branch is fixed by the registry entry."
-              >
-                {subsystem.sourceBranch}
-              </span>
-            </span>
-            <Button
-              size="sm"
-              variant="secondary"
-              icon={ExternalLink}
-              onClick={() =>
-                app.openExternal(
-                  `https://github.com/${subsystem.repository}/tree/${subsystem.sourceBranch}`,
-                )
-              }
-              title="Open the subsystem repository on GitHub"
-            >
-              View on GitHub
-            </Button>
-          </>
-        }
-      >
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-surface">
+      <div className="flex min-h-[38px] flex-wrap items-center justify-between gap-2 border-b border-line bg-raised px-3 py-1">
         <Tabs
           ariaLabel="Selected subsystem sections"
           value={sourceTab}
           onChange={(id) => onSourceTabChange(id as SourceTab)}
+          className="h-[29px] border-b-0 px-0"
           items={[
             { id: 'commits', label: 'Commits', count: commitPage.data?.total },
             { id: 'changes', label: 'Changes', count: details.data?.files.length },
@@ -317,144 +279,176 @@ function CommitWorkspacePanel({
           ]}
         />
 
-        {sourceTab === 'commits' ? (
-          <div ref={columnsRef} className="flex min-h-0 flex-1">
-            <div
-              className={cx(
-                'flex min-h-0 min-w-0 flex-col border-line',
-                isWide ? 'shrink-0' : 'flex-1',
-                // The resizer is the divider when the diff is beside it.
-                isWide && !detailsVisible && 'border-r',
-              )}
-              style={isWide ? { width: visibleRailWidth } : undefined}
+        <div className="flex shrink-0 items-center gap-2">
+          <span
+            className="mono hidden text-[11px] text-muted lg:inline"
+            title={subsystem.repository}
+          >
+            {subsystem.repository}
+          </span>
+          <span className="hidden items-center gap-1.5 text-[11px] text-muted lg:flex">
+            <GitBranch className="h-3.5 w-3.5 text-disabled" aria-hidden="true" />
+            <span
+              className="mono inline-flex h-[25px] max-w-[150px] items-center truncate rounded-md border border-line bg-surface px-2 text-[11px] text-muted"
+              title="The source branch is fixed by the registry entry."
             >
-              <CommitTable
-                layout="sidebar"
-                page={commitPage.data}
-                loading={commitPage.loading}
-                error={commitPage.error}
-                onRetry={commitPage.reload}
-                targetBranch={app.targetBranch}
-                search={search}
-                onSearchChange={handleSearchChange}
-                statusFilter={statusFilter}
-                onStatusFilterChange={handleStatusFilterChange}
-                sort={sort}
-                onSortChange={handleSortChange}
-                pageNumber={pageNumber}
-                onPageChange={setPageNumber}
-                pageSize={pageSize}
-                onPageSizeChange={handlePageSizeChange}
-                focusedSha={focusedSha}
-                onFocusSha={handleFocusSha}
-                detailsVisible={detailsVisible}
-                onToggleDetails={() => onDetailsVisibleChange(!detailsVisible)}
-                emptyMessage={`No commits were returned from ${subsystem.repository}@${subsystem.sourceBranch}. Check the registry entry and branch protection.`}
-              />
-            </div>
-            {isWide && detailsVisible ? (
-              <SplitResizer
-                width={visibleRailWidth}
-                onWidthChange={setRailWidth}
-                min={COMMIT_RAIL_MIN_WIDTH}
-                max={railMax}
-                label="Resize the commit list"
-              />
-            ) : null}
-            {isWide && detailsVisible ? diffPanel : null}
-          </div>
-        ) : null}
+              {subsystem.sourceBranch}
+            </span>
+          </span>
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={ExternalLink}
+            onClick={() =>
+              app.openExternal(
+                `https://github.com/${subsystem.repository}/tree/${subsystem.sourceBranch}`,
+              )
+            }
+            title="Open the subsystem repository on GitHub"
+          >
+            View on GitHub
+          </Button>
+        </div>
+      </div>
 
-        {sourceTab === 'changes' ? (
-          <div className="scroll-area min-h-0 flex-1 p-2.5">
-            {details.loading && !details.data ? (
-              <LoadingState label="Loading changed files…" />
-            ) : details.data?.files.length ? (
-              <ul className="space-y-1">
-                {details.data.files.map((file) => (
-                  <li key={file.path}>
-                    <button
-                      type="button"
-                      onClick={() => openFile(details.data!.sha, file.path)}
-                      className="flex h-[29px] w-full items-center gap-2.5 rounded-md border border-line bg-surface px-2.5 text-left hover:bg-hover"
-                    >
-                      <FileText className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
-                      <PathLabel path={file.path} className="flex-1" />
-                      <ChangeKindIcon change={file.change} />
-                      <span className="mono w-12 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
-                        +{file.additions}
-                      </span>
-                      <span className="mono w-12 shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
-                        -{file.deletions}
-                      </span>
-                    </button>
+      {sourceTab === 'commits' ? (
+        <div ref={columnsRef} className="flex min-h-0 flex-1">
+          <div
+            className={cx(
+              'flex min-h-0 min-w-0 flex-col border-line',
+              isWide ? 'shrink-0' : 'flex-1',
+              // The resizer is the divider when the diff is beside it.
+              isWide && !detailsVisible && 'border-r',
+            )}
+            style={isWide ? { width: visibleRailWidth } : undefined}
+          >
+            <CommitTable
+              layout="sidebar"
+              page={commitPage.data}
+              loading={commitPage.loading}
+              error={commitPage.error}
+              onRetry={commitPage.reload}
+              targetBranch={app.targetBranch}
+              search={search}
+              onSearchChange={handleSearchChange}
+              statusFilter={statusFilter}
+              onStatusFilterChange={handleStatusFilterChange}
+              sort={sort}
+              onSortChange={handleSortChange}
+              pageNumber={pageNumber}
+              onPageChange={setPageNumber}
+              pageSize={pageSize}
+              onPageSizeChange={handlePageSizeChange}
+              focusedSha={focusedSha}
+              onFocusSha={handleFocusSha}
+              detailsVisible={detailsVisible}
+              onToggleDetails={() => onDetailsVisibleChange(!detailsVisible)}
+              emptyMessage={`No commits were returned from ${subsystem.repository}@${subsystem.sourceBranch}. Check the registry entry and branch protection.`}
+            />
+          </div>
+          {isWide && detailsVisible ? (
+            <SplitResizer
+              width={visibleRailWidth}
+              onWidthChange={setRailWidth}
+              min={COMMIT_RAIL_MIN_WIDTH}
+              max={railMax}
+              label="Resize the commit list"
+            />
+          ) : null}
+          {isWide && detailsVisible ? diffPanel : null}
+        </div>
+      ) : null}
+
+      {sourceTab === 'changes' ? (
+        <div className="scroll-area min-h-0 flex-1">
+          {details.loading && !details.data ? (
+            <LoadingState label="Loading changed files…" />
+          ) : details.data?.files.length ? (
+            <ul className="divide-y divide-line">
+              {details.data.files.map((file) => (
+                <li key={file.path}>
+                  <button
+                    type="button"
+                    onClick={() => openFile(details.data!.sha, file.path)}
+                    className="row-hover flex h-[29px] w-full items-center gap-2.5 px-3 text-left"
+                  >
+                    <ChangeKindIcon change={file.change} />
+                    <PathLabel path={file.path} className="min-w-0 flex-1" />
                     {file.policyNote ? (
-                      <p
-                        className="mono mt-0.5 truncate pl-7 text-[11px] text-status-unknown-ink"
+                      <span
+                        className="mono hidden max-w-[260px] truncate text-[11px] text-status-unknown-ink md:inline"
                         title={file.policyNote}
                       >
                         {file.policyNote}
-                      </p>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <EmptyState
-                icon={FileText}
-                title="No changed files"
-                message="Select a commit to inspect its file list."
-              />
-            )}
-          </div>
-        ) : null}
-
-        {sourceTab === 'dependencies' ? (
-          <div className="scroll-area min-h-0 flex-1 space-y-3 p-2.5">
-            {details.data?.dependencies.length ? (
-              <ul className="space-y-2">
-                {details.data.dependencies.map((dependency) => (
-                  <li
-                    key={`${dependency.section}-${dependency.name}`}
-                    className={cx(
-                      'rounded-md border border-line p-2.5 text-xs',
-                      dependency.conflict
-                        ? 'bg-status-blocked-soft text-status-blocked-ink'
-                        : 'bg-surface text-muted',
-                    )}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Package className="h-4 w-4 shrink-0 text-disabled" aria-hidden="true" />
-                      <span className="mono truncate text-fg">{dependency.name}</span>
-                      <span className="meta">{dependency.section}</span>
-                      <span className="ml-auto tracking-wide text-disabled uppercase">
-                        {dependency.change}
                       </span>
-                    </div>
-                    <p className="mono mt-1.5 truncate tabular-nums">
-                      {dependency.fromRange ?? '(absent)'} → {dependency.toRange ?? '(removed)'}
-                    </p>
-                    {dependency.note ? (
-                      <p className="mt-1 truncate text-muted" title={dependency.note}>
-                        {dependency.note}
-                      </p>
                     ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <EmptyState
-                icon={Package}
-                title="No manifest changes in this commit"
-                message="Promote a package commit together with the commits that use it."
-              />
-            )}
-          </div>
-        ) : null}
+                    <span className="mono w-12 shrink-0 text-right text-[11px] text-status-applied-ink tabular-nums">
+                      +{file.additions}
+                    </span>
+                    <span className="mono w-12 shrink-0 text-right text-[11px] text-status-blocked-ink tabular-nums">
+                      -{file.deletions}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState
+              icon={FileText}
+              title="No changed files"
+              message="Select a commit to inspect its file list."
+            />
+          )}
+        </div>
+      ) : null}
 
-        {sourceTab === 'settings' ? (
-          <div className="scroll-area min-h-0 flex-1 space-y-3 p-2.5">
-            <dl className="rounded-md border border-line bg-raised px-3 py-1">
+      {sourceTab === 'dependencies' ? (
+        <div className="scroll-area min-h-0 flex-1">
+          {details.data?.dependencies.length ? (
+            <ul className="divide-y divide-line">
+              {details.data.dependencies.map((dependency) => (
+                <li
+                  key={`${dependency.section}-${dependency.name}`}
+                  className={cx(
+                    'flex flex-col gap-1 px-4 py-2.5 text-xs',
+                    dependency.conflict
+                      ? 'bg-status-blocked-soft text-status-blocked-ink'
+                      : 'bg-surface text-muted',
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <Package className="h-3.5 w-3.5 shrink-0 text-disabled" aria-hidden="true" />
+                    <span className="mono truncate font-medium text-fg">{dependency.name}</span>
+                    <span className="meta">{dependency.section}</span>
+                    <span className="ml-auto tracking-wide text-disabled uppercase">
+                      {dependency.change}
+                    </span>
+                  </div>
+                  <p className="mono truncate pl-5 text-[11px] tabular-nums">
+                    {dependency.fromRange ?? '(absent)'} → {dependency.toRange ?? '(removed)'}
+                  </p>
+                  {dependency.note ? (
+                    <p className="truncate pl-5 text-[11px] text-muted" title={dependency.note}>
+                      {dependency.note}
+                    </p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState
+              icon={Package}
+              title="No manifest changes in this commit"
+              message="Promote a package commit together with the commits that use it."
+            />
+          )}
+        </div>
+      ) : null}
+
+      {sourceTab === 'settings' ? (
+        <div className="scroll-area min-h-0 flex-1 p-4">
+          <div className="max-w-2xl space-y-4">
+            <dl className="divide-y divide-line rounded-md border border-line bg-surface px-3">
               <KeyValue label="Registry id">
                 <span className="mono">{subsystem.id}</span>
               </KeyValue>
@@ -471,12 +465,12 @@ function CommitWorkspacePanel({
               <KeyValue label="Enabled">{subsystem.enabled ? 'yes' : 'no'}</KeyValue>
             </dl>
 
-            <div className="rounded-md border border-line bg-raised p-2.5">
-              <p className="flex items-center gap-2 text-xs font-semibold text-fg">
-                <SettingsIcon className="h-4 w-4 text-disabled" aria-hidden="true" />
+            <div className="rounded-md border border-line bg-surface">
+              <div className="flex items-center gap-2 border-b border-line bg-raised px-3 py-2 text-xs font-semibold text-fg">
+                <SettingsIcon className="h-3.5 w-3.5 text-disabled" aria-hidden="true" />
                 Integration policy
-              </p>
-              <dl className="mt-1">
+              </div>
+              <dl className="divide-y divide-line px-3">
                 <KeyValue label="Application files">{subsystem.policy.applicationFiles}</KeyValue>
                 <KeyValue label="package.json">{subsystem.policy.packageJson}</KeyValue>
                 <KeyValue label="Lockfiles">{subsystem.policy.lockfiles}</KeyValue>
@@ -492,8 +486,8 @@ function CommitWorkspacePanel({
               Turn it off under Settings → Main system registry.
             </InlineAlert>
           </div>
-        ) : null}
-      </Panel>
+        </div>
+      ) : null}
 
       {!isWide && detailsVisible ? (
         <>
