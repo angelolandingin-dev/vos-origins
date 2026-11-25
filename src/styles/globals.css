@@ -265,13 +265,13 @@
   --status-unknown-soft: #2f2400;
   --status-unknown-ink: #e3b341;
 
-  /* GitHub Desktop dark — tuned to keep row washes calm behind inline highlights. */
-  --diff-add: #122d1b;
-  --diff-add-line: #0d2214;
-  --diff-add-emphasis: #225e34;
-  --diff-del: #3c1418;
-  --diff-del-line: #2c0e11;
-  --diff-del-emphasis: #7a232b;
+  /* GitHub Desktop dark — exact sampled RGB washes for green add and red delete rows. */
+  --diff-add: #123a18;
+  --diff-add-line: #0a2610;
+  --diff-add-emphasis: #236830;
+  --diff-del: #450d0f;
+  --diff-del-line: #30090a;
+  --diff-del-emphasis: #861e24;
   --diff-hunk: #262c33;
   --diff-hunk-gutter: #20252b;
   --diff-hunk-text: #8b949e;
@@ -341,13 +341,13 @@
     --status-unknown-soft: #2f2400;
     --status-unknown-ink: #e3b341;
 
-    /* GitHub Desktop dark — tuned to keep row washes calm behind inline highlights. */
-    --diff-add: #122d1b;
-    --diff-add-line: #0d2214;
-    --diff-add-emphasis: #225e34;
-    --diff-del: #3c1418;
-    --diff-del-line: #2c0e11;
-    --diff-del-emphasis: #7a232b;
+    /* GitHub Desktop dark — exact sampled RGB washes for green add and red delete rows. */
+    --diff-add: #123a18;
+    --diff-add-line: #0a2610;
+    --diff-add-emphasis: #236830;
+    --diff-del: #450d0f;
+    --diff-del-line: #30090a;
+    --diff-del-emphasis: #861e24;
     --diff-hunk: #262c33;
     --diff-hunk-gutter: #20252b;
     --diff-hunk-text: #8b949e;
