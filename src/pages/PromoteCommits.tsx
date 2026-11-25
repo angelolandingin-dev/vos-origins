@@ -116,7 +116,7 @@ function PromoteCommitsPanel({
   onModeChange,
 }: PromoteCommitsPanelProps) {
   const app = useApp();
-  const [splitWidth, setSplitWidth] = useState(680);
+  const [summaryWidth, setSummaryWidth] = useState(380);
   const [pageNumber, setPageNumber] = useState(1);
 
   // Changing any filter restarts paging from the first page.
@@ -234,8 +234,7 @@ function PromoteCommitsPanel({
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <section
           aria-label="Select commits"
-          style={splitWidthStyle(splitWidth)}
-          className="flex min-h-0 flex-col border-b border-line bg-surface md:w-[var(--split-width)] md:shrink-0 md:border-r md:border-b-0"
+          className="flex min-h-0 min-w-0 flex-1 flex-col border-b border-line bg-surface md:border-b-0"
         >
           <div className="flex items-center justify-between gap-2 border-b border-line bg-raised px-3 py-2">
             <div className="min-w-0">
@@ -280,16 +279,18 @@ function PromoteCommitsPanel({
         </section>
 
         <SplitResizer
-          width={splitWidth}
-          onWidthChange={setSplitWidth}
-          label="Resize promote commits panels"
-          min={420}
-          max={1040}
+          edge="right"
+          width={summaryWidth}
+          onWidthChange={setSummaryWidth}
+          label="Resize promotion summary panel"
+          min={300}
+          max={560}
         />
 
         <section
           aria-label="Promotion summary"
-          className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface"
+          style={splitWidthStyle(summaryWidth)}
+          className="flex min-h-0 flex-col bg-surface md:w-[var(--split-width)] md:shrink-0 md:border-l md:border-line"
         >
           <div className="flex items-center justify-between gap-2 border-b border-line bg-raised px-3 py-2">
             <div className="min-w-0">
