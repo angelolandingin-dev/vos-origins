@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Check,
   ExternalLink,
   GitBranch,
   GitPullRequestArrow,
@@ -26,6 +25,7 @@ import { PathLabel } from './PathLabel';
 import { RevertsNewerLine } from './RevertsNewer';
 import { CommitStatusBadge } from './StatusBadge';
 import { CommitFileList } from './CommitFileList';
+import { cx } from './ui/cx';
 import {
   Button,
   Checkbox,
@@ -35,6 +35,7 @@ import {
   KeyValue,
   Modal,
   Select,
+  Spinner,
 } from './ui/primitives';
 
 /**
@@ -82,7 +83,7 @@ export function PromotionDialog(props: PromotionDialogProps) {
   if (!props.open) return null;
   return (
     <PromotionDialogContent
-      key={JSON.stringify([props.sourceShas, props.targetBranch, props.delivery])}
+      key={JSON.stringify([props.sourceShas, props.targetBranch])}
       {...props}
     />
   );
@@ -405,13 +406,19 @@ function PromotionDialogContent({
   const isWorktree = delivery === 'worktree';
   const isLocal = delivery === 'local';
   const isPushPr = delivery === 'push_pr';
+  const repoLabel = `${targetBranches?.mainRepository ?? 'main-system'}/${targetBranch}`;
   const deliveryHint = isDirect
-    ? `The commit lands on your local ${targetBranch}; pushing is yours to do.`
+    ? `Commits directly to local ${targetBranch}; push manually.`
     : isWorktree
-      ? `Stages the files into your working tree on ${targetBranch} — no commit, no push.`
+      ? `Stages files into your working tree on ${targetBranch} without committing.`
       : isLocal
-        ? 'Creates a branch + commit in your clone (you push it yourself).'
-        : 'Pushes the integration branch and opens a PR (explicit opt-in).';
+        ? 'Creates an integration branch and commit in your local clone.'
+        : 'Pushes an integration branch and opens a pull request.';
+
+  const handleDeliveryChange = (next: PromotionDelivery) => {
+    setAcknowledged(false);
+    onDeliveryChange(next);
+  };
 
   const canDispatch =
     !dispatching &&
@@ -426,15 +433,15 @@ function PromotionDialogContent({
   const blockedReason = dispatching
     ? null
     : !acknowledged
-      ? 'Acknowledge the delivery above to enable the button.'
+      ? 'Acknowledge the delivery checkbox to continue.'
       : sourceShas.length === 0
         ? 'Select at least one commit to promote.'
         : message.trim().length === 0
-          ? 'Enter a commit message to enable the button.'
+          ? 'Enter a commit message to continue.'
           : !subsystem
             ? 'Select a subsystem first.'
             : !selectedBranch?.allowed
-              ? `The target branch ${targetBranch} is not permitted by registry policy.`
+              ? `Target branch ${targetBranch} is not permitted by registry policy.`
               : cumulative && baseSha.trim().length === 0
                 ? 'Enter the cumulative baseline SHA.'
                 : null;
@@ -452,8 +459,8 @@ function PromotionDialogContent({
     <Modal
       open={open}
       onClose={onClose}
-      size="lg"
-      title="Promote commits to a main-system branch"
+      size="xl"
+      title="Promote commits to main system"
       description={subsystem ? subsystem.name : 'Select a subsystem first.'}
       footer={
         result?.accepted ? (
@@ -462,6 +469,9 @@ function PromotionDialogContent({
           </Button>
         ) : (
           <>
+            {blockedReason ? (
+              <span className="mr-auto text-[11px] text-status-unknown-ink">{blockedReason}</span>
+            ) : null}
             <Button variant="secondary" onClick={onClose} disabled={dispatching}>
               Cancel
             </Button>
@@ -480,7 +490,7 @@ function PromotionDialogContent({
                     ? 'Stage into working tree'
                     : isLocal
                       ? 'Create local branch + commit'
-                      : 'Create integration PR request'}
+                      : 'Push & open PR'}
             </Button>
           </>
         )
@@ -567,68 +577,252 @@ function PromotionDialogContent({
           />
 
           <ResultNotes findings={result.findings} />
+
+          {progress.length > 0 ? (
+            <PromotionProgressView steps={progress} outcome={progressOutcome} />
+          ) : null}
         </div>
       ) : (
-        <div className="space-y-5">
-          <section className="space-y-2">
-            <div className="flex h-[29px] items-center justify-between gap-2">
-              <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                Source commits
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+          {/* Left column: source commits, files, dependency impact & mergeability preflight */}
+          <div className="min-w-0 space-y-4">
+            <section className="space-y-2">
+              <div className="flex h-[25px] items-center justify-between gap-2">
+                <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                  Source commits
+                </h3>
+                <span className="mono text-right text-muted tabular-nums">{sourceShas.length}</span>
+              </div>
+              {sourceShas.length === 0 ? (
+                <InlineAlert tone="warning" title="No commits selected">
+                  Tick one or more eligible commits in the commit list first.
+                </InlineAlert>
+              ) : (
+                <ul className="max-h-44 divide-y divide-line overflow-y-auto rounded-md border border-line bg-surface">
+                  {sourceShas.map((sha) => {
+                    const commit = commits.find((candidate) => candidate.sha === sha);
+                    return (
+                      <li key={sha} className="flex h-[29px] items-center gap-2 px-2.5">
+                        <span className="mono shrink-0 text-[11px] text-accent-ink" title={sha}>
+                          {sha.slice(0, 7)}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-xs text-fg">
+                          {commitsLoading && !commit
+                            ? 'Loading…'
+                            : (commit?.subject ?? 'Unknown commit')}
+                        </span>
+                        {commit ? <CommitStatusBadge status={commit.status} /> : null}
+                        <IconButton
+                          icon={X}
+                          label={`Remove ${sha.slice(0, 7)} from this promotion`}
+                          onClick={() => onRemoveSha(sha)}
+                          className="h-[21px] w-[21px]"
+                        />
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            <section className="rounded-md border border-line bg-surface p-3">
+              <CommitFileList
+                preflight={preflight}
+                preflightLoading={preflightLoading}
+                excludedPaths={excludedPaths}
+                onSetExcludedPaths={onSetExcludedPaths}
+              />
+            </section>
+
+            <section className="space-y-2">
+              <h3 className="flex h-[25px] items-center gap-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">
+                <Package className="h-3.5 w-3.5 text-muted" aria-hidden="true" />
+                Dependency impact
               </h3>
-              <span className="mono text-right text-muted">{sourceShas.length}</span>
-            </div>
-            {sourceShas.length === 0 ? (
-              <InlineAlert tone="warning" title="No commits selected">
-                Tick one or more eligible commits in the commit list first.
-              </InlineAlert>
-            ) : (
-              <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
-                {sourceShas.map((sha) => {
-                  const commit = commits.find((candidate) => candidate.sha === sha);
-                  return (
-                    <li key={sha} className="flex h-[29px] items-center gap-2 px-2.5">
-                      <span className="mono shrink-0 text-[11px] text-accent-ink" title={sha}>
-                        {sha.slice(0, 7)}
+              {dependenciesLoading ? (
+                <p className="flex items-center gap-1.5 text-[11px] text-muted">
+                  <Spinner className="h-3 w-3" />
+                  Loading dependency changes…
+                </p>
+              ) : dependencies.length === 0 ? (
+                <p className="text-[11px] text-muted">No manifest changes.</p>
+              ) : (
+                <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+                  {dependencies.map((dependency) => (
+                    <li
+                      key={`${dependency.section}-${dependency.name}`}
+                      className="flex h-[29px] items-center gap-2 px-2.5 text-[11px]"
+                    >
+                      {dependency.conflict ? (
+                        <TriangleAlert
+                          className="h-3 w-3 shrink-0 text-status-blocked"
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                      <span className="mono truncate text-fg">{dependency.name}</span>
+                      <span className="meta shrink-0">{dependency.section}</span>
+                      <span className="mono truncate text-muted">
+                        {dependency.fromRange ?? '(absent)'} → {dependency.toRange ?? '(removed)'}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-xs text-fg">
-                        {commitsLoading && !commit
-                          ? 'Loading…'
-                          : (commit?.subject ?? 'Unknown commit')}
+                      <span className="ml-auto shrink-0 tracking-wide text-muted uppercase">
+                        {dependency.conflict ? (
+                          <span className="text-status-blocked-ink">conflict</span>
+                        ) : (
+                          dependency.change
+                        )}
                       </span>
-                      {commit ? <CommitStatusBadge status={commit.status} /> : null}
-                      <IconButton
-                        icon={X}
-                        label={`Remove ${sha.slice(0, 7)} from this promotion`}
-                        onClick={() => onRemoveSha(sha)}
-                        className="h-[21px] w-[21px]"
-                      />
                     </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
+                  ))}
+                </ul>
+              )}
 
-          <section className="space-y-2 rounded-md border border-line bg-surface p-3">
-            <p className="text-[11px] leading-relaxed text-muted">
-              Promotion is a copy: the subsystem&apos;s version of every selected file always wins.
-              Unsafe paths, secrets, main-owned files, and dependency failures still block the
-              promotion.
-            </p>
-            <CommitFileList
-              preflight={preflight}
-              preflightLoading={preflightLoading}
-              excludedPaths={excludedPaths}
-              onSetExcludedPaths={onSetExcludedPaths}
-            />
-          </section>
+              {multiManifest ? (
+                <InlineAlert
+                  tone="warning"
+                  title="More than one selected commit changes package.json"
+                >
+                  Review the merged manifest in the promotion commit before pushing.
+                </InlineAlert>
+              ) : null}
 
-          <div className="grid gap-4 sm:grid-cols-2">
+              {conflicting.length > 0 ? (
+                <InlineAlert tone="danger" title="Incompatible dependency range in this selection">
+                  The promotion fails closed. Resolve the range or drop the commit.
+                </InlineAlert>
+              ) : null}
+            </section>
+
+            {preflightLoading ? (
+              <div className="flex items-center gap-2 text-[11px] text-muted">
+                <Spinner className="h-3.5 w-3.5" />
+                Checking mergeability…
+              </div>
+            ) : preflight && preflight.files.length > 0 ? (
+              <section className="space-y-2">
+                <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                  Mergeability preflight
+                </h3>
+                <InlineAlert
+                  tone={preflight.conflict > 0 ? 'warning' : 'info'}
+                  title={preflightSummary(preflight)}
+                >
+                  {replaced.length > 0 ? (
+                    <p>
+                      {replaced.length} path{replaced.length === 1 ? '' : 's'} changed in main will
+                      be overwritten with the subsystem&apos;s version.
+                    </p>
+                  ) : preflight.conflict > 0 ? (
+                    <p>Resolve, exclude, or drop the conflicting commit, then retry.</p>
+                  ) : (
+                    <p>Ready to promote.</p>
+                  )}
+                </InlineAlert>
+                <ExpandablePathList title="Will be overwritten" paths={replaced} />
+                {revertsNewerFiles.length > 0 ? (
+                  <InlineAlert
+                    tone="warning"
+                    title={`Reverts newer work — ${revertsNewerFiles.length} path${revertsNewerFiles.length === 1 ? '' : 's'}`}
+                    actions={
+                      pendingReverts.length > 0 ? (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={excludeAllRevertsNewer}
+                          title="Exclude these paths from this promotion — they will not be promoted"
+                          aria-label={`Exclude all ${pendingReverts.length} reverts-newer path${pendingReverts.length === 1 ? '' : 's'} from this promotion`}
+                        >
+                          Exclude all {pendingReverts.length}
+                        </Button>
+                      ) : undefined
+                    }
+                  >
+                    <p>
+                      Main already holds newer subsystem content here. Proceed to overwrite
+                      deliberately, or exclude the path.
+                    </p>
+                  </InlineAlert>
+                ) : null}
+                {revertsNewerFiles.length > 0 ? (
+                  <ul className="max-h-40 divide-y divide-line overflow-hidden overflow-y-auto rounded-md border border-line bg-surface">
+                    {revertsNewerFiles.map((file) => (
+                      <li key={file.path} className="flex items-start gap-2 px-2.5 py-1.5">
+                        <TriangleAlert
+                          className="mt-0.5 h-3 w-3 shrink-0 text-status-unknown"
+                          aria-hidden="true"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <PathLabel path={file.path} className="text-[11px]" />
+                          {file.revertsNewer ? <RevertsNewerLine warn={file.revertsNewer} /> : null}
+                        </div>
+                        {isExcluded(file.path) ? (
+                          <span className="shrink-0 text-[11px] text-muted">excluded</span>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => onAddExcludedPath(file.path)}
+                          >
+                            Exclude
+                          </Button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {refusedPaths.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <div className="flex h-[29px] items-center justify-between gap-2">
+                      <h4 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        Conflicting paths
+                      </h4>
+                      {pendingConflicts.length > 0 ? (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={excludeAllConflicts}
+                          title="Exclude these paths from this promotion — they will not be promoted"
+                          aria-label={`Exclude all ${pendingConflicts.length} conflicting path${pendingConflicts.length === 1 ? '' : 's'} from this promotion`}
+                        >
+                          Exclude all {pendingConflicts.length}
+                        </Button>
+                      ) : null}
+                    </div>
+                    <ul className="max-h-40 divide-y divide-line overflow-hidden overflow-y-auto rounded-md border border-line bg-surface">
+                      {refusedPaths.map((path) => (
+                        <li key={path} className="flex h-[29px] items-center gap-2 px-2.5">
+                          <TriangleAlert
+                            className="h-3 w-3 shrink-0 text-status-blocked"
+                            aria-hidden="true"
+                          />
+                          <PathLabel path={path} className="flex-1 text-[11px]" />
+                          {isExcluded(path) ? (
+                            <span className="shrink-0 text-[11px] text-muted">excluded</span>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => onAddExcludedPath(path)}
+                            >
+                              Exclude
+                            </Button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                <ExpandablePathList title="Excluded" paths={preflightExcluded} />
+              </section>
+            ) : null}
+          </div>
+
+          {/* Right column: delivery configuration, commit message, acknowledgement & live progress */}
+          <div className="min-w-0 space-y-4">
             <Field label="Delivery" hint={deliveryHint}>
               <Select
                 ariaLabel="Promotion delivery"
                 value={delivery}
-                onValueChange={(next) => onDeliveryChange(next as PromotionDelivery)}
+                onValueChange={(next) => handleDeliveryChange(next as PromotionDelivery)}
                 options={[
                   { value: 'local_direct', label: `Commit to local ${targetBranch} (recommended)` },
                   { value: 'worktree', label: 'Add to working tree (no commit)' },
@@ -638,52 +832,53 @@ function PromotionDialogContent({
               />
             </Field>
 
-            <Field label="Mode">
+            <Field label="Target branch" required hint="Only policy-allowed branches.">
               <Select
-                ariaLabel="Promotion mode"
-                value={mode}
-                onValueChange={(next) => onModeChange(next as PromotionMode)}
-                options={[
-                  { value: 'individual', label: 'Individual (recommended)' },
-                  { value: 'cumulative', label: 'Cumulative (requires baseline)' },
-                ]}
+                ariaLabel="Target main-system branch"
+                value={targetBranch}
+                onValueChange={(next) => onTargetBranchChange(next)}
+                options={branches.map((branch) => ({
+                  value: branch.name,
+                  label: `${branch.name}${branch.isDefault ? ' (default)' : ''}${branch.allowed ? '' : ' — not permitted'}`,
+                  disabled: !branch.allowed,
+                  title: branch.allowed
+                    ? `tip ${branch.headSha.slice(0, 7)}`
+                    : (branch.disallowedReason ?? 'Not permitted by registry policy'),
+                }))}
               />
             </Field>
 
-            <div className="sm:col-span-2">
-              <Field label="Commit message" required>
-                <textarea
-                  className="input min-h-[76px] py-2"
-                  aria-label="Commit message"
-                  rows={3}
-                  required
-                  value={message}
-                  onChange={(event) => onMessageChange(event.target.value)}
-                  placeholder="Promote hr-management a81f2c3..f12b301"
-                />
-              </Field>
-            </div>
-
-            <div className={cumulative ? undefined : 'sm:col-span-2'}>
-              <Field
-                label="Target main-system branch"
-                required
-                hint="Only policy-allowed branches."
+            <div className="space-y-1.5">
+              <span className="block text-[11px] font-semibold tracking-wide text-muted uppercase">
+                Mode
+              </span>
+              <div
+                role="group"
+                aria-label="Promotion mode"
+                className="grid h-[25px] grid-cols-2 overflow-hidden rounded-md border border-line bg-surface"
               >
-                <Select
-                  ariaLabel="Target main-system branch"
-                  value={targetBranch}
-                  onValueChange={(next) => onTargetBranchChange(next)}
-                  options={branches.map((branch) => ({
-                    value: branch.name,
-                    label: `${branch.name}${branch.isDefault ? ' (default)' : ''}${branch.allowed ? '' : ' — not permitted'}`,
-                    disabled: !branch.allowed,
-                    title: branch.allowed
-                      ? `tip ${branch.headSha.slice(0, 7)}`
-                      : (branch.disallowedReason ?? 'Not permitted by registry policy'),
-                  }))}
-                />
-              </Field>
+                {(
+                  [
+                    { id: 'individual', label: 'Individual' },
+                    { id: 'cumulative', label: 'Cumulative' },
+                  ] as const
+                ).map((item, idx) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => onModeChange(item.id)}
+                    className={cx(
+                      'px-2.5 text-[11px] transition-colors',
+                      idx > 0 && 'border-l border-line',
+                      mode === item.id
+                        ? 'bg-raised font-semibold text-fg'
+                        : 'text-muted hover:bg-hover hover:text-fg',
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {cumulative ? (
@@ -697,263 +892,70 @@ function PromotionDialogContent({
                 />
               </Field>
             ) : null}
-          </div>
 
-          <section className="space-y-2">
-            <h3 className="flex h-[29px] items-center gap-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">
-              <Package className="h-3.5 w-3.5 text-muted" aria-hidden="true" />
-              Dependency impact
-            </h3>
-            {dependenciesLoading ? (
-              <p className="text-[11px] text-muted">Loading dependency changes…</p>
-            ) : dependencies.length === 0 ? (
-              <p className="text-[11px] text-muted">No manifest changes in this selection.</p>
-            ) : (
-              <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
-                {dependencies.map((dependency) => (
-                  <li
-                    key={`${dependency.section}-${dependency.name}`}
-                    className="flex h-[29px] items-center gap-2 px-2.5 text-[11px]"
-                  >
-                    {dependency.conflict ? (
-                      <TriangleAlert
-                        className="h-3 w-3 shrink-0 text-status-blocked"
-                        aria-hidden="true"
-                      />
-                    ) : null}
-                    <span className="mono truncate text-fg">{dependency.name}</span>
-                    <span className="meta shrink-0">{dependency.section}</span>
-                    <span className="mono truncate text-muted">
-                      {dependency.fromRange ?? '(absent)'} → {dependency.toRange ?? '(removed)'}
-                    </span>
-                    <span className="ml-auto shrink-0 tracking-wide text-muted uppercase">
-                      {dependency.conflict ? (
-                        <span className="text-status-blocked-ink">conflict</span>
-                      ) : (
-                        dependency.change
-                      )}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {multiManifest ? (
-              <InlineAlert
-                tone="warning"
-                title="More than one selected commit changes package.json"
-              >
-                Review the merged manifest in the promotion commit before pushing.
-              </InlineAlert>
-            ) : null}
-
-            {conflicting.length > 0 ? (
-              <InlineAlert tone="danger" title="Incompatible dependency range in this selection">
-                The promotion fails closed. Resolve the range or drop the commit.
-              </InlineAlert>
-            ) : null}
-          </section>
-
-          {preflightLoading ? (
-            <p className="text-[11px] text-muted">Checking mergeability…</p>
-          ) : preflight && preflight.files.length > 0 ? (
-            <section className="space-y-2">
-              <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                Mergeability preflight
-              </h3>
-              <InlineAlert
-                tone={preflight.conflict > 0 ? 'warning' : 'info'}
-                title={preflightSummary(preflight)}
-              >
-                {replaced.length > 0 ? (
-                  <p>
-                    {replaced.length} path{replaced.length === 1 ? '' : 's'} the main system changed
-                    will be overwritten with the subsystem&apos;s version.
-                  </p>
-                ) : preflight.conflict > 0 ? (
-                  <p>Resolve, exclude, or drop the conflicting commit, then re-promote.</p>
-                ) : (
-                  <p>Ready to promote.</p>
-                )}
-              </InlineAlert>
-              <ExpandablePathList title="Will be overwritten" paths={replaced} />
-              {revertsNewerFiles.length > 0 ? (
-                <InlineAlert
-                  tone="warning"
-                  title={`Reverts newer work — ${revertsNewerFiles.length} path${revertsNewerFiles.length === 1 ? '' : 's'}`}
-                  actions={
-                    pendingReverts.length > 0 ? (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={excludeAllRevertsNewer}
-                        title="Exclude these paths from this promotion — they will not be promoted"
-                        aria-label={`Exclude all ${pendingReverts.length} reverts-newer path${pendingReverts.length === 1 ? '' : 's'} from this promotion`}
-                      >
-                        Exclude all {pendingReverts.length}
-                      </Button>
-                    ) : undefined
-                  }
-                >
-                  <p>
-                    Main already holds newer subsystem content here. Promoting moves it back —
-                    proceed to overwrite deliberately, or exclude the path.
-                  </p>
-                </InlineAlert>
-              ) : null}
-              {revertsNewerFiles.length > 0 ? (
-                <ul className="divide-y divide-line overflow-hidden overflow-y-auto rounded-md border border-line bg-surface max-h-40">
-                  {revertsNewerFiles.map((file) => (
-                    <li key={file.path} className="flex items-start gap-2 px-2.5 py-1.5">
-                      <TriangleAlert
-                        className="mt-0.5 h-3 w-3 shrink-0 text-status-unknown"
-                        aria-hidden="true"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <PathLabel path={file.path} className="text-[11px]" />
-                        {file.revertsNewer ? <RevertsNewerLine warn={file.revertsNewer} /> : null}
-                      </div>
-                      {isExcluded(file.path) ? (
-                        <span className="shrink-0 text-[11px] text-muted">excluded</span>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => onAddExcludedPath(file.path)}
-                        >
-                          Exclude
-                        </Button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              {refusedPaths.length > 0 ? (
-                <div className="space-y-1.5">
-                  <div className="flex h-[29px] items-center justify-between gap-2">
-                    <h4 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                      Conflicting paths
-                    </h4>
-                    {pendingConflicts.length > 0 ? (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={excludeAllConflicts}
-                        title="Exclude these paths from this promotion — they will not be promoted"
-                        aria-label={`Exclude all ${pendingConflicts.length} conflicting path${pendingConflicts.length === 1 ? '' : 's'} from this promotion`}
-                      >
-                        Exclude all {pendingConflicts.length}
-                      </Button>
-                    ) : null}
-                  </div>
-                  <ul className="divide-y divide-line overflow-hidden overflow-y-auto rounded-md border border-line bg-surface max-h-40">
-                    {refusedPaths.map((path) => (
-                      <li key={path} className="flex h-[29px] items-center gap-2 px-2.5">
-                        <TriangleAlert
-                          className="h-3 w-3 shrink-0 text-status-blocked"
-                          aria-hidden="true"
-                        />
-                        <PathLabel path={path} className="flex-1 text-[11px]" />
-                        {isExcluded(path) ? (
-                          <span className="shrink-0 text-[11px] text-muted">excluded</span>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => onAddExcludedPath(path)}
-                          >
-                            Exclude
-                          </Button>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-              <ExpandablePathList title="Excluded" paths={preflightExcluded} />
-            </section>
-          ) : null}
-
-          <section className="space-y-2 rounded-md border border-line bg-surface p-3">
-            <p className="truncate text-xs text-fg">
-              {isDirect ? (
-                <span>Commits onto {targetBranch} locally — no push, no PR.</span>
-              ) : isWorktree ? (
-                <span>
-                  Stages files into your working tree on {targetBranch} — no commit, no push.
-                </span>
-              ) : isLocal ? (
-                <span>Creates a local branch + commit — no push, no PR.</span>
-              ) : (
-                <span>Pushes the integration branch and opens a PR against {targetBranch}.</span>
-              )}
-            </p>
-            <label className="flex items-start gap-2 text-xs text-fg">
-              <Checkbox
-                checked={acknowledged}
-                onChange={(event) => setAcknowledged(event.target.checked)}
-                label={
-                  isDirect
-                    ? 'Acknowledge that this commits directly onto my local target branch (no push, no PR)'
-                    : isWorktree
-                      ? 'Acknowledge that this stages files into my working tree (no commit, no push)'
-                      : isLocal
-                        ? 'Acknowledge that this creates a local branch + commit (no push, no PR)'
-                        : 'Acknowledge that this creates an integration PR against the selected main-system branch'
-                }
-                className="mt-0.5"
+            <Field label="Commit message" required>
+              <textarea
+                className="input min-h-[76px] py-2"
+                aria-label="Commit message"
+                rows={3}
+                required
+                value={message}
+                onChange={(event) => onMessageChange(event.target.value)}
+                placeholder="Promote subsystem changes"
               />
-              {isDirect ? (
-                <span>
-                  I understand this commits the selected files onto my local{' '}
-                  <span className="mono">
-                    {targetBranches?.mainRepository ?? 'main-system'}/{targetBranch}
+            </Field>
+
+            <section className="space-y-2 rounded-md border border-line bg-surface p-3">
+              <label className="flex items-start gap-2 text-xs text-fg">
+                <Checkbox
+                  checked={acknowledged}
+                  onChange={(event) => setAcknowledged(event.target.checked)}
+                  label={
+                    isDirect
+                      ? `Acknowledge local commit onto ${targetBranch}`
+                      : isWorktree
+                        ? `Acknowledge staging into working tree on ${targetBranch}`
+                        : isLocal
+                          ? `Acknowledge creating a local integration branch for ${targetBranch}`
+                          : `Acknowledge pushing and opening a pull request against ${targetBranch}`
+                  }
+                  className="mt-0.5"
+                />
+                {isDirect ? (
+                  <span>
+                    Commits selected files locally onto <span className="mono">{repoLabel}</span>{' '}
+                    with no push and no PR — push manually when ready.
                   </span>
-                  , with no push and no PR — I push it myself.
-                </span>
-              ) : isWorktree ? (
-                <span>
-                  I understand this copies the selected files into my working tree on{' '}
-                  <span className="mono">
-                    {targetBranches?.mainRepository ?? 'main-system'}/{targetBranch}
+                ) : isWorktree ? (
+                  <span>
+                    Copies selected files into your working tree on{' '}
+                    <span className="mono">{repoLabel}</span> and stages them with no commit or push
+                    — <span className="mono">{targetBranch}</span> must be checked out and clean.
                   </span>
-                  and stages them, with no commit and no push — {targetBranch} must be checked out
-                  and my tree clean.
-                </span>
-              ) : isLocal ? (
-                <span>
-                  I understand this creates a local branch + commit in my clone for{' '}
-                  <span className="mono">
-                    {targetBranches?.mainRepository ?? 'main-system'}/{targetBranch}
+                ) : isLocal ? (
+                  <span>
+                    Creates a local integration branch and commit in your clone for{' '}
+                    <span className="mono">{repoLabel}</span> with no push and no PR.
                   </span>
-                  , with no push and no PR — I push it myself.
-                </span>
-              ) : (
-                <span>
-                  I understand this opens a reviewed integration PR against{' '}
-                  <span className="mono">
-                    {targetBranches?.mainRepository ?? 'main-system'}/{targetBranch}
+                ) : (
+                  <span>
+                    Opens a pull request against <span className="mono">{repoLabel}</span> — does
+                    not merge automatically.
                   </span>
-                  , not a push or deploy.
-                </span>
-              )}
-            </label>
-            {replaced.length > 0 ? (
-              <p className="text-[11px] leading-relaxed text-muted">
-                This overwrites {replaced.length} path
-                {replaced.length === 1 ? '' : 's'} the main system changed with the subsystem&apos;s
-                version.
-              </p>
+                )}
+              </label>
+              {replaced.length > 0 ? (
+                <p className="text-[11px] leading-relaxed text-muted">
+                  Overwrites {replaced.length} path{replaced.length === 1 ? '' : 's'} changed in
+                  main with the subsystem&apos;s version.
+                </p>
+              ) : null}
+            </section>
+
+            {progress.length > 0 ? (
+              <PromotionProgressView steps={progress} outcome={progressOutcome} />
             ) : null}
-            {acknowledged ? (
-              <p className="flex items-center gap-1.5 text-[11px] text-status-applied-ink">
-                <Check className="h-3.5 w-3.5" aria-hidden="true" />
-                Confirmation recorded for this request.
-              </p>
-            ) : null}
-            {blockedReason ? (
-              <p className="text-[11px] leading-relaxed text-status-unknown-ink">{blockedReason}</p>
-            ) : null}
+
             {error ? (
               <div ref={outcomeRef}>
                 <InlineAlert tone="danger" title={error.message}>
@@ -966,14 +968,9 @@ function PromotionDialogContent({
                 </InlineAlert>
               </div>
             ) : null}
-          </section>
+          </div>
         </div>
       )}
-      {progress.length > 0 ? (
-        <div className="mt-4">
-          <PromotionProgressView steps={progress} outcome={progressOutcome} />
-        </div>
-      ) : null}
     </Modal>
   );
 }
