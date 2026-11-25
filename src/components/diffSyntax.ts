@@ -259,6 +259,7 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
 
   const keywords = keywordSetFor(family);
   const tokens: SyntaxToken[] = [];
+  let inTag = false;
   let i = 0;
 
   while (i < text.length) {
@@ -332,11 +333,19 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
         else break;
       }
       if (tagEnd > tagStart) {
+        inTag = next !== '/';
         pushToken(tokens, 'plain', text.slice(i, tagStart));
         pushToken(tokens, 'tag', text.slice(tagStart, tagEnd));
         i = tagEnd;
         continue;
       }
+    }
+
+    if (inTag && ch === '>' && text[i - 1] !== '=') {
+      inTag = false;
+      pushToken(tokens, 'plain', ch);
+      i += 1;
+      continue;
     }
 
     if (family === 'css' && (ch === '@' || ch === '!')) {
@@ -387,9 +396,14 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
           look += 1;
         }
         const after = text[look] ?? '';
-        if (after === '=' && (family === 'markup' || family === 'js') && text[look + 1] !== '=') {
+        if (
+          after === '=' &&
+          inTag &&
+          (family === 'markup' || family === 'js') &&
+          text[look + 1] !== '='
+        ) {
           pushToken(tokens, 'attr', word);
-        } else if (after === '(') {
+        } else if (after === '(' && family !== 'js' && family !== 'rust') {
           pushToken(tokens, 'entity', word);
         } else if (
           (family === 'config' || family === 'css') &&

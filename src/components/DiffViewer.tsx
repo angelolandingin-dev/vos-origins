@@ -12,8 +12,8 @@ import {
 import { cx } from './ui/cx';
 import { EmptyState, ErrorState, InlineAlert, LoadingState } from './ui/primitives';
 
-const ROW_HEIGHT = 20;
-const HUNK_HEIGHT = 26;
+const ROW_HEIGHT = 18;
+const HUNK_HEIGHT = 24;
 
 type Row =
   | { kind: 'hunk'; header: string }
@@ -155,8 +155,7 @@ function gutterClasses(kind: DiffLine['kind']): string {
 }
 
 function signClasses(kind: DiffLine['kind']): string {
-  if (kind === 'added') return 'text-status-applied';
-  if (kind === 'removed') return 'text-status-blocked';
+  if (kind === 'added' || kind === 'removed') return 'text-fg/80';
   return 'text-disabled';
 }
 
@@ -227,21 +226,12 @@ function TokenizedCode({
   );
 }
 
-function LineNumber({
-  kind,
-  value,
-  divider = false,
-}: {
-  kind: DiffLine['kind'];
-  value: number | null;
-  divider?: boolean;
-}) {
+function LineNumber({ kind, value }: { kind: DiffLine['kind']; value: number | null }) {
   return (
     <span
       className={cx(
-        'flex w-9 shrink-0 items-start justify-end pr-2 text-right text-[11px] leading-[20px] text-disabled tabular-nums select-none',
+        'flex w-9 shrink-0 items-start justify-end pr-2 text-right text-[11px] leading-[18px] text-disabled tabular-nums select-none',
         gutterClasses(kind),
-        divider && 'border-r border-line/40',
       )}
     >
       {value ?? ''}
@@ -337,12 +327,12 @@ function DiffRows({
             <div
               key={index}
               style={{ minHeight: HUNK_HEIGHT }}
-              className="mono flex items-stretch border-y border-line/60 bg-diff-hunk text-[11px] leading-[26px] text-diff-hunk-text first:border-t-0"
+              className="mono flex items-stretch border-y border-line/60 bg-diff-hunk text-[11px] leading-[24px] text-diff-hunk-text first:border-t-0"
             >
               <span
                 aria-hidden="true"
                 className={cx(
-                  'shrink-0 border-r border-line/40 bg-diff-hunk-gutter',
+                  'shrink-0 bg-diff-hunk-gutter',
                   mode === 'unified' ? 'w-[72px]' : 'w-9',
                 )}
               />
@@ -361,15 +351,15 @@ function DiffRows({
               key={index}
               style={{ minHeight: ROW_HEIGHT }}
               className={cx(
-                'mono flex items-stretch text-[12px] leading-[20px]',
+                'mono flex items-stretch text-[11.5px] leading-[18px]',
                 lineClasses(line.kind),
               )}
             >
               <LineNumber kind={line.kind} value={line.oldLine} />
-              <LineNumber kind={line.kind} value={line.newLine} divider />
+              <LineNumber kind={line.kind} value={line.newLine} />
               <span
                 className={cx(
-                  'flex w-4 shrink-0 items-start justify-center leading-[20px] select-none',
+                  'flex w-4 shrink-0 items-start justify-center leading-[18px] select-none',
                   signClasses(line.kind),
                 )}
               >
@@ -395,7 +385,7 @@ function DiffRows({
           <div
             key={index}
             style={{ minHeight: ROW_HEIGHT }}
-            className="mono grid grid-cols-2 text-[12px] leading-[20px]"
+            className="mono grid grid-cols-2 text-[11.5px] leading-[18px]"
           >
             {(['left', 'right'] as const).map((side) => {
               const line = side === 'left' ? row.left : row.right;
@@ -423,10 +413,10 @@ function DiffRows({
                     side === 'right' && 'border-l border-line',
                   )}
                 >
-                  <LineNumber kind={line.kind} value={lineNumber} divider />
+                  <LineNumber kind={line.kind} value={lineNumber} />
                   <span
                     className={cx(
-                      'flex w-4 shrink-0 items-start justify-center leading-[20px] select-none',
+                      'flex w-4 shrink-0 items-start justify-center leading-[18px] select-none',
                       signClasses(line.kind),
                     )}
                   >

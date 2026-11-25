@@ -227,7 +227,7 @@
   --active: #383f47;
   --selection: #444d56;
 
-  --text: #d0d7de;
+  --text: #f0f6fc;
   --muted: #959da5;
   --disabled: #6e7681;
 
@@ -277,11 +277,11 @@
   --diff-hunk-text: #8b949e;
 
   --syntax-keyword: #f97583;
-  --syntax-string: #9ecbff;
+  --syntax-string: #d2e4f8;
   --syntax-comment: #8b949e;
   --syntax-tag: #85e89d;
   --syntax-attr: #79b8ff;
-  --syntax-entity: #b392f0;
+  --syntax-entity: #f0f6fc;
   --syntax-number: #79b8ff;
 }
 
@@ -303,7 +303,7 @@
     --active: #383f47;
     --selection: #444d56;
 
-    --text: #d0d7de;
+    --text: #f0f6fc;
     --muted: #959da5;
     --disabled: #6e7681;
 
@@ -353,11 +353,11 @@
     --diff-hunk-text: #8b949e;
 
     --syntax-keyword: #f97583;
-    --syntax-string: #9ecbff;
+    --syntax-string: #d2e4f8;
     --syntax-comment: #8b949e;
     --syntax-tag: #85e89d;
     --syntax-attr: #79b8ff;
-    --syntax-entity: #b392f0;
+    --syntax-entity: #f0f6fc;
     --syntax-number: #79b8ff;
   }
 }
