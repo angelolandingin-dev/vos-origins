@@ -12,8 +12,8 @@ import {
 import { cx } from './ui/cx';
 import { EmptyState, ErrorState, InlineAlert, LoadingState } from './ui/primitives';
 
-const ROW_HEIGHT = 18;
-const HUNK_HEIGHT = 24;
+const ROW_HEIGHT = 21;
+const HUNK_HEIGHT = 28;
 
 type Row =
   | { kind: 'hunk'; header: string }
@@ -230,7 +230,7 @@ function LineNumber({ kind, value }: { kind: DiffLine['kind']; value: number | n
   return (
     <span
       className={cx(
-        'flex w-9 shrink-0 items-start justify-end pr-2 text-right text-[11px] leading-[18px] text-disabled tabular-nums select-none',
+        'flex w-9 shrink-0 items-start justify-end pr-2 text-right text-[11px] leading-[21px] text-disabled tabular-nums select-none',
         gutterClasses(kind),
       )}
     >
@@ -327,7 +327,7 @@ function DiffRows({
             <div
               key={index}
               style={{ minHeight: HUNK_HEIGHT }}
-              className="mono flex items-stretch border-y border-line/60 bg-diff-hunk text-[11px] leading-[24px] text-diff-hunk-text first:border-t-0"
+              className="mono flex items-stretch border-y border-line/60 bg-diff-hunk text-[11px] leading-[28px] text-diff-hunk-text first:border-t-0"
             >
               <span
                 aria-hidden="true"
@@ -351,7 +351,7 @@ function DiffRows({
               key={index}
               style={{ minHeight: ROW_HEIGHT }}
               className={cx(
-                'mono flex items-stretch text-[11.5px] leading-[18px]',
+                'mono flex items-stretch text-[12px] leading-[21px]',
                 lineClasses(line.kind),
               )}
             >
@@ -359,7 +359,7 @@ function DiffRows({
               <LineNumber kind={line.kind} value={line.newLine} />
               <span
                 className={cx(
-                  'flex w-4 shrink-0 items-start justify-center leading-[18px] select-none',
+                  'flex w-4 shrink-0 items-start justify-center leading-[21px] select-none',
                   signClasses(line.kind),
                 )}
               >
@@ -385,7 +385,7 @@ function DiffRows({
           <div
             key={index}
             style={{ minHeight: ROW_HEIGHT }}
-            className="mono grid grid-cols-2 text-[11.5px] leading-[18px]"
+            className="mono grid grid-cols-2 text-[12px] leading-[21px]"
           >
             {(['left', 'right'] as const).map((side) => {
               const line = side === 'left' ? row.left : row.right;
@@ -416,7 +416,7 @@ function DiffRows({
                   <LineNumber kind={line.kind} value={lineNumber} />
                   <span
                     className={cx(
-                      'flex w-4 shrink-0 items-start justify-center leading-[18px] select-none',
+                      'flex w-4 shrink-0 items-start justify-center leading-[21px] select-none',
                       signClasses(line.kind),
                     )}
                   >
