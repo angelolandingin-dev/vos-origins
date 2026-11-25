@@ -32,11 +32,12 @@ import {
   EmptyState,
   ErrorState,
   InlineAlert,
-  KeyValue,
   LoadingState,
-  Panel,
   Select,
+  Spinner,
 } from '../components/ui/primitives';
+import { splitWidthStyle } from '../components/ui/split-pane';
+import { SplitResizer } from '../components/ui/split-resizer';
 
 /**
  * Subsystem Diff: the subsystem's tracked tree against the target branch tip,
@@ -90,17 +91,21 @@ export function SubsystemDiff() {
 
   if (!subsystem) {
     return (
-      <div className="p-5">
-        <EmptyState
-          icon={FileText}
-          title="Select a subsystem first"
-          message="Open the Commit Browser and pick the subsystem whose gap against main you want to see."
-          action={
-            <Button variant="primary" onClick={() => app.navigate('commit-browser')}>
-              Open Commit Browser
-            </Button>
-          }
-        />
+      <div className="flex h-full min-h-0 flex-1 items-center justify-center p-6">
+        {app.subsystems.loading ? (
+          <LoadingState label="Loading the subsystem registry…" />
+        ) : (
+          <EmptyState
+            icon={FileText}
+            title="Select a subsystem first"
+            message="Open the Commit Browser and pick the subsystem whose gap against main you want to see."
+            action={
+              <Button variant="primary" onClick={() => app.navigate('commit-browser')}>
+                Open Commit Browser
+              </Button>
+            }
+          />
+        )}
       </div>
     );
   }
@@ -110,6 +115,7 @@ export function SubsystemDiff() {
 
 function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
   const app = useApp();
+  const [splitWidth, setSplitWidth] = useState(680);
   const [filter, setFilter] = useState('');
   const [bucket, setBucket] = useState<SubsystemDiffBucket | 'all'>('all');
   const [hideIdentical, setHideIdentical] = useState(true);
@@ -272,6 +278,7 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
             variant="ghost"
             size="sm"
             icon={RefreshCw}
+            loading={diff.loading}
             disabled={diff.loading}
             onClick={diff.reload}
             title="Recompute file diff against target branch"
@@ -281,13 +288,52 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-3 px-3 py-3 xl:grid-cols-[minmax(0,1fr)_380px]">
-        <Panel
-          className="min-h-0"
-          title="Files differing from target"
-          subtitle={`${subsystem.repository}@${subsystem.sourceBranch} · target ${app.targetBranch}`}
-          bodyClassName="flex min-h-0 flex-1 flex-col"
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <section
+          aria-label="Files differing from target"
+          style={splitWidthStyle(splitWidth)}
+          className="flex min-h-0 flex-col border-b border-line bg-surface md:w-[var(--split-width)] md:shrink-0 md:border-r md:border-b-0"
         >
+          <div className="flex items-center justify-between gap-2 border-b border-line bg-raised px-3 py-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h2 className="truncate text-xs font-semibold text-fg">
+                  Files differing from target
+                </h2>
+                {diff.loading && entries.length > 0 ? (
+                  <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted">
+                    <Spinner className="h-3 w-3" />
+                    Updating…
+                  </span>
+                ) : null}
+              </div>
+              <p className="mono truncate text-[11px] text-muted">
+                {subsystem.repository}@{subsystem.sourceBranch} · target {app.targetBranch}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={selectAllMissingBehind}
+                disabled={diff.loading && entries.length === 0}
+              >
+                Select missing + behind
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={selected.size === 0 && ticked.size === 0}
+                onClick={() => {
+                  setSelected(new Set());
+                  setTicked(new Set());
+                }}
+              >
+                Clear
+              </Button>
+            </div>
+          </div>
+
           <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
             <div className="relative min-w-[160px] flex-1">
               <Search
@@ -347,6 +393,16 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
             </label>
           </div>
 
+          {diff.loading && entries.length > 0 ? (
+            <div
+              role="progressbar"
+              aria-label="Refreshing subsystem diff"
+              className="h-[2px] w-full shrink-0 overflow-hidden bg-accent-soft"
+            >
+              <div className="h-full w-1/2 animate-pulse bg-accent" />
+            </div>
+          ) : null}
+
           {diff.loading && entries.length === 0 ? (
             <LoadingState label="Comparing the subsystem tree against the target…" />
           ) : diff.error ? (
@@ -362,13 +418,18 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
               }
             />
           ) : (
-            <div className="scroll-area min-h-0 flex-1">
-              <div className="table-head flex h-[25px] items-center gap-2 px-2.5">
+            <div
+              className={cx(
+                'scroll-area min-h-0 flex-1 transition-opacity',
+                diff.loading && entries.length > 0 && 'pointer-events-none opacity-55',
+              )}
+            >
+              <div className="table-head sticky top-0 z-10 flex h-[25px] items-center gap-2 border-b border-line px-2.5">
                 <span className="w-3.5 shrink-0" aria-hidden="true" />
                 <span className="min-w-0 flex-1 truncate">File</span>
                 <span className="w-[110px] shrink-0">Bucket</span>
                 <span className="w-[70px] shrink-0">Change</span>
-                <span className="w-[250px] shrink-0">Latest</span>
+                <span className="w-[220px] shrink-0">Latest</span>
               </div>
               <ul className="divide-y divide-line">
                 {visible.map((entry) => {
@@ -378,7 +439,7 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                     <li
                       key={entry.path}
                       className={cx(
-                        'flex h-[29px] items-center gap-2 px-2.5 row-hover',
+                        'row-hover flex h-[29px] items-center gap-2 px-2.5',
                         isFocused && 'row-selected',
                       )}
                     >
@@ -410,7 +471,7 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                         <ChangeKindIcon change={entry.change} />
                       </span>
                       <span
-                        className="flex w-[250px] min-w-0 shrink-0 items-center gap-1.5"
+                        className="flex w-[220px] min-w-0 shrink-0 items-center gap-1.5"
                         title={
                           latest
                             ? `${latest.sha} "${latest.subject}" — ${latest.authorName} · ${formatDateTime(latest.committedAt)}`
@@ -436,15 +497,35 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
               </ul>
             </div>
           )}
-        </Panel>
+        </section>
 
-        <div className="scroll-area min-h-0 space-y-3">
-          <Panel
-            title="File detail"
-            subtitle={focusedEntry ? focusedEntry.path : 'Select a file to inspect its history'}
-          >
-            <div className="space-y-3 p-3">
-              {focusedEntry ? (
+        <SplitResizer
+          width={splitWidth}
+          onWidthChange={setSplitWidth}
+          label="Resize subsystem diff panels"
+          min={420}
+          max={1040}
+        />
+
+        <section
+          aria-label="File detail"
+          className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface"
+        >
+          <div className="flex items-center justify-between gap-2 border-b border-line bg-raised px-3 py-2">
+            <div className="min-w-0">
+              <h2 className="truncate text-xs font-semibold text-fg">File detail</h2>
+              <p
+                className="mono truncate text-[11px] text-muted"
+                title={focusedEntry ? focusedEntry.path : undefined}
+              >
+                {focusedEntry ? focusedEntry.path : 'Select a file to inspect its history'}
+              </p>
+            </div>
+          </div>
+
+          <div className="scroll-area min-h-0 flex-1">
+            {focusedEntry ? (
+              <div className="p-3.5">
                 <FileDetail
                   key={focusedEntry.path}
                   entry={focusedEntry}
@@ -454,140 +535,127 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
                   onHistoryAllChange={setHistoryAll}
                   onToggleTick={toggleTick}
                 />
-              ) : (
-                <p className="text-[11px] leading-relaxed text-muted">
-                  Click a file to see its latest commit and its history on this branch.
-                </p>
-              )}
-            </div>
-          </Panel>
-
-          <Panel title="Promotion selection" subtitle={continueHint}>
-            <div className="space-y-3 p-3">
-              <dl className="divide-y divide-line border-y border-line px-1">
-                <KeyValue label="Files selected">
-                  <span className="mono text-right tabular-nums">{selected.size}</span>
-                </KeyValue>
-                <KeyValue label="Commits resolved">
-                  <span className="mono text-right tabular-nums">{resolution.commits.length}</span>
-                </KeyValue>
-                <KeyValue label="Pre-excluded">
-                  <span className="mono text-right tabular-nums">
-                    {resolution.excludedPaths.length}
-                  </span>
-                </KeyValue>
-              </dl>
-
-              {resolution.mainSideSelected.length > 0 ? (
-                <InlineAlert
-                  tone="warning"
-                  title={`${resolution.mainSideSelected.length} selected path${resolution.mainSideSelected.length === 1 ? ' was' : 's were'} changed in main only`}
-                >
-                  <p>
-                    No subsystem commit produced main&apos;s copy — the resolved commits are the
-                    subsystem&apos;s own versions, and promoting overwrites main&apos;s copy
-                    (recorded as replaced).
-                  </p>
-                </InlineAlert>
-              ) : null}
-
-              {selectedReverts.length > 0 ? (
-                <InlineAlert
-                  tone="warning"
-                  title={`Reverts newer work — ${selectedReverts.length} selected path${selectedReverts.length === 1 ? '' : 's'}`}
-                >
-                  <div className="space-y-1.5">
-                    {selectedReverts.map((entry) =>
-                      entry.revertsNewer ? (
-                        <div key={entry.path}>
-                          <PathLabel path={entry.path} muted />
-                          <RevertsNewerLine warn={entry.revertsNewer} />
-                        </div>
-                      ) : null,
-                    )}
-                  </div>
-                </InlineAlert>
-              ) : null}
-
-              {resolution.commits.length > 0 ? (
-                <details className="overflow-hidden rounded-md border border-line bg-surface">
-                  <summary className="flex h-[29px] cursor-pointer items-center justify-between gap-2 px-2.5 text-[11px]">
-                    <span className="font-semibold tracking-wide text-muted uppercase">
-                      Resolved commits
-                    </span>
-                    <span className="mono text-muted tabular-nums">
-                      {resolution.commits.length}
-                    </span>
-                  </summary>
-                  <ul className="divide-y divide-line border-t border-line max-h-32 overflow-y-auto">
-                    {resolution.commits.map((sha) => (
-                      <li
-                        key={sha}
-                        className="mono flex h-[29px] items-center truncate px-2.5 text-[11px] text-muted tabular-nums"
-                        title={sha}
-                      >
-                        <span className="truncate">{sha.slice(0, 7)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              ) : null}
-
-              {resolution.excludedPaths.length > 0 ? (
-                <details className="overflow-hidden rounded-md border border-line bg-surface">
-                  <summary className="flex h-[29px] cursor-pointer items-center justify-between gap-2 px-2.5 text-[11px]">
-                    <span className="font-semibold tracking-wide text-muted uppercase">
-                      Pre-excluded
-                    </span>
-                    <span className="mono text-muted tabular-nums">
-                      {resolution.excludedPaths.length}
-                    </span>
-                  </summary>
-                  <ul className="divide-y divide-line border-t border-line max-h-32 overflow-y-auto">
-                    {resolution.excludedPaths.map((path) => (
-                      <li key={path} className="flex h-[29px] items-center px-2.5">
-                        <PathLabel path={path} className="flex-1 text-[11px]" muted />
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              ) : null}
-              {resolution.excludedPaths.length > 0 ? (
-                <p className="text-[11px] leading-relaxed text-muted">
-                  Adjustable in the confirmation dialog — uncheck any path to include it.
-                </p>
-              ) : null}
-
-              <div className="flex flex-wrap gap-1.5">
-                <Button variant="secondary" size="sm" onClick={selectAllMissingBehind}>
-                  Select all missing + behind
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={selected.size === 0 && ticked.size === 0}
-                  onClick={() => {
-                    setSelected(new Set());
-                    setTicked(new Set());
-                  }}
-                >
-                  Clear
-                </Button>
               </div>
-              <Button
-                variant="primary"
-                className="w-full"
-                icon={GitPullRequestArrow}
-                loading={resolving}
-                disabled={resolution.commits.length === 0 || resolving}
-                onClick={continueToPromotion}
-              >
-                {resolving ? 'Resolving…' : 'Continue to promotion'}
-              </Button>
-            </div>
-          </Panel>
-        </div>
+            ) : (
+              <EmptyState
+                icon={FileText}
+                title="No file selected"
+                message="Click a file on the left to inspect its latest commit and branch history."
+              />
+            )}
+
+            {resolution.mainSideSelected.length > 0 ||
+            selectedReverts.length > 0 ||
+            resolution.commits.length > 0 ||
+            resolution.excludedPaths.length > 0 ? (
+              <div className="space-y-2.5 border-t border-line p-3.5">
+                {resolution.mainSideSelected.length > 0 ? (
+                  <InlineAlert
+                    tone="warning"
+                    title={`${resolution.mainSideSelected.length} selected path${resolution.mainSideSelected.length === 1 ? ' was' : 's were'} changed in main only`}
+                  >
+                    <p>
+                      No subsystem commit produced main&apos;s copy — the resolved commits are the
+                      subsystem&apos;s own versions, and promoting overwrites main&apos;s copy
+                      (recorded as replaced).
+                    </p>
+                  </InlineAlert>
+                ) : null}
+
+                {selectedReverts.length > 0 ? (
+                  <InlineAlert
+                    tone="warning"
+                    title={`Reverts newer work — ${selectedReverts.length} selected path${selectedReverts.length === 1 ? '' : 's'}`}
+                  >
+                    <div className="space-y-1.5">
+                      {selectedReverts.map((entry) =>
+                        entry.revertsNewer ? (
+                          <div key={entry.path}>
+                            <PathLabel path={entry.path} muted />
+                            <RevertsNewerLine warn={entry.revertsNewer} />
+                          </div>
+                        ) : null,
+                      )}
+                    </div>
+                  </InlineAlert>
+                ) : null}
+
+                {resolution.commits.length > 0 ? (
+                  <details className="overflow-hidden rounded-md border border-line bg-surface">
+                    <summary className="flex h-[29px] cursor-pointer items-center justify-between gap-2 px-2.5 text-[11px]">
+                      <span className="font-semibold tracking-wide text-muted uppercase">
+                        Resolved commits
+                      </span>
+                      <span className="mono text-muted tabular-nums">
+                        {resolution.commits.length}
+                      </span>
+                    </summary>
+                    <ul className="max-h-32 divide-y divide-line overflow-y-auto border-t border-line">
+                      {resolution.commits.map((sha) => (
+                        <li
+                          key={sha}
+                          className="mono flex h-[29px] items-center truncate px-2.5 text-[11px] text-muted tabular-nums"
+                          title={sha}
+                        >
+                          <span className="truncate">{sha.slice(0, 7)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                ) : null}
+
+                {resolution.excludedPaths.length > 0 ? (
+                  <>
+                    <details className="overflow-hidden rounded-md border border-line bg-surface">
+                      <summary className="flex h-[29px] cursor-pointer items-center justify-between gap-2 px-2.5 text-[11px]">
+                        <span className="font-semibold tracking-wide text-muted uppercase">
+                          Pre-excluded
+                        </span>
+                        <span className="mono text-muted tabular-nums">
+                          {resolution.excludedPaths.length}
+                        </span>
+                      </summary>
+                      <ul className="max-h-32 divide-y divide-line overflow-y-auto border-t border-line">
+                        {resolution.excludedPaths.map((path) => (
+                          <li key={path} className="flex h-[29px] items-center px-2.5">
+                            <PathLabel path={path} className="flex-1 text-[11px]" muted />
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                    <p className="text-[11px] leading-relaxed text-muted">
+                      Adjustable in the confirmation dialog — uncheck any path to include it.
+                    </p>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </section>
       </div>
+
+      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-raised px-4 py-2">
+        <div className="min-w-0 text-[11px] text-muted">
+          {resolution.commits.length === 0 ? (
+            <span>{continueHint}</span>
+          ) : (
+            <span className="mono tabular-nums">
+              {selected.size} file{selected.size === 1 ? '' : 's'} · {resolution.commits.length}{' '}
+              commit{resolution.commits.length === 1 ? '' : 's'} · {resolution.excludedPaths.length}{' '}
+              pre-excluded
+            </span>
+          )}
+        </div>
+        <Button
+          variant="primary"
+          icon={GitPullRequestArrow}
+          loading={resolving}
+          disabled={resolution.commits.length === 0 || resolving}
+          onClick={continueToPromotion}
+        >
+          {resolving ? 'Resolving…' : 'Continue to promotion'}
+        </Button>
+      </footer>
     </div>
   );
 }
