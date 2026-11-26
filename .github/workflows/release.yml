@@ -33,8 +33,9 @@ jobs:
 
       - run: npm ci
 
-      # The release body is what the in-app update panel shows, so it lists the
-      # commits that came in since the previous release instead of a fixed line.
+      # The release body is what the in-app update panel shows. A release lands as
+      # a squash commit, whose body already lists the included commits, so prefer
+      # that and fall back to the log when the tagged commit has no body.
       - id: notes
         name: Compose release notes
         shell: bash
@@ -42,15 +43,19 @@ jobs:
           set -euo pipefail
           version=$(node -p "require('./src-tauri/tauri.conf.json').version")
           previous=$(git tag --list 'app-v*' --sort=-v:refname | grep -v "^app-v${version}$" | head -n 1 || true)
+          changes=$( { git log -1 --pretty=%b | sed 's/^\* /- /' | grep -v '^- chore(release):' || true; } | sed '/^[[:space:]]*$/d' )
+          if [ -z "$changes" ]; then
+            if [ -n "$previous" ]; then
+              changes=$( { git log --no-merges --pretty='- %s' "${previous}..HEAD" | grep -v '^- chore(release):' || true; } )
+            else
+              changes=$(git log --no-merges --pretty='- %s' -n 20 HEAD)
+            fi
+          fi
           {
             echo "body<<VOS_RELEASE_NOTES"
             echo "## What changed"
             echo
-            if [ -n "$previous" ]; then
-              git log --no-merges --pretty='- %s' "${previous}..HEAD"
-            else
-              git log --no-merges --pretty='- %s' -n 20 HEAD
-            fi
+            echo "$changes"
             echo
             echo "## Updating"
             echo
