@@ -1014,8 +1014,7 @@ pub fn integration_history_live(
     }
     // Compare parsed UTC instants so commits with local offsets (e.g. +08:00)
     // do not sort ahead of newer UTC (Z) commits.
-    entries
-        .sort_by(|a, b| rfc3339_timestamp(&b.occurred_at).cmp(&rfc3339_timestamp(&a.occurred_at)));
+    entries.sort_by_key(|entry| std::cmp::Reverse(rfc3339_timestamp(&entry.occurred_at)));
     let total = entries.len() as u32;
     let capped = limit.clamp(1, 200) as usize;
     entries.truncate(capped);
