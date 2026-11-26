@@ -1,16 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ArrowUpRight,
   ExternalLink,
   FolderGit2,
   GitBranch,
-  Pencil,
   Plus,
   RefreshCw,
   Save,
   Search,
   Trash2,
-  X,
 } from 'lucide-react';
 
 import { api, asApiError, type ApiError } from '../api/invoke';
@@ -31,10 +29,11 @@ import {
   ErrorState,
   IconButton,
   InlineAlert,
-  KeyValue,
   LoadingState,
   Tabs,
 } from './ui/primitives';
+import { splitWidthStyle } from './ui/split-pane';
+import { SplitResizer } from './ui/split-resizer';
 
 type RegistryTab = 'subsystems' | 'main';
 type StatusFilter = 'all' | 'enabled' | 'disabled';
@@ -100,6 +99,15 @@ function ListField({
   );
 }
 
+function PolicyRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5 text-[11px]">
+      <dt className="text-muted">{label}</dt>
+      <dd className="mono truncate text-right text-fg/80">{value}</dd>
+    </div>
+  );
+}
+
 const DEFAULT_POLICY: RegistrySubsystem['integrationPolicy'] = {
   applicationFiles: 'selected-commit-delta',
   packageJson: 'merge-dependency-delta',
@@ -125,234 +133,6 @@ function newSubsystem(): RegistrySubsystem {
 interface SubsystemRow {
   key: string;
   entry: RegistrySubsystem;
-}
-
-interface SubsystemModalState {
-  mode: 'add' | 'edit';
-  key: string;
-  entry: RegistrySubsystem;
-}
-
-function SubsystemModal({
-  state,
-  live,
-  onClose,
-  onApply,
-  onRemove,
-  onBrowse,
-  onOpenExternal,
-}: {
-  state: SubsystemModalState;
-  live: SubsystemSummary | null;
-  onClose: () => void;
-  onApply: (entry: RegistrySubsystem) => void;
-  onRemove: () => void;
-  onBrowse: (id: string) => void;
-  onOpenExternal: (url: string) => void;
-}) {
-  const [draft, setDraft] = useState<RegistrySubsystem>(state.entry);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
-
-  const patch = (next: Partial<RegistrySubsystem>) => {
-    setDraft((current) => ({ ...current, ...next }));
-  };
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="subsystem-modal-title"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div className="flex max-h-[85vh] w-full max-w-[540px] flex-col overflow-hidden rounded-lg border border-line-strong bg-surface">
-        <header className="flex items-center justify-between gap-3 border-b border-line bg-raised px-4 py-3">
-          <div className="min-w-0">
-            <h2 id="subsystem-modal-title" className="truncate text-xs font-semibold text-fg">
-              {state.mode === 'add' ? 'Add subsystem' : draft.name || draft.id || 'Edit subsystem'}
-            </h2>
-            {live ? (
-              <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted">
-                <span
-                  aria-hidden="true"
-                  className={cx(
-                    'h-1.5 w-1.5 shrink-0 rounded-full',
-                    CONNECTIVITY_DOT[live.connectivity].dot,
-                  )}
-                />
-                <span>{CONNECTIVITY_DOT[live.connectivity].label}</span>
-                <span>· verified {formatDateTime(live.lastSyncedAt)}</span>
-              </p>
-            ) : (
-              <p className="mt-0.5 text-[11px] text-muted">
-                Configure repository details and protected source branch
-              </p>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {draft.repository ? (
-              <IconButton
-                icon={ExternalLink}
-                label="Open repository on GitHub"
-                onClick={() =>
-                  onOpenExternal(
-                    `https://github.com/${draft.repository}/tree/${draft.sourceBranch || 'master'}`,
-                  )
-                }
-              />
-            ) : null}
-            {live && draft.enabled ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                trailingIcon={ArrowUpRight}
-                onClick={() => {
-                  onClose();
-                  onBrowse(live.id);
-                }}
-              >
-                Browse
-              </Button>
-            ) : null}
-            <IconButton icon={X} label="Close dialog" onClick={onClose} />
-          </div>
-        </header>
-
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            onApply(draft);
-          }}
-          className="flex min-h-0 flex-1 flex-col"
-        >
-          <div className="scroll-area min-h-0 flex-1 space-y-4 p-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="block">
-                <span className="text-xs font-medium text-fg">Id</span>
-                <input
-                  className="input mono mt-1"
-                  value={draft.id}
-                  spellCheck={false}
-                  autoComplete="off"
-                  autoFocus={state.mode === 'add'}
-                  placeholder="hr-management"
-                  onChange={(event) => patch({ id: event.target.value })}
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs font-medium text-fg">Display name</span>
-                <input
-                  className="input mt-1"
-                  value={draft.name}
-                  spellCheck={false}
-                  autoComplete="off"
-                  placeholder="Human Resource Management"
-                  onChange={(event) => patch({ name: event.target.value })}
-                />
-              </label>
-            </div>
-
-            <label className="block">
-              <span className="text-xs font-medium text-fg">Repository (owner/name)</span>
-              <input
-                className="input mono mt-1"
-                value={draft.repository}
-                spellCheck={false}
-                autoComplete="off"
-                placeholder="ORG/hr-management"
-                onChange={(event) => patch({ repository: event.target.value })}
-              />
-            </label>
-
-            <label className="block">
-              <span className="text-xs font-medium text-fg">Protected source branch</span>
-              <input
-                className="input mono mt-1"
-                value={draft.sourceBranch}
-                spellCheck={false}
-                autoComplete="off"
-                placeholder="master"
-                onChange={(event) => patch({ sourceBranch: event.target.value })}
-              />
-            </label>
-
-            <label className="flex items-start gap-2.5 rounded-md border border-line bg-raised/50 px-3 py-2.5">
-              <Checkbox
-                className="mt-0.5"
-                checked={draft.enabled}
-                onChange={(event) => patch({ enabled: event.target.checked })}
-                label="Enable this subsystem"
-              />
-              <span>
-                <span className="text-xs font-medium text-fg">Enabled</span>
-                <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
-                  Show this subsystem in Commit Browser, Subsystem Diff, Promote, Distribute, and
-                  Reconcile.
-                </span>
-              </span>
-            </label>
-
-            <details className="overflow-hidden rounded-md border border-line bg-surface">
-              <summary className="flex h-[31px] cursor-pointer items-center justify-between px-3 text-[11px] font-semibold tracking-wide text-muted uppercase select-none hover:bg-hover hover:text-fg">
-                <span>Integration policy</span>
-                <span className="mono font-normal normal-case">{draft.pathStrategy}</span>
-              </summary>
-              <dl className="divide-y divide-line border-t border-line px-3">
-                <KeyValue label="Path strategy">
-                  <span className="mono">{draft.pathStrategy}</span>
-                </KeyValue>
-                <KeyValue label="Dependency strategy">
-                  <span className="mono">{draft.dependencyStrategy}</span>
-                </KeyValue>
-                <KeyValue label="Application files">
-                  <span className="mono">{draft.integrationPolicy.applicationFiles}</span>
-                </KeyValue>
-                <KeyValue label="package.json">
-                  <span className="mono">{draft.integrationPolicy.packageJson}</span>
-                </KeyValue>
-                <KeyValue label="Lockfiles">
-                  <span className="mono">{draft.integrationPolicy.lockfiles}</span>
-                </KeyValue>
-                <KeyValue label="GitHub workflows">
-                  <span className="mono">{draft.integrationPolicy.githubWorkflows}</span>
-                </KeyValue>
-                <KeyValue label="Secret files">
-                  <span className="mono">{draft.integrationPolicy.secretFiles}</span>
-                </KeyValue>
-              </dl>
-            </details>
-          </div>
-
-          <footer className="flex items-center justify-between gap-2 border-t border-line bg-raised px-4 py-2.5">
-            <div>
-              {state.mode === 'edit' ? (
-                <Button type="button" size="sm" variant="danger" icon={Trash2} onClick={onRemove}>
-                  Remove
-                </Button>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-2">
-              <Button type="button" size="sm" variant="ghost" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button type="submit" size="sm" variant="primary">
-                {state.mode === 'add' ? 'Add subsystem' : 'Apply changes'}
-              </Button>
-            </div>
-          </footer>
-        </form>
-      </div>
-    </div>
-  );
 }
 
 /** Settings → register/configure the main system and its subsystems (spec §4, tool-local). */
@@ -413,11 +193,13 @@ function RegistryForm({
   const [rows, setRows] = useState<SubsystemRow[]>(() =>
     snapshot.config.subsystems.map((entry) => ({ key: crypto.randomUUID(), entry })),
   );
-  const [modal, setModal] = useState<SubsystemModalState | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [subsystemFilter, setSubsystemFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [inspectorWidth, setInspectorWidth] = useState(380);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
+  const idInputRef = useRef<HTMLInputElement>(null);
 
   const liveById = useMemo(() => {
     const map = new Map<string, SubsystemSummary>();
@@ -444,6 +226,16 @@ function RegistryForm({
     });
   }, [rows, subsystemFilter, statusFilter]);
 
+  const activeRow = useMemo(() => {
+    if (selectedKey) {
+      const match = rows.find((row) => row.key === selectedKey);
+      if (match) return match;
+    }
+    return filteredRows[0] ?? rows[0] ?? null;
+  }, [rows, filteredRows, selectedKey]);
+
+  const activeLive = activeRow?.entry.id ? (liveById.get(activeRow.entry.id) ?? null) : null;
+
   const isDirty = useMemo(() => {
     const payload: RegistryConfig = { ...config, subsystems: rows.map((row) => row.entry) };
     return JSON.stringify(payload) !== JSON.stringify(snapshot.config);
@@ -455,38 +247,26 @@ function RegistryForm({
     );
   };
 
-  const openAddModal = () => {
+  const addRow = () => {
+    const key = crypto.randomUUID();
     setTab('subsystems');
-    setModal({
-      mode: 'add',
-      key: crypto.randomUUID(),
-      entry: newSubsystem(),
-    });
-  };
-
-  const openEditModal = (row: SubsystemRow) => {
-    setModal({
-      mode: 'edit',
-      key: row.key,
-      entry: row.entry,
-    });
-  };
-
-  const applyModal = (entry: RegistrySubsystem) => {
-    if (!modal) return;
-    if (modal.mode === 'add') {
-      setSubsystemFilter('');
-      setStatusFilter('all');
-      setRows((current) => [...current, { key: modal.key, entry }]);
-    } else {
-      setRows((current) => current.map((row) => (row.key === modal.key ? { ...row, entry } : row)));
-    }
-    setModal(null);
+    setSubsystemFilter('');
+    setStatusFilter('all');
+    setRows((current) => [...current, { key, entry: newSubsystem() }]);
+    setSelectedKey(key);
+    requestAnimationFrame(() => idInputRef.current?.focus());
   };
 
   const removeRow = (key: string) => {
-    setRows((current) => current.filter((row) => row.key !== key));
-    setModal((current) => (current?.key === key ? null : current));
+    setRows((current) => {
+      const idx = current.findIndex((row) => row.key === key);
+      const next = current.filter((row) => row.key !== key);
+      if (selectedKey === key || activeRow?.key === key) {
+        const fallback = next[Math.min(idx, next.length - 1)]?.key ?? null;
+        setSelectedKey(fallback);
+      }
+      return next;
+    });
   };
 
   const save = () => {
@@ -528,230 +308,399 @@ function RegistryForm({
             className="mono hidden items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-line-strong hover:text-fg lg:inline-flex"
           >
             <FolderGit2 className="h-3.5 w-3.5 text-disabled" aria-hidden="true" />
-            <span className="max-w-[300px] truncate">{mainRepositoryInUse || 'main unset'}</span>
+            <span className="max-w-[280px] truncate">{mainRepositoryInUse || 'main unset'}</span>
           </button>
-          <Button size="sm" variant="secondary" icon={Plus} onClick={openAddModal}>
+          <Button size="sm" variant="secondary" icon={Plus} onClick={addRow}>
             Add subsystem
           </Button>
         </div>
       </div>
 
       {tab === 'subsystems' ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-5 py-2.5">
-            <div className="relative w-full max-w-[360px] min-w-[200px] flex-1">
-              <Search
-                className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-disabled"
-                aria-hidden="true"
-              />
-              <input
-                type="search"
-                value={subsystemFilter}
-                onChange={(event) => setSubsystemFilter(event.target.value)}
-                placeholder="Filter by name, id, repository, or branch…"
-                aria-label="Filter subsystems"
-                className="input pl-8"
-              />
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          {/* Left: full-bleed subsystem table */}
+          <section
+            aria-label="Registered subsystems"
+            className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-4 py-2">
+              <div className="relative w-full max-w-[320px] min-w-[180px] flex-1">
+                <Search
+                  className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-disabled"
+                  aria-hidden="true"
+                />
+                <input
+                  type="search"
+                  value={subsystemFilter}
+                  onChange={(event) => setSubsystemFilter(event.target.value)}
+                  placeholder="Filter by name, id, repository, or branch…"
+                  aria-label="Filter subsystems"
+                  className="input pl-8"
+                />
+              </div>
+
+              <div
+                role="group"
+                aria-label="Filter by enabled status"
+                className="flex h-[25px] shrink-0 overflow-hidden rounded-md border border-line bg-surface"
+              >
+                {(
+                  [
+                    { id: 'all', label: 'All', count: rows.length },
+                    { id: 'enabled', label: 'Enabled', count: enabledCount },
+                    { id: 'disabled', label: 'Disabled', count: disabledCount },
+                  ] as const
+                ).map((item, idx) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setStatusFilter(item.id)}
+                    className={cx(
+                      'px-2.5 text-[11px] tabular-nums transition-colors',
+                      idx > 0 && 'border-l border-line',
+                      statusFilter === item.id
+                        ? 'bg-raised font-semibold text-fg'
+                        : 'text-muted hover:bg-hover hover:text-fg',
+                    )}
+                  >
+                    {item.label} ({item.count})
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div
-              role="group"
-              aria-label="Filter by enabled status"
-              className="flex h-[25px] shrink-0 overflow-hidden rounded-md border border-line bg-surface"
-            >
-              {(
-                [
-                  { id: 'all', label: 'All', count: rows.length },
-                  { id: 'enabled', label: 'Enabled', count: enabledCount },
-                  { id: 'disabled', label: 'Disabled', count: disabledCount },
-                ] as const
-              ).map((item, idx) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setStatusFilter(item.id)}
-                  className={cx(
-                    'px-2.5 text-[11px] tabular-nums transition-colors',
-                    idx > 0 && 'border-l border-line',
-                    statusFilter === item.id
-                      ? 'bg-raised font-semibold text-fg'
-                      : 'text-muted hover:bg-hover hover:text-fg',
-                  )}
-                >
-                  {item.label} ({item.count})
-                </button>
-              ))}
-            </div>
-          </div>
+            <div className="scroll-area min-h-0 flex-1">
+              {rows.length === 0 ? (
+                <EmptyState
+                  icon={FolderGit2}
+                  title="No subsystems registered"
+                  message="Add a subsystem repository to browse commits, promote changes, and reconcile files."
+                  action={
+                    <Button size="sm" variant="secondary" icon={Plus} onClick={addRow}>
+                      Add subsystem
+                    </Button>
+                  }
+                />
+              ) : filteredRows.length === 0 ? (
+                <EmptyState
+                  icon={Search}
+                  title="No matching subsystems"
+                  message="Clear the search or status filter to see all registered subsystems."
+                  action={
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setSubsystemFilter('');
+                        setStatusFilter('all');
+                      }}
+                    >
+                      Reset filters
+                    </Button>
+                  }
+                />
+              ) : (
+                <table className="w-full border-separate border-spacing-0 text-xs">
+                  <thead className="sticky top-0 z-10">
+                    <tr className="table-head">
+                      <th scope="col" className="w-10 border-b border-line py-2 pl-4 text-left">
+                        <span className="sr-only">Enabled</span>
+                      </th>
+                      <th scope="col" className="border-b border-line py-2 pr-4 text-left">
+                        Subsystem
+                      </th>
+                      <th scope="col" className="border-b border-line py-2 pr-4 text-left">
+                        Repository
+                      </th>
+                      <th scope="col" className="w-28 border-b border-line py-2 pr-4 text-left">
+                        Branch
+                      </th>
+                      <th scope="col" className="w-28 border-b border-line py-2 pr-4 text-left">
+                        Status
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredRows.map((row) => {
+                      const { entry } = row;
+                      const selected = activeRow?.key === row.key;
+                      const label = entry.name || entry.id || 'New subsystem';
+                      const live = entry.id ? liveById.get(entry.id) : undefined;
+                      const connectivity = live ? CONNECTIVITY_DOT[live.connectivity] : null;
 
-          <div className="scroll-area min-h-0 flex-1">
-            {rows.length === 0 ? (
-              <EmptyState
-                icon={FolderGit2}
-                title="No subsystems registered"
-                message="Add a subsystem repository to browse commits, promote changes, and reconcile files."
-                action={
-                  <Button size="sm" variant="secondary" icon={Plus} onClick={openAddModal}>
-                    Add subsystem
-                  </Button>
-                }
-              />
-            ) : filteredRows.length === 0 ? (
-              <EmptyState
-                icon={Search}
-                title="No matching subsystems"
-                message="Clear the search or status filter to see all registered subsystems."
-                action={
+                      return (
+                        <tr
+                          key={row.key}
+                          aria-selected={selected}
+                          onClick={() => setSelectedKey(row.key)}
+                          className={cx(
+                            'row-hover cursor-pointer transition-colors',
+                            selected && 'bg-selection',
+                            !entry.enabled && 'opacity-60',
+                          )}
+                        >
+                          <td
+                            className="h-[36px] border-b border-line py-0 pl-4 align-middle"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <Checkbox
+                              label={`Enabled: ${label}`}
+                              checked={entry.enabled}
+                              onChange={(event) =>
+                                patchRow(row.key, { enabled: event.target.checked })
+                              }
+                            />
+                          </td>
+                          <td className="h-[36px] border-b border-line py-0 pr-4 align-middle">
+                            <div className="flex items-center gap-2">
+                              <span className="truncate font-medium text-fg">{label}</span>
+                              {entry.id ? (
+                                <span className="mono shrink-0 rounded border border-line bg-ground px-1.5 py-0.5 text-[10px] text-accent-ink">
+                                  {entry.id}
+                                </span>
+                              ) : (
+                                <span className="mono shrink-0 rounded border border-status-unknown/40 bg-status-unknown-soft px-1.5 py-0.5 text-[10px] text-status-unknown-ink">
+                                  draft
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="mono h-[36px] border-b border-line py-0 pr-4 align-middle text-[11px] text-muted">
+                            <span className="block truncate" title={entry.repository}>
+                              {entry.repository || '—'}
+                            </span>
+                          </td>
+                          <td className="mono h-[36px] border-b border-line py-0 pr-4 align-middle text-[11px] text-muted">
+                            <span className="inline-flex items-center gap-1.5">
+                              <GitBranch
+                                className="h-3 w-3 shrink-0 text-disabled"
+                                aria-hidden="true"
+                              />
+                              {entry.sourceBranch || '—'}
+                            </span>
+                          </td>
+                          <td className="h-[36px] border-b border-line py-0 pr-4 align-middle text-[11px] text-muted">
+                            <span className="inline-flex items-center gap-1.5">
+                              <span
+                                aria-hidden="true"
+                                className={cx(
+                                  'h-1.5 w-1.5 shrink-0 rounded-full',
+                                  !entry.enabled
+                                    ? 'bg-disabled'
+                                    : connectivity
+                                      ? connectivity.dot
+                                      : 'bg-accent',
+                                )}
+                              />
+                              {!entry.enabled
+                                ? 'Disabled'
+                                : connectivity
+                                  ? connectivity.label
+                                  : 'Draft'}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </section>
+
+          <SplitResizer
+            edge="right"
+            width={inspectorWidth}
+            onWidthChange={setInspectorWidth}
+            label="Resize subsystem inspector"
+            min={320}
+            max={520}
+          />
+
+          {/* Right: always-present subsystem inspector */}
+          <aside
+            aria-label="Subsystem inspector"
+            style={splitWidthStyle(inspectorWidth)}
+            className="flex min-h-0 flex-col border-t border-line bg-surface lg:w-[var(--split-width)] lg:shrink-0 lg:border-t-0 lg:border-l"
+          >
+            {activeRow ? (
+              <>
+                <div className="flex items-start justify-between gap-2 border-b border-line bg-raised px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        aria-hidden="true"
+                        className={cx(
+                          'h-2 w-2 shrink-0 rounded-full',
+                          !activeRow.entry.enabled
+                            ? 'bg-disabled'
+                            : activeLive
+                              ? CONNECTIVITY_DOT[activeLive.connectivity].dot
+                              : 'bg-accent',
+                        )}
+                      />
+                      <h2 className="truncate text-[13px] font-semibold text-fg">
+                        {activeRow.entry.name || activeRow.entry.id || 'New subsystem'}
+                      </h2>
+                    </div>
+                    <p className="mt-1 truncate text-[11px] text-muted">
+                      {activeLive
+                        ? `${CONNECTIVITY_DOT[activeLive.connectivity].label} · verified ${formatDateTime(activeLive.lastSyncedAt)}`
+                        : 'Unsaved draft — save registry to apply'}
+                    </p>
+                  </div>
+
+                  {activeRow.entry.repository ? (
+                    <IconButton
+                      icon={ExternalLink}
+                      label="Open repository on GitHub"
+                      onClick={() =>
+                        app.openExternal(
+                          `https://github.com/${activeRow.entry.repository}/tree/${activeRow.entry.sourceBranch || 'master'}`,
+                        )
+                      }
+                    />
+                  ) : null}
+                </div>
+
+                <div className="scroll-area min-h-0 flex-1 divide-y divide-line">
+                  <div className="space-y-3.5 px-4 py-4">
+                    <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-2.5">
+                      <label className="block">
+                        <span className="text-[11px] font-medium text-muted">Id</span>
+                        <input
+                          ref={idInputRef}
+                          className="input mono mt-1"
+                          value={activeRow.entry.id}
+                          spellCheck={false}
+                          autoComplete="off"
+                          placeholder="hrm"
+                          onChange={(event) => patchRow(activeRow.key, { id: event.target.value })}
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-[11px] font-medium text-muted">Display name</span>
+                        <input
+                          className="input mt-1"
+                          value={activeRow.entry.name}
+                          spellCheck={false}
+                          autoComplete="off"
+                          placeholder="Human Resource Management"
+                          onChange={(event) =>
+                            patchRow(activeRow.key, { name: event.target.value })
+                          }
+                        />
+                      </label>
+                    </div>
+
+                    <label className="block">
+                      <span className="text-[11px] font-medium text-muted">
+                        Repository (owner/name)
+                      </span>
+                      <input
+                        className="input mono mt-1"
+                        value={activeRow.entry.repository}
+                        spellCheck={false}
+                        autoComplete="off"
+                        placeholder="ORG/hr-management"
+                        onChange={(event) =>
+                          patchRow(activeRow.key, { repository: event.target.value })
+                        }
+                      />
+                    </label>
+
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
+                      <label className="block">
+                        <span className="text-[11px] font-medium text-muted">Source branch</span>
+                        <input
+                          className="input mono mt-1"
+                          value={activeRow.entry.sourceBranch}
+                          spellCheck={false}
+                          autoComplete="off"
+                          placeholder="master"
+                          onChange={(event) =>
+                            patchRow(activeRow.key, { sourceBranch: event.target.value })
+                          }
+                        />
+                      </label>
+
+                      <label className="flex h-[27px] cursor-pointer items-center gap-2 rounded-md border border-line bg-raised/50 px-2.5 select-none">
+                        <Checkbox
+                          checked={activeRow.entry.enabled}
+                          onChange={(event) =>
+                            patchRow(activeRow.key, { enabled: event.target.checked })
+                          }
+                          label="Enable this subsystem"
+                        />
+                        <span className="text-[11px] font-medium text-fg">Enabled</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="px-4 py-3.5">
+                    <h3 className="mb-2 text-[11px] font-medium text-muted">Integration policy</h3>
+                    <dl className="divide-y divide-line/60">
+                      <PolicyRow label="Path strategy" value={activeRow.entry.pathStrategy} />
+                      <PolicyRow
+                        label="Dependency strategy"
+                        value={activeRow.entry.dependencyStrategy}
+                      />
+                      <PolicyRow
+                        label="Application files"
+                        value={activeRow.entry.integrationPolicy.applicationFiles}
+                      />
+                      <PolicyRow
+                        label="package.json"
+                        value={activeRow.entry.integrationPolicy.packageJson}
+                      />
+                      <PolicyRow
+                        label="Lockfiles"
+                        value={activeRow.entry.integrationPolicy.lockfiles}
+                      />
+                      <PolicyRow
+                        label="GitHub workflows"
+                        value={activeRow.entry.integrationPolicy.githubWorkflows}
+                      />
+                      <PolicyRow
+                        label="Secret files"
+                        value={activeRow.entry.integrationPolicy.secretFiles}
+                      />
+                    </dl>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 border-t border-line bg-raised/40 px-4 py-2">
                   <Button
                     size="sm"
-                    onClick={() => {
-                      setSubsystemFilter('');
-                      setStatusFilter('all');
-                    }}
+                    variant="ghost"
+                    icon={Trash2}
+                    onClick={() => removeRow(activeRow.key)}
+                    className="text-status-blocked-ink hover:bg-status-blocked-soft hover:text-status-blocked-ink"
                   >
-                    Reset filters
+                    Remove
                   </Button>
-                }
-              />
+                  {activeLive && activeRow.entry.enabled ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      trailingIcon={ArrowUpRight}
+                      onClick={() => {
+                        app.selectSubsystem(activeLive.id);
+                        app.navigate('commit-browser');
+                      }}
+                    >
+                      Browse commits
+                    </Button>
+                  ) : null}
+                </div>
+              </>
             ) : (
-              <table className="w-full border-separate border-spacing-0 text-xs">
-                <thead className="sticky top-0 z-10">
-                  <tr className="table-head">
-                    <th scope="col" className="w-11 border-b border-line py-2 pl-5 text-left">
-                      <span className="sr-only">Enabled</span>
-                    </th>
-                    <th scope="col" className="border-b border-line py-2 pr-4 text-left">
-                      Subsystem
-                    </th>
-                    <th scope="col" className="border-b border-line py-2 pr-4 text-left">
-                      Repository
-                    </th>
-                    <th scope="col" className="w-32 border-b border-line py-2 pr-4 text-left">
-                      Branch
-                    </th>
-                    <th scope="col" className="w-28 border-b border-line py-2 pr-4 text-left">
-                      Status
-                    </th>
-                    <th scope="col" className="w-36 border-b border-line py-2 pr-5 text-right">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredRows.map((row) => {
-                    const { entry } = row;
-                    const label = entry.name || entry.id || 'New subsystem';
-                    const live = entry.id ? liveById.get(entry.id) : undefined;
-                    const connectivity = live ? CONNECTIVITY_DOT[live.connectivity] : null;
-
-                    return (
-                      <tr
-                        key={row.key}
-                        onClick={() => openEditModal(row)}
-                        className={cx(
-                          'row-hover cursor-pointer transition-colors',
-                          !entry.enabled && 'opacity-60',
-                        )}
-                      >
-                        <td
-                          className="h-[38px] border-b border-line py-0 pl-5 align-middle"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <Checkbox
-                            label={`Enabled: ${label}`}
-                            checked={entry.enabled}
-                            onChange={(event) =>
-                              patchRow(row.key, { enabled: event.target.checked })
-                            }
-                          />
-                        </td>
-                        <td className="h-[38px] border-b border-line py-0 pr-4 align-middle">
-                          <div className="flex items-center gap-2">
-                            <span className="truncate font-medium text-fg">{label}</span>
-                            {entry.id ? (
-                              <span className="mono shrink-0 rounded border border-line bg-ground px-1.5 py-0.5 text-[10px] text-accent-ink">
-                                {entry.id}
-                              </span>
-                            ) : (
-                              <span className="mono shrink-0 rounded border border-status-unknown/40 bg-status-unknown-soft px-1.5 py-0.5 text-[10px] text-status-unknown-ink">
-                                draft
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="mono h-[38px] border-b border-line py-0 pr-4 align-middle text-[11px] text-muted">
-                          <span className="block truncate" title={entry.repository}>
-                            {entry.repository || '—'}
-                          </span>
-                        </td>
-                        <td className="mono h-[38px] border-b border-line py-0 pr-4 align-middle text-[11px] text-muted">
-                          <span className="inline-flex items-center gap-1.5">
-                            <GitBranch
-                              className="h-3 w-3 shrink-0 text-disabled"
-                              aria-hidden="true"
-                            />
-                            {entry.sourceBranch || '—'}
-                          </span>
-                        </td>
-                        <td className="h-[38px] border-b border-line py-0 pr-4 align-middle text-[11px] text-muted">
-                          <span className="inline-flex items-center gap-1.5">
-                            <span
-                              aria-hidden="true"
-                              className={cx(
-                                'h-1.5 w-1.5 shrink-0 rounded-full',
-                                !entry.enabled
-                                  ? 'bg-disabled'
-                                  : connectivity
-                                    ? connectivity.dot
-                                    : 'bg-accent',
-                              )}
-                            />
-                            {!entry.enabled
-                              ? 'Disabled'
-                              : connectivity
-                                ? connectivity.label
-                                : 'Draft'}
-                          </span>
-                        </td>
-                        <td
-                          className="h-[38px] border-b border-line py-0 pr-5 text-right align-middle"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <div className="inline-flex items-center gap-1">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              icon={Pencil}
-                              onClick={() => openEditModal(row)}
-                            >
-                              Edit
-                            </Button>
-                            {entry.repository ? (
-                              <IconButton
-                                icon={ExternalLink}
-                                label={`Open ${label} on GitHub`}
-                                onClick={() =>
-                                  app.openExternal(
-                                    `https://github.com/${entry.repository}/tree/${entry.sourceBranch || 'master'}`,
-                                  )
-                                }
-                              />
-                            ) : null}
-                            <IconButton
-                              icon={Trash2}
-                              tone="danger"
-                              label={`Remove ${label}`}
-                              onClick={() => removeRow(row.key)}
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <EmptyState
+                icon={FolderGit2}
+                title="No subsystem selected"
+                message="Pick a subsystem on the left to inspect or edit it, or add a new one."
+              />
             )}
-          </div>
+          </aside>
         </div>
       ) : (
         <div className="scroll-area min-h-0 flex-1">
@@ -928,22 +877,6 @@ function RegistryForm({
           </Button>
         </div>
       </footer>
-
-      {modal ? (
-        <SubsystemModal
-          key={modal.key}
-          state={modal}
-          live={modal.entry.id ? (liveById.get(modal.entry.id) ?? null) : null}
-          onClose={() => setModal(null)}
-          onApply={applyModal}
-          onRemove={() => removeRow(modal.key)}
-          onBrowse={(id) => {
-            app.selectSubsystem(id);
-            app.navigate('commit-browser');
-          }}
-          onOpenExternal={(url) => app.openExternal(url)}
-        />
-      ) : null}
     </div>
   );
 }
