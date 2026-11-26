@@ -4,6 +4,7 @@ import {
   ExternalLink,
   FileText,
   GitBranch,
+  GitPullRequestArrow,
   Package,
   Settings as SettingsIcon,
 } from 'lucide-react';
@@ -116,6 +117,10 @@ function CommitWorkspacePanel({
   // commit it belongs to so a commit switch falls back to that commit's first
   // file rather than a stale path. The Changes tab opens a file through it.
   const [selectedFile, setSelectedFile] = useState<{ sha: string; path: string } | null>(null);
+  const [excludedState, setExcludedState] = useState<{ sha: string; paths: string[] }>({
+    sha: '',
+    paths: [],
+  });
   // The commit rail's own width, separate from the diff splitter's. Its ceiling
   // depends on the live pane because the changed-files column and the diff keep
   // their own floors to its right.
@@ -221,6 +226,14 @@ function CommitWorkspacePanel({
     app.navigate('promote-commits');
   };
 
+  const currentSha = details.data?.sha ?? focusedSha ?? '';
+  const activeExcluded = useMemo(() => {
+    if (!currentSha || excludedState.sha !== currentSha) return [];
+    const files = details.data?.files;
+    if (!files) return excludedState.paths;
+    return excludedState.paths.filter((path) => files.some((file) => file.path === path));
+  }, [currentSha, excludedState, details.data?.files]);
+
   if (!subsystem) {
     return (
       <div className="p-5">
@@ -239,10 +252,22 @@ function CommitWorkspacePanel({
     );
   }
 
+  const toggleExcluded = (path: string) => {
+    if (!currentSha) return;
+    setExcludedState((prev) => {
+      const base = prev.sha === currentSha ? prev.paths : [];
+      const next = base.includes(path) ? base.filter((entry) => entry !== path) : [...base, path];
+      return { sha: currentSha, paths: next };
+    });
+  };
+
+  const statusKind = details.data?.status.kind;
+  const isPromotable = statusKind === 'eligible' || statusKind === 'reverted';
+
   const diffPanel = (
     <CommitDiffView
       subsystemId={subsystem.id}
-      sha={details.data?.sha ?? focusedSha ?? ''}
+      sha={currentSha}
       targetBranch={app.targetBranch}
       details={details.data}
       loading={details.loading}
@@ -254,7 +279,8 @@ function CommitWorkspacePanel({
       onSelectPath={(path) => {
         if (details.data) setSelectedFile({ sha: details.data.sha, path });
       }}
-      onPromoteHandoff={promoteHandoff}
+      excludedPaths={activeExcluded}
+      onToggleExcluded={toggleExcluded}
       mainRepository={app.auth.data?.mainRepository ?? null}
     />
   );
@@ -488,6 +514,45 @@ function CommitWorkspacePanel({
           </div>
         </div>
       ) : null}
+
+      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-raised px-4 py-2">
+        <div className="min-w-0 text-[11px] text-muted">
+          {!details.data ? (
+            <span>
+              Select a commit to inspect or promote to{' '}
+              <span className="mono">{app.targetBranch}</span>.
+            </span>
+          ) : (
+            <span className="mono tabular-nums">
+              {details.data.shortSha} · {details.data.files.length} file
+              {details.data.files.length === 1 ? '' : 's'} · target {app.targetBranch}
+              {activeExcluded.length > 0 ? ` · ${activeExcluded.length} excluded` : ''}
+              {!isPromotable ? ' · only eligible or reverted commits can be promoted' : ''}
+            </span>
+          )}
+        </div>
+        <Button
+          variant="primary"
+          icon={GitPullRequestArrow}
+          disabled={!details.data || !isPromotable}
+          onClick={() => {
+            if (details.data) promoteHandoff(details.data.sha, activeExcluded);
+          }}
+          title={
+            !details.data
+              ? 'Select a commit first'
+              : isPromotable
+                ? activeExcluded.length > 0
+                  ? `Select this commit and open the Promote tab without ${activeExcluded.length} excluded file(s)`
+                  : 'Select this commit and open the Promote tab to confirm it'
+                : 'Only eligible (or previously reverted) commits can be promoted'
+          }
+        >
+          {activeExcluded.length > 0
+            ? `Promote commit (${activeExcluded.length} excluded)`
+            : 'Promote commit'}
+        </Button>
+      </footer>
 
       {!isWide && detailsVisible ? (
         <>
