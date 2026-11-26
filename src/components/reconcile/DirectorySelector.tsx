@@ -108,6 +108,32 @@ function NodeDriftSummary({ node, dim = false }: { node: ReconcileDirectoryNode;
   );
 }
 
+const DEFAULT_EXPANDED_PATHS = ['src', 'src/app', 'src/app/api', 'src/modules'] as const;
+
+function expandedStorageKey(subsystemId: string): string {
+  return `vos-origins.reconcile-expanded:${subsystemId}`;
+}
+
+function readExpandedState(key: string): string[] | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((item): item is string => typeof item === 'string');
+  } catch {
+    return null;
+  }
+}
+
+function writeExpandedState(key: string, paths: Set<string>): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify([...paths]));
+  } catch {
+    // Storage may be unavailable in restricted webviews.
+  }
+}
+
 export function DirectorySelector({
   snapshot,
   loading,
@@ -125,13 +151,20 @@ export function DirectorySelector({
   onClearScope,
   onProceed,
 }: DirectorySelectorProps) {
+  const storageKey = expandedStorageKey(snapshot.subsystemId);
   const [splitWidth, setSplitWidth] = useState(500);
   const [search, setSearch] = useState('');
   const [changedOnly, setChangedOnly] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => {
+    const saved = readExpandedState(storageKey);
+    if (saved !== null) return new Set(saved);
+
+    const existingDirs = new Set(
+      snapshot.directories.filter((d) => d.kind === 'directory').map((d) => d.path),
+    );
     const initial = new Set<string>();
-    for (const dir of snapshot.directories) {
-      if (dir.kind === 'directory' && dir.depth === 0) initial.add(dir.path);
+    for (const path of DEFAULT_EXPANDED_PATHS) {
+      if (existingDirs.has(path)) initial.add(path);
     }
     for (const folder of selectedFolders) {
       const parts = folder.split('/');
@@ -187,16 +220,21 @@ export function DirectorySelector({
       const next = new Set(current);
       if (next.has(path)) next.delete(path);
       else next.add(path);
+      writeExpandedState(storageKey, next);
       return next;
     });
   };
 
   const expandAll = () => {
-    setExpanded(new Set(snapshot.directories.filter((d) => d.hasChildren).map((d) => d.path)));
+    const next = new Set(snapshot.directories.filter((d) => d.hasChildren).map((d) => d.path));
+    writeExpandedState(storageKey, next);
+    setExpanded(next);
   };
 
   const collapseAll = () => {
-    setExpanded(new Set());
+    const next = new Set<string>();
+    writeExpandedState(storageKey, next);
+    setExpanded(next);
   };
 
   const handleTreeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
