@@ -2,13 +2,11 @@ import { useEffect } from 'react';
 
 import { AppShell } from '../components/AppShell';
 import { PromotionDialog } from '../components/PromotionDialog';
-import { CommitBrowser } from '../pages/CommitBrowser';
-import { IntegrationHistory } from '../pages/IntegrationHistory';
 import { Distribute } from '../pages/Distribute';
-import { PromoteCommits } from '../pages/PromoteCommits';
+import { IntegrationHistory } from '../pages/IntegrationHistory';
+import { Promote } from '../pages/Promote';
 import { Reconcile } from '../pages/Reconcile';
 import { Settings } from '../pages/Settings';
-import { SubsystemDiff } from '../pages/SubsystemDiff';
 import { useApp } from './context';
 
 let fixtureNoticeShown = false;
@@ -73,9 +71,7 @@ export default function App() {
         notice={app.notice}
         onDismissNotice={app.dismissNotice}
       >
-        {route === 'commit-browser' ? <CommitBrowser /> : null}
-        {route === 'subsystem-diff' ? <SubsystemDiff /> : null}
-        {route === 'promote-commits' ? <PromoteCommits /> : null}
+        {route === 'promote' ? <Promote /> : null}
         {route === 'distribute' ? <Distribute /> : null}
         {route === 'reconcile' ? <Reconcile /> : null}
         {route === 'integration-history' ? <IntegrationHistory /> : null}

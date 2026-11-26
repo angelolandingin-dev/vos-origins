@@ -548,7 +548,7 @@ function RegistryForm({
                         trailingIcon={ArrowUpRight}
                         onClick={() => {
                           app.selectSubsystem(activeLive.id);
-                          app.navigate('commit-browser');
+                          app.navigate('promote');
                         }}
                       >
                         Browse

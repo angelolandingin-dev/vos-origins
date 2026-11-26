@@ -41,7 +41,7 @@ type PromotionInternal = Omit<
 >;
 
 export function AppDataProvider({ children }: { children: ReactNode }) {
-  const [route, setRoute] = useState<Route>('commit-browser');
+  const [route, setRoute] = useState<Route>('promote');
   const [settingsGroup, setSettingsGroup] = useState<SettingsGroup | null>(null);
   const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo | null>(null);
   const [updateChecked, setUpdateChecked] = useState(false);

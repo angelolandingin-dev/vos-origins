@@ -144,9 +144,7 @@ export function CommitTable({
   const totalPages = Math.max(1, Math.ceil(total / Math.max(pageSize, 1)));
   const pageShas = useMemo(() => commits.map((commit) => commit.sha), [commits]);
   const selectedList = selectedShas ?? [];
-  const selectable = Boolean(
-    selectedShas && onToggleSha && onSelectShas && onPromoteSelected && onClearSelection,
-  );
+  const selectable = Boolean(selectedShas && onToggleSha && onSelectShas && onClearSelection);
   const allPageSelected =
     selectable && pageShas.length > 0 && pageShas.every((sha) => selectedList.includes(sha));
   const somePageSelected = selectable && pageShas.some((sha) => selectedList.includes(sha));
@@ -215,7 +213,7 @@ export function CommitTable({
 
   const selectionControls = (
     <>
-      {selectable && selectedList.length > 0 ? (
+      {!isSidebar && selectable && selectedList.length > 0 ? (
         <>
           <span className="meta text-accent-ink tabular-nums">
             <SquareCheck className="h-2.5 w-2.5" aria-hidden="true" />
@@ -224,7 +222,7 @@ export function CommitTable({
           <IconButton icon={X} label="Clear commit selection" onClick={handleClearSelection} />
         </>
       ) : null}
-      {selectable ? (
+      {selectable && onPromoteSelected ? (
         <Button
           size="sm"
           variant="primary"
@@ -338,9 +336,9 @@ export function CommitTable({
                         : undefined
                     }
                     className={cx(
-                      'row-hover flex w-full items-start gap-2.5 px-2.5 py-1.5 text-left',
+                      'row-hover flex w-full items-start gap-2.5 border-l-2 border-l-transparent px-2.5 py-1.5 text-left',
                       interactive && 'cursor-pointer',
-                      (focused || selected) && 'bg-selection',
+                      focused ? 'border-l-accent bg-selection' : selected && 'bg-accent-soft/25',
                     )}
                   >
                     {selectable ? (

@@ -1,21 +1,54 @@
+import { useState } from 'react';
 import { ArrowDownToLine, GitBranch, RefreshCw } from 'lucide-react';
 
 import { useApp } from '../app/context';
 import { CommitWorkspace } from '../components/CommitWorkspace';
 import { SubsystemSelector } from '../components/SubsystemSelector';
+import { cx } from '../components/ui/cx';
 import { Button, EmptyState, LoadingState, Select } from '../components/ui/primitives';
+import { SubsystemDiff } from './SubsystemDiff';
 
-/** Commit Browser (spec §3.3): commit-focused framing of the shared workspace. */
-export function CommitBrowser() {
+type PromoteView = 'commits' | 'file-drift';
+
+/** Unified Subsystem → Main promotion workspace (by commits or by file drift). */
+export function Promote() {
   const app = useApp();
+  const [view, setView] = useState<PromoteView>('commits');
   const subsystems = app.subsystems.data ?? [];
   const branches = (app.targetBranches.data?.branches ?? []).filter((branch) => branch.allowed);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-2.5">
-        <div className="min-w-0">
-          <h1 className="text-[14px] font-semibold text-fg">Commit Browser</h1>
+        <div className="flex min-w-0 items-center gap-3">
+          <h1 className="text-[14px] font-semibold text-fg">Promote</h1>
+          <div
+            role="group"
+            aria-label="Promote view mode"
+            className="flex h-[25px] overflow-hidden rounded-md border border-line bg-surface"
+          >
+            {(
+              [
+                { id: 'commits', label: 'Commits' },
+                { id: 'file-drift', label: 'File Drift' },
+              ] as const
+            ).map((opt, index) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setView(opt.id)}
+                className={cx(
+                  'px-2.5 text-[11px] transition-colors',
+                  index > 0 && 'border-l border-line',
+                  view === opt.id
+                    ? 'bg-raised font-semibold text-fg'
+                    : 'text-muted hover:bg-hover hover:text-fg',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -51,7 +84,7 @@ export function CommitBrowser() {
             size="sm"
             icon={RefreshCw}
             onClick={app.bumpDataVersion}
-            title="Refetch registry, commits, runs and history"
+            title="Refetch registry, commits, file drift, and history"
           >
             Refresh
           </Button>
@@ -68,11 +101,13 @@ export function CommitBrowser() {
             <EmptyState
               icon={GitBranch}
               title="No registered subsystem"
-              message="Register a subsystem in Settings → Main system registry, then refresh to browse its commit history."
+              message="Register a subsystem in Settings → Registry, then refresh to browse and promote its changes."
             />
           </div>
-        ) : (
+        ) : view === 'commits' ? (
           <CommitWorkspace />
+        ) : (
+          <SubsystemDiff embedded />
         )}
       </div>
     </div>

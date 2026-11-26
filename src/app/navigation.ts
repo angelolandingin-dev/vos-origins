@@ -1,12 +1,5 @@
-/** Every screen required by the spec (section 3.3). */
-export type Route =
-  | 'commit-browser'
-  | 'subsystem-diff'
-  | 'promote-commits'
-  | 'distribute'
-  | 'reconcile'
-  | 'integration-history'
-  | 'settings';
+/** Primary navigation routes. */
+export type Route = 'promote' | 'distribute' | 'reconcile' | 'integration-history' | 'settings';
 
 export interface NavItem {
   id: Route;
@@ -16,24 +9,14 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   {
-    id: 'commit-browser',
-    label: 'Commit Browser',
-    description: 'Browse source history and inspect commits',
-  },
-  {
-    id: 'subsystem-diff',
-    label: 'Subsystem Diff',
-    description: 'Files missing or diverged versus the target branch',
-  },
-  {
-    id: 'promote-commits',
-    label: 'Promote Commits',
-    description: 'Confirm SHAs and target branch, then dispatch',
+    id: 'promote',
+    label: 'Promote',
+    description: 'Browse commits or file drift and promote subsystem changes to main',
   },
   {
     id: 'distribute',
     label: 'Distribute',
-    description: 'Send selected trunk commits down to subsystem pull requests',
+    description: 'Send a trunk commit down to a subsystem pull request',
   },
   {
     id: 'reconcile',
@@ -42,44 +25,36 @@ export const NAV_ITEMS: NavItem[] = [
   },
   {
     id: 'integration-history',
-    label: 'Integration History',
+    label: 'History',
     description: 'Merged, pending, reverted and restored per branch',
   },
   {
     id: 'settings',
     label: 'Settings',
-    description: 'Repository, CLI status, cache and diagnostics',
+    description: 'Registry, CLI status, cache, updates, and diagnostics',
   },
 ];
 
 export const ROUTE_META: Record<Route, { title: string; subtitle: string }> = {
-  'commit-browser': {
-    title: 'Commit Browser',
-    subtitle: 'Browse source history and inspect commits',
-  },
-  'subsystem-diff': {
-    title: 'Subsystem Diff',
-    subtitle: 'Files missing or diverged versus the target branch',
-  },
-  'promote-commits': {
-    title: 'Promote Commits',
-    subtitle: 'Confirm SHAs and target branch, then dispatch',
+  promote: {
+    title: 'Promote',
+    subtitle: 'Browse commits or file drift and promote subsystem changes to main',
   },
   distribute: {
     title: 'Distribute',
-    subtitle: 'Send selected trunk commits down to subsystem pull requests',
+    subtitle: 'Send a trunk commit down to a subsystem pull request',
   },
   reconcile: {
     title: 'Reconcile',
     subtitle: 'Mirror selected folders between a subsystem and main',
   },
   'integration-history': {
-    title: 'Integration History',
+    title: 'History',
     subtitle: 'Merged, pending, reverted and restored per branch',
   },
   settings: {
     title: 'Settings',
-    subtitle: 'Repository, CLI status, cache and diagnostics',
+    subtitle: 'Registry, CLI status, cache, updates, and diagnostics',
   },
 };
 
