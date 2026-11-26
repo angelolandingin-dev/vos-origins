@@ -518,38 +518,72 @@ function PromotionDialogContent({
     >
       {result?.accepted ? (
         <div className="space-y-5">
-          <div
-            ref={outcomeRef}
-            className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-line bg-raised px-4 py-3"
-          >
-            <div className="flex min-w-0 flex-1 items-start gap-2.5">
-              <CheckCircle2
-                className="mt-0.5 h-4 w-4 shrink-0 text-status-applied"
-                aria-hidden="true"
-              />
-              <div className="min-w-0">
-                <h3 className="text-xs font-semibold text-fg">
-                  {result.delivery === 'local_direct'
-                    ? `Committed to ${result.targetBranch} locally`
-                    : result.delivery === 'worktree'
-                      ? `Staged into working tree on ${result.targetBranch}`
-                      : result.delivery === 'local'
-                        ? 'Local integration branch created'
-                        : result.prUrl
-                          ? `Integration PR #${result.prNumber ?? '?'} opened`
-                          : 'Promotion complete'}
-                </h3>
-                <p className="mt-0.5 text-[11px] leading-relaxed text-muted">{result.message}</p>
-              </div>
-            </div>
+          {(() => {
+            const warningCount = result.findings.filter((f) => f.level === 'warning').length;
+            const errorCount = result.findings.filter((f) => f.level === 'error').length;
+            const statusLabel =
+              result.delivery === 'local_direct'
+                ? 'Committed locally'
+                : result.delivery === 'worktree'
+                  ? 'Staged in working tree'
+                  : result.delivery === 'local'
+                    ? 'Branch created'
+                    : result.prUrl
+                      ? `PR #${result.prNumber ?? '?'} opened`
+                      : 'Succeeded';
+            const headline =
+              result.delivery === 'local_direct'
+                ? `Committed to ${result.targetBranch} locally`
+                : result.delivery === 'worktree'
+                  ? `Staged into working tree on ${result.targetBranch}`
+                  : result.delivery === 'local'
+                    ? 'Local integration branch created'
+                    : result.prUrl
+                      ? `Integration PR #${result.prNumber ?? '?'} opened`
+                      : 'Promotion succeeded';
 
-            <div className="flex shrink-0 flex-col items-end gap-1 text-[11px]">
-              <span className="mono rounded border border-line bg-surface px-2 py-0.5 text-fg">
-                {result.branch}
-              </span>
-              <span className="text-muted">{formatDateTime(result.requestedAt)}</span>
-            </div>
-          </div>
+            return (
+              <div
+                ref={outcomeRef}
+                className="flex flex-wrap items-start justify-between gap-4 rounded-md border border-status-applied/40 border-l-[3px] border-l-status-applied bg-status-applied-soft px-4 py-3.5"
+              >
+                <div className="flex min-w-0 flex-1 items-start gap-3">
+                  <CheckCircle2
+                    className="mt-0.5 h-5 w-5 shrink-0 text-status-applied-ink"
+                    aria-hidden="true"
+                  />
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-[13px] font-semibold text-status-applied-ink">
+                        {headline}
+                      </h3>
+                      <span className="mono rounded border border-status-applied/40 bg-status-applied/15 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-status-applied-ink uppercase">
+                        {statusLabel}
+                      </span>
+                      {warningCount > 0 ? (
+                        <span className="mono rounded border border-status-unknown/40 bg-status-unknown-soft px-1.5 py-0.5 text-[10px] font-semibold text-status-unknown-ink">
+                          {warningCount} warning{warningCount === 1 ? '' : 's'}
+                        </span>
+                      ) : null}
+                      {errorCount > 0 ? (
+                        <span className="mono rounded border border-status-blocked/40 bg-status-blocked-soft px-1.5 py-0.5 text-[10px] font-semibold text-status-blocked-ink">
+                          {errorCount} error{errorCount === 1 ? '' : 's'}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-fg/85">{result.message}</p>
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 flex-col items-end gap-1 text-[11px]">
+                  <span className="mono rounded border border-status-applied/30 bg-surface/80 px-2 py-0.5 font-medium text-fg">
+                    {result.branch}
+                  </span>
+                  <span className="text-muted">{formatDateTime(result.requestedAt)}</span>
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
             {/* Left column: changed file counts & expandable path lists */}
@@ -572,8 +606,12 @@ function PromotionDialogContent({
                       />
                       Execution log
                     </span>
-                    <span className="mono text-disabled">
-                      {PROMOTION_STAGES.length} steps completed
+                    <span className="mono flex items-center gap-1.5 text-status-applied-ink">
+                      <span
+                        className="h-1.5 w-1.5 rounded-full bg-status-applied"
+                        aria-hidden="true"
+                      />
+                      {PROMOTION_STAGES.length} / {PROMOTION_STAGES.length} steps
                     </span>
                   </summary>
                   <div className="border-t border-line p-2.5">

@@ -712,8 +712,8 @@ function RegistryForm({
           </aside>
         </div>
       ) : (
-        <div className="scroll-area min-h-0 flex-1">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-5 py-2.5 text-[11px] text-muted">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-5 py-2.5 text-[11px] text-muted">
             <span>Tool-local configuration — nothing is written into any repository.</span>
             <span className="mono truncate">
               Active: <span className="text-fg">{mainRepositoryInUse || 'unknown'}</span>
@@ -722,29 +722,27 @@ function RegistryForm({
             </span>
           </div>
 
-          <section aria-label="Main system" className="border-b border-line">
-            <div className="border-b border-line/60 bg-raised/40 px-5 py-2">
-              <h2 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                Main system
-              </h2>
-              <p className="mt-0.5 text-[11px] text-muted">
-                Target repository and local clone used for promotions, diffs, and reconciliation.
-              </p>
-            </div>
-            <div className="divide-y divide-line">
-              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-center md:justify-between md:gap-8">
-                <div className="min-w-0 flex-1">
+          <div className="grid min-h-0 flex-1 grid-cols-1 divide-y divide-line xl:grid-cols-2 xl:divide-x xl:divide-y-0">
+            <section aria-label="Main system" className="scroll-area flex min-h-0 flex-col">
+              <div className="border-b border-line bg-raised/40 px-5 py-2.5">
+                <h2 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                  Main system
+                </h2>
+                <p className="mt-0.5 text-[11px] text-muted">
+                  Target repository and local clone used for promotions, diffs, and reconciliation.
+                </p>
+              </div>
+              <div className="space-y-4 p-5">
+                <div>
                   <label htmlFor="registry-main-repo" className="block text-xs font-medium text-fg">
                     Main repository
                   </label>
                   <p className="mt-0.5 text-[11px] text-muted">
                     GitHub repository in <span className="mono">owner/name</span> format.
                   </p>
-                </div>
-                <div className="w-full shrink-0 md:w-[400px]">
                   <input
                     id="registry-main-repo"
-                    className="input mono"
+                    className="input mono mt-1.5"
                     value={config.mainRepository}
                     spellCheck={false}
                     autoComplete="off"
@@ -753,10 +751,8 @@ function RegistryForm({
                     }
                   />
                 </div>
-              </div>
 
-              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-center md:justify-between md:gap-8">
-                <div className="min-w-0 flex-1">
+                <div>
                   <label
                     htmlFor="registry-local-path"
                     className="block text-xs font-medium text-fg"
@@ -766,11 +762,9 @@ function RegistryForm({
                   <p className="mt-0.5 text-[11px] text-muted">
                     Absolute path for local promotion. Leave blank to use a tool-managed checkout.
                   </p>
-                </div>
-                <div className="w-full shrink-0 md:w-[400px]">
                   <input
                     id="registry-local-path"
-                    className="input mono"
+                    className="input mono mt-1.5"
                     value={config.localMainRepositoryPath ?? ''}
                     spellCheck={false}
                     autoComplete="off"
@@ -785,10 +779,8 @@ function RegistryForm({
                     }
                   />
                 </div>
-              </div>
 
-              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-start md:justify-between md:gap-8">
-                <div className="min-w-0 flex-1">
+                <div>
                   <label
                     htmlFor="registry-global-files"
                     className="block text-xs font-medium text-fg"
@@ -799,12 +791,10 @@ function RegistryForm({
                     One path or directory prefix per line. Protected from accidental subsystem
                     overwrites during promotion and reconciliation.
                   </p>
-                </div>
-                <div className="w-full shrink-0 md:w-[400px]">
                   <textarea
                     id="registry-global-files"
-                    className="input mono h-auto min-h-[104px] resize-none py-2"
-                    rows={4}
+                    className="input mono mt-1.5 h-auto min-h-[120px] resize-none py-2"
+                    rows={5}
                     value={globalFilesDraft}
                     spellCheck={false}
                     autoComplete="off"
@@ -819,27 +809,23 @@ function RegistryForm({
                   />
                 </div>
               </div>
-            </div>
-          </section>
+            </section>
 
-          <section aria-label="Promotion policy" className="border-b border-line">
-            <div className="border-b border-line/60 bg-raised/40 px-5 py-2">
-              <h2 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                Promotion policy
-              </h2>
-              <p className="mt-0.5 text-[11px] text-muted">
-                Local-first — push and pull request creation are opt-in per promotion.
-              </p>
-            </div>
-            <div className="divide-y divide-line">
-              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-start md:justify-between md:gap-8">
-                <div className="min-w-0 flex-1">
+            <section aria-label="Promotion policy" className="scroll-area flex min-h-0 flex-col">
+              <div className="border-b border-line bg-raised/40 px-5 py-2.5">
+                <h2 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                  Promotion policy
+                </h2>
+                <p className="mt-0.5 text-[11px] text-muted">
+                  Local-first — push and pull request creation are opt-in per promotion.
+                </p>
+              </div>
+              <div className="space-y-4 p-5">
+                <div>
                   <p className="text-xs font-medium text-fg">Allowed target branches</p>
-                  <p className="mt-0.5 text-[11px] text-muted">
+                  <p className="mt-0.5 mb-1.5 text-[11px] text-muted">
                     Comma-separated branch names allowed as promotion targets.
                   </p>
-                </div>
-                <div className="w-full shrink-0 md:w-[400px]">
                   <ListField
                     ariaLabel="Allowed target branches"
                     placeholder="master, UAT"
@@ -852,17 +838,13 @@ function RegistryForm({
                     }
                   />
                 </div>
-              </div>
 
-              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-start md:justify-between md:gap-8">
-                <div className="min-w-0 flex-1">
+                <div>
                   <p className="text-xs font-medium text-fg">Allowed branch patterns</p>
-                  <p className="mt-0.5 text-[11px] text-muted">
+                  <p className="mt-0.5 mb-1.5 text-[11px] text-muted">
                     Safe glob patterns for release branches, e.g.{' '}
                     <span className="mono">release/*</span>.
                   </p>
-                </div>
-                <div className="w-full shrink-0 md:w-[400px]">
                   <ListField
                     ariaLabel="Allowed branch patterns"
                     placeholder="release/*"
@@ -875,19 +857,11 @@ function RegistryForm({
                     }
                   />
                 </div>
-              </div>
 
-              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-center md:justify-between md:gap-8">
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-medium text-fg">Commit attribution</p>
-                  <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
-                    Authors promotion commits as your signed-in GitHub account (via a GitHub noreply
-                    address). Unchecked authors them as the tool&apos;s bot identity.
-                  </p>
-                </div>
-                <div className="flex w-full shrink-0 items-center md:w-[400px]">
-                  <label className="flex cursor-pointer items-center gap-2 text-xs text-fg select-none">
+                <div className="border-t border-line pt-4">
+                  <label className="flex cursor-pointer items-start gap-2.5 select-none">
                     <Checkbox
+                      className="mt-0.5"
                       checked={config.promotion.attributeToAccount}
                       onChange={(event) =>
                         setConfig((current) => ({
@@ -900,12 +874,20 @@ function RegistryForm({
                       }
                       label="Attribute promotions to my GitHub account"
                     />
-                    <span>Attribute promotions to my GitHub account</span>
+                    <span>
+                      <span className="block text-xs font-medium text-fg">
+                        Attribute promotions to my GitHub account
+                      </span>
+                      <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
+                        Authors promotion commits as your signed-in GitHub account (via a GitHub
+                        noreply address). Unchecked authors them as the tool&apos;s bot identity.
+                      </span>
+                    </span>
                   </label>
                 </div>
               </div>
-            </div>
-          </section>
+            </section>
+          </div>
         </div>
       )}
 
