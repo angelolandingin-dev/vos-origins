@@ -54,14 +54,12 @@ function splitLines(value: string): string[] {
 }
 
 function ListField({
-  label,
-  hint,
+  ariaLabel,
   value,
   placeholder,
   onChange,
 }: {
-  label: string;
-  hint?: string;
+  ariaLabel: string;
   value: string[];
   placeholder?: string;
   onChange: (next: string[]) => void;
@@ -69,21 +67,18 @@ function ListField({
   const [draft, setDraft] = useState(value.join(', '));
   return (
     <div className="space-y-1.5">
-      <label className="block">
-        <span className="text-xs font-medium text-fg">{label}</span>
-        {hint ? <span className="mt-0.5 block text-[11px] text-muted">{hint}</span> : null}
-        <input
-          className="input mono mt-1.5"
-          value={draft}
-          placeholder={placeholder}
-          spellCheck={false}
-          autoComplete="off"
-          onChange={(event) => {
-            setDraft(event.target.value);
-            onChange(splitList(event.target.value));
-          }}
-        />
-      </label>
+      <input
+        className="input mono"
+        aria-label={ariaLabel}
+        value={draft}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(event) => {
+          setDraft(event.target.value);
+          onChange(splitList(event.target.value));
+        }}
+      />
       {value.length > 0 ? (
         <div className="flex flex-wrap gap-1">
           {value.map((item) => (
@@ -718,8 +713,13 @@ function RegistryForm({
         </div>
       ) : (
         <div className="scroll-area min-h-0 flex-1">
-          <div className="border-b border-line bg-raised/40 px-5 py-2 text-[11px] text-muted">
-            Tool-local configuration — nothing is written into any repository.
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-5 py-2.5 text-[11px] text-muted">
+            <span>Tool-local configuration — nothing is written into any repository.</span>
+            <span className="mono truncate">
+              Active: <span className="text-fg">{mainRepositoryInUse || 'unknown'}</span>
+              {' · '}
+              {localPathInEffect || 'managed checkout'}
+            </span>
           </div>
 
           <section aria-label="Main system" className="border-b border-line">
@@ -731,12 +731,20 @@ function RegistryForm({
                 Target repository and local clone used for promotions, diffs, and reconciliation.
               </p>
             </div>
-            <div className="max-w-3xl space-y-4 px-5 py-4">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="block">
-                  <span className="text-xs font-medium text-fg">Main repository (owner/name)</span>
+            <div className="divide-y divide-line">
+              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-center md:justify-between md:gap-8">
+                <div className="min-w-0 flex-1">
+                  <label htmlFor="registry-main-repo" className="block text-xs font-medium text-fg">
+                    Main repository
+                  </label>
+                  <p className="mt-0.5 text-[11px] text-muted">
+                    GitHub repository in <span className="mono">owner/name</span> format.
+                  </p>
+                </div>
+                <div className="w-full shrink-0 md:w-[400px]">
                   <input
-                    className="input mono mt-1.5"
+                    id="registry-main-repo"
+                    className="input mono"
                     value={config.mainRepository}
                     spellCheck={false}
                     autoComplete="off"
@@ -744,12 +752,25 @@ function RegistryForm({
                       setConfig((current) => ({ ...current, mainRepository: event.target.value }))
                     }
                   />
-                </label>
+                </div>
+              </div>
 
-                <label className="block">
-                  <span className="text-xs font-medium text-fg">Local main repository clone</span>
+              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-center md:justify-between md:gap-8">
+                <div className="min-w-0 flex-1">
+                  <label
+                    htmlFor="registry-local-path"
+                    className="block text-xs font-medium text-fg"
+                  >
+                    Local main repository clone
+                  </label>
+                  <p className="mt-0.5 text-[11px] text-muted">
+                    Absolute path for local promotion. Leave blank to use a tool-managed checkout.
+                  </p>
+                </div>
+                <div className="w-full shrink-0 md:w-[400px]">
                   <input
-                    className="input mono mt-1.5"
+                    id="registry-local-path"
+                    className="input mono"
                     value={config.localMainRepositoryPath ?? ''}
                     spellCheck={false}
                     autoComplete="off"
@@ -763,41 +784,45 @@ function RegistryForm({
                       }))
                     }
                   />
-                </label>
+                </div>
               </div>
 
-              <p className="mono truncate text-[11px] text-muted">
-                Active target: {mainRepositoryInUse || 'unknown'} ·{' '}
-                {localPathInEffect || 'managed checkout'}
-              </p>
-
-              <label className="block">
-                <span className="text-xs font-medium text-fg">Global files (main-owned)</span>
-                <span className="mt-0.5 block text-[11px] text-muted">
-                  One path or directory prefix per line. Protected from accidental subsystem
-                  overwrites.
-                </span>
-                <textarea
-                  className="input mono mt-1.5 h-auto min-h-[104px] py-1.5"
-                  rows={4}
-                  value={globalFilesDraft}
-                  spellCheck={false}
-                  autoComplete="off"
-                  placeholder={'src/app/layout.tsx\nsrc/components/shared/'}
-                  aria-label="Global files (main-owned)"
-                  onChange={(event) => {
-                    setGlobalFilesDraft(event.target.value);
-                    setConfig((current) => ({
-                      ...current,
-                      globalFiles: splitLines(event.target.value),
-                    }));
-                  }}
-                />
-              </label>
+              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-start md:justify-between md:gap-8">
+                <div className="min-w-0 flex-1">
+                  <label
+                    htmlFor="registry-global-files"
+                    className="block text-xs font-medium text-fg"
+                  >
+                    Global files (main-owned)
+                  </label>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
+                    One path or directory prefix per line. Protected from accidental subsystem
+                    overwrites during promotion and reconciliation.
+                  </p>
+                </div>
+                <div className="w-full shrink-0 md:w-[400px]">
+                  <textarea
+                    id="registry-global-files"
+                    className="input mono h-auto min-h-[104px] py-1.5"
+                    rows={4}
+                    value={globalFilesDraft}
+                    spellCheck={false}
+                    autoComplete="off"
+                    placeholder={'src/app/layout.tsx\nsrc/components/shared/'}
+                    onChange={(event) => {
+                      setGlobalFilesDraft(event.target.value);
+                      setConfig((current) => ({
+                        ...current,
+                        globalFiles: splitLines(event.target.value),
+                      }));
+                    }}
+                  />
+                </div>
+              </div>
             </div>
           </section>
 
-          <section aria-label="Promotion policy">
+          <section aria-label="Promotion policy" className="border-b border-line">
             <div className="border-b border-line/60 bg-raised/40 px-5 py-2">
               <h2 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
                 Promotion policy
@@ -806,60 +831,79 @@ function RegistryForm({
                 Local-first — push and pull request creation are opt-in per promotion.
               </p>
             </div>
-            <div className="max-w-3xl space-y-4 px-5 py-4">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <ListField
-                  label="Allowed target branches"
-                  hint="Comma-separated branch names allowed as promotion targets."
-                  placeholder="master, UAT"
-                  value={config.promotion.allowedTargetBranches}
-                  onChange={(next) =>
-                    setConfig((current) => ({
-                      ...current,
-                      promotion: { ...current.promotion, allowedTargetBranches: next },
-                    }))
-                  }
-                />
-
-                <ListField
-                  label="Allowed branch patterns"
-                  hint="Safe glob patterns for release branches, e.g. release/*."
-                  placeholder="release/*"
-                  value={config.promotion.allowedTargetBranchPatterns}
-                  onChange={(next) =>
-                    setConfig((current) => ({
-                      ...current,
-                      promotion: { ...current.promotion, allowedTargetBranchPatterns: next },
-                    }))
-                  }
-                />
+            <div className="divide-y divide-line">
+              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-start md:justify-between md:gap-8">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-fg">Allowed target branches</p>
+                  <p className="mt-0.5 text-[11px] text-muted">
+                    Comma-separated branch names allowed as promotion targets.
+                  </p>
+                </div>
+                <div className="w-full shrink-0 md:w-[400px]">
+                  <ListField
+                    ariaLabel="Allowed target branches"
+                    placeholder="master, UAT"
+                    value={config.promotion.allowedTargetBranches}
+                    onChange={(next) =>
+                      setConfig((current) => ({
+                        ...current,
+                        promotion: { ...current.promotion, allowedTargetBranches: next },
+                      }))
+                    }
+                  />
+                </div>
               </div>
 
-              <label className="flex items-start gap-2.5 pt-1">
-                <Checkbox
-                  className="mt-0.5"
-                  checked={config.promotion.attributeToAccount}
-                  onChange={(event) =>
-                    setConfig((current) => ({
-                      ...current,
-                      promotion: {
-                        ...current.promotion,
-                        attributeToAccount: event.target.checked,
-                      },
-                    }))
-                  }
-                  label="Attribute promotions to my GitHub account"
-                />
-                <span>
-                  <span className="text-xs font-medium text-fg">
-                    Attribute promotions to my GitHub account
-                  </span>
-                  <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
+              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-start md:justify-between md:gap-8">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-fg">Allowed branch patterns</p>
+                  <p className="mt-0.5 text-[11px] text-muted">
+                    Safe glob patterns for release branches, e.g.{' '}
+                    <span className="mono">release/*</span>.
+                  </p>
+                </div>
+                <div className="w-full shrink-0 md:w-[400px]">
+                  <ListField
+                    ariaLabel="Allowed branch patterns"
+                    placeholder="release/*"
+                    value={config.promotion.allowedTargetBranchPatterns}
+                    onChange={(next) =>
+                      setConfig((current) => ({
+                        ...current,
+                        promotion: { ...current.promotion, allowedTargetBranchPatterns: next },
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3 px-5 py-3.5 md:flex-row md:items-center md:justify-between md:gap-8">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-fg">Commit attribution</p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
                     Authors promotion commits as your signed-in GitHub account (via a GitHub noreply
                     address). Unchecked authors them as the tool&apos;s bot identity.
-                  </span>
-                </span>
-              </label>
+                  </p>
+                </div>
+                <div className="flex w-full shrink-0 items-center md:w-[400px]">
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-fg select-none">
+                    <Checkbox
+                      checked={config.promotion.attributeToAccount}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          promotion: {
+                            ...current.promotion,
+                            attributeToAccount: event.target.checked,
+                          },
+                        }))
+                      }
+                      label="Attribute promotions to my GitHub account"
+                    />
+                    <span>Attribute promotions to my GitHub account</span>
+                  </label>
+                </div>
+              </div>
             </div>
           </section>
         </div>

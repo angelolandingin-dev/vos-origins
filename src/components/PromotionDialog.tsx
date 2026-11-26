@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  Copy,
   ExternalLink,
   GitBranch,
   GitPullRequestArrow,
@@ -26,13 +30,13 @@ import { RevertsNewerLine } from './RevertsNewer';
 import { CommitStatusBadge } from './StatusBadge';
 import { CommitFileList } from './CommitFileList';
 import { cx } from './ui/cx';
+import { formatDateTime } from './ui/format';
 import {
   Button,
   Checkbox,
   Field,
   IconButton,
   InlineAlert,
-  KeyValue,
   Modal,
   Select,
   Spinner,
@@ -115,28 +119,37 @@ function ResultChanges({
 }) {
   const total = replaced.length + deleted.length + unchanged.length + excluded.length;
   if (total === 0) return null;
-  const counts = [
-    `${replaced.length} overwritten`,
-    `${deleted.length} deleted`,
-    `${unchanged.length} unchanged`,
-    `${excluded.length} excluded`,
-  ].join(' · ');
+
+  const stats = [
+    { label: 'Overwritten', value: replaced.length, tone: 'text-accent-ink' },
+    { label: 'Deleted', value: deleted.length, tone: 'text-status-blocked-ink' },
+    { label: 'Unchanged', value: unchanged.length, tone: 'text-muted' },
+    { label: 'Excluded', value: excluded.length, tone: 'text-muted' },
+  ];
+
   return (
-    <section className="space-y-2">
-      <div className="flex h-[29px] items-center justify-between gap-2">
-        <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-          What changed
-        </h3>
-        <span className="mono text-right text-muted tabular-nums">{counts}</span>
+    <section className="space-y-3">
+      <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">What changed</h3>
+      <div className="grid grid-cols-4 divide-x divide-line overflow-hidden rounded-md border border-line bg-surface">
+        {stats.map((stat) => (
+          <div key={stat.label} className="px-3 py-2">
+            <p className="text-[10px] font-medium text-muted">{stat.label}</p>
+            <p
+              className={cx(
+                'mono mt-0.5 text-sm font-semibold tabular-nums',
+                stat.value > 0 ? stat.tone : 'text-disabled',
+              )}
+            >
+              {stat.value}
+            </p>
+          </div>
+        ))}
       </div>
-      {replaced.length > 0 ? (
+      {replaced.length > 0 && flagged.length > 0 ? (
         <p className="text-[11px] leading-relaxed text-muted">
-          {replaced.length} path{replaced.length === 1 ? '' : 's'} overwritten with the
-          subsystem&apos;s copy
-          {flagged.length > 0
-            ? ` (${flagged.length} had diverged in the main system — review before merging)`
-            : ''}
-          . The overwrite is recorded in the commit trailers.
+          {flagged.length} of the {replaced.length} overwritten path
+          {replaced.length === 1 ? '' : 's'} had diverged in the main system — review the diff
+          before pushing.
         </p>
       ) : null}
       <div className="space-y-1.5">
@@ -151,33 +164,40 @@ function ResultChanges({
 
 function ResultNotes({ findings }: { findings: ValidationFinding[] }) {
   const alerts = findings.filter((finding) => finding.level !== 'info');
-  const infos = findings.filter((finding) => finding.level === 'info');
-  if (findings.length === 0) return null;
+  const alertCodes = new Set(alerts.map((finding) => finding.code));
+  const infos = findings.filter(
+    (finding) => finding.level === 'info' && !alertCodes.has(finding.code),
+  );
+  if (alerts.length === 0 && infos.length === 0) return null;
+
   return (
-    <div className="space-y-2">
-      <ul className="space-y-2">
-        {alerts.map((finding) => (
-          <li key={finding.code}>
-            <InlineAlert
-              tone={finding.level === 'error' ? 'danger' : 'warning'}
-              title={finding.message}
-            >
-              {finding.remedy ? <p>{finding.remedy}</p> : null}
-            </InlineAlert>
-          </li>
-        ))}
-      </ul>
+    <div className="space-y-2.5">
+      {alerts.map((finding) => (
+        <InlineAlert
+          key={finding.code}
+          tone={finding.level === 'error' ? 'danger' : 'warning'}
+          title={finding.message.replace(
+            /\(listed under Replaced\)/g,
+            '(listed under Overwritten)',
+          )}
+        >
+          {finding.remedy ? <p>{finding.remedy}</p> : null}
+        </InlineAlert>
+      ))}
       {infos.length > 0 ? (
-        <InlineAlert tone="info" title={`${infos.length} note${infos.length === 1 ? '' : 's'}`}>
-          <ul className="list-disc space-y-1 pl-4">
+        <div className="rounded-md border border-line bg-raised/40 px-3 py-2.5">
+          <p className="text-[11px] font-semibold tracking-wide text-muted uppercase">Notes</p>
+          <ul className="mt-1.5 space-y-1 text-[11px] leading-relaxed text-muted">
             {infos.map((finding) => (
               <li key={finding.code}>
-                <p>{finding.message}</p>
-                {finding.remedy ? <p className="text-muted">{finding.remedy}</p> : null}
+                {finding.message.replace(
+                  /\(listed under Replaced\)/g,
+                  '(listed under Overwritten)',
+                )}
               </li>
             ))}
           </ul>
-        </InlineAlert>
+        </div>
       ) : null}
     </div>
   );
@@ -497,90 +517,118 @@ function PromotionDialogContent({
       }
     >
       {result?.accepted ? (
-        <div className="space-y-4">
-          <div ref={outcomeRef}>
-            <InlineAlert
-              tone="success"
-              title={
-                result.delivery === 'local_direct'
-                  ? `Committed to ${result.targetBranch} locally — push when ready`
-                  : result.delivery === 'worktree'
-                    ? `Staged into working tree on ${result.targetBranch} — no commit, no push`
-                    : result.delivery === 'local'
-                      ? 'Local branch + commit created'
-                      : result.prUrl
-                        ? `Integration PR #${result.prNumber ?? '?'} opened`
-                        : 'Promotion request accepted'
-              }
-            >
-              <p>{result.message}</p>
-            </InlineAlert>
+        <div className="space-y-5">
+          <div
+            ref={outcomeRef}
+            className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-line bg-raised px-4 py-3"
+          >
+            <div className="flex min-w-0 flex-1 items-start gap-2.5">
+              <CheckCircle2
+                className="mt-0.5 h-4 w-4 shrink-0 text-status-applied"
+                aria-hidden="true"
+              />
+              <div className="min-w-0">
+                <h3 className="text-xs font-semibold text-fg">
+                  {result.delivery === 'local_direct'
+                    ? `Committed to ${result.targetBranch} locally`
+                    : result.delivery === 'worktree'
+                      ? `Staged into working tree on ${result.targetBranch}`
+                      : result.delivery === 'local'
+                        ? 'Local integration branch created'
+                        : result.prUrl
+                          ? `Integration PR #${result.prNumber ?? '?'} opened`
+                          : 'Promotion complete'}
+                </h3>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-muted">{result.message}</p>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 flex-col items-end gap-1 text-[11px]">
+              <span className="mono rounded border border-line bg-surface px-2 py-0.5 text-fg">
+                {result.branch}
+              </span>
+              <span className="text-muted">{formatDateTime(result.requestedAt)}</span>
+            </div>
           </div>
 
-          <dl className="divide-y divide-line border-y border-line px-1">
-            <KeyValue
-              label={
-                result.delivery === 'local_direct' || result.delivery === 'worktree'
-                  ? 'Target branch'
-                  : 'Integration branch'
-              }
-            >
-              <span className="mono text-right">{result.branch}</span>
-            </KeyValue>
-            <KeyValue label="Requested at">
-              <span className="mono text-right">{result.requestedAt}</span>
-            </KeyValue>
-          </dl>
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
+            {/* Left column: changed file counts & expandable path lists */}
+            <div className="min-w-0 space-y-4">
+              <ResultChanges
+                replaced={result.replaced ?? []}
+                flagged={result.flagged ?? []}
+                deleted={result.deleted ?? []}
+                unchanged={result.unchanged ?? []}
+                excluded={result.excluded ?? []}
+              />
 
-          {result.delivery === 'worktree' ? (
-            <p className="text-[11px] leading-relaxed text-muted">
-              Nothing was committed or pushed, and integration status is unchanged.
-            </p>
-          ) : null}
+              {progress.length > 0 ? (
+                <details className="group overflow-hidden rounded-md border border-line bg-surface">
+                  <summary className="flex h-[32px] cursor-pointer items-center justify-between gap-2 px-3 text-[11px] text-muted select-none hover:bg-hover hover:text-fg">
+                    <span className="flex items-center gap-1.5 font-medium">
+                      <ChevronRight
+                        className="h-3.5 w-3.5 text-disabled transition-transform group-open:rotate-90"
+                        aria-hidden="true"
+                      />
+                      Execution log
+                    </span>
+                    <span className="mono text-disabled">
+                      {PROMOTION_STAGES.length} steps completed
+                    </span>
+                  </summary>
+                  <div className="border-t border-line p-2.5">
+                    <PromotionProgressView steps={progress} outcome={progressOutcome} />
+                  </div>
+                </details>
+              ) : null}
+            </div>
 
-          {(result.delivery === 'local' ||
-            result.delivery === 'local_direct' ||
-            result.delivery === 'worktree') &&
-          result.nextCommands.length > 0 ? (
-            <section className="space-y-2">
-              <div className="flex h-[29px] items-center justify-between gap-2">
-                <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                  Next commands (run in your clone)
-                </h3>
-                <Button variant="secondary" size="sm" onClick={copyNextCommands}>
-                  {copied ? 'Copied' : 'Copy'}
+            {/* Right column: next commands, PR link & review callouts */}
+            <div className="min-w-0 space-y-4">
+              {(result.delivery === 'local' ||
+                result.delivery === 'local_direct' ||
+                result.delivery === 'worktree') &&
+              result.nextCommands.length > 0 ? (
+                <section className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                      Next commands
+                    </h3>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon={copied ? Check : Copy}
+                      onClick={copyNextCommands}
+                    >
+                      {copied ? 'Copied' : 'Copy'}
+                    </Button>
+                  </div>
+                  <pre className="mono overflow-x-auto rounded-md border border-line bg-ground p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-fg">
+                    {result.nextCommands.join('\n')}
+                  </pre>
+                </section>
+              ) : null}
+
+              {result.delivery === 'worktree' ? (
+                <p className="text-[11px] leading-relaxed text-muted">
+                  Nothing was committed or pushed, and integration status is unchanged.
+                </p>
+              ) : null}
+
+              {result.prUrl ? (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={ExternalLink}
+                  onClick={() => onOpenExternal(result.prUrl ?? '')}
+                >
+                  Open integration PR on GitHub
                 </Button>
-              </div>
-              <pre className="mono overflow-x-auto rounded-md border border-line bg-raised p-2 text-[11px] leading-relaxed whitespace-pre-wrap">
-                {result.nextCommands.join('\n')}
-              </pre>
-            </section>
-          ) : null}
+              ) : null}
 
-          {result.prUrl ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={ExternalLink}
-              onClick={() => onOpenExternal(result.prUrl ?? '')}
-            >
-              Open the integration PR on GitHub
-            </Button>
-          ) : null}
-
-          <ResultChanges
-            replaced={result.replaced ?? []}
-            flagged={result.flagged ?? []}
-            deleted={result.deleted ?? []}
-            unchanged={result.unchanged ?? []}
-            excluded={result.excluded ?? []}
-          />
-
-          <ResultNotes findings={result.findings} />
-
-          {progress.length > 0 ? (
-            <PromotionProgressView steps={progress} outcome={progressOutcome} />
-          ) : null}
+              <ResultNotes findings={result.findings} />
+            </div>
+          </div>
         </div>
       ) : (
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
