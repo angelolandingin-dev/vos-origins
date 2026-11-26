@@ -7,7 +7,6 @@ import {
   GitPullRequestArrow,
   Package,
   Settings as SettingsIcon,
-  X,
 } from 'lucide-react';
 
 import { api } from '../api/invoke';
@@ -352,93 +351,6 @@ function CommitWorkspacePanel({
         </div>
       </div>
 
-      {hasMultiSelection ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-3 py-1.5">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            <span className="shrink-0 text-[11px] font-medium text-muted">
-              Queue ({app.selectedShas.length}):
-            </span>
-            {app.selectedShas.map((sha) => {
-              const summary =
-                app.selectedCommits.find((c) => c.sha === sha) ??
-                listing.find((c) => c.sha === sha);
-              const isInspecting = currentSha === sha;
-              return (
-                <div
-                  key={sha}
-                  className={cx(
-                    'inline-flex h-[23px] max-w-[220px] shrink-0 items-center gap-1 rounded border px-1.5 text-[11px] transition-colors',
-                    isInspecting
-                      ? 'border-accent bg-accent-soft text-accent-ink'
-                      : 'border-line bg-raised text-fg hover:border-line-strong',
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      app.setFocusedSha(sha);
-                      onSourceTabChange('commits');
-                    }}
-                    title={
-                      summary
-                        ? `Inspect diff for ${summary.shortSha}: ${summary.subject}`
-                        : `Inspect diff for ${sha.slice(0, 7)}`
-                    }
-                    className="flex min-w-0 items-center gap-1.5 text-left"
-                  >
-                    <span className="mono shrink-0 font-semibold">{sha.slice(0, 7)}</span>
-                    {summary ? (
-                      <span className="truncate text-muted">{summary.subject}</span>
-                    ) : null}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => app.toggleSha(sha)}
-                    aria-label={`Remove ${sha.slice(0, 7)} from promotion selection`}
-                    className="shrink-0 rounded p-0.5 text-muted hover:bg-hover hover:text-fg"
-                  >
-                    <X className="h-3 w-3" aria-hidden="true" />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="flex shrink-0 items-center gap-2">
-            <div
-              role="group"
-              aria-label="Promotion mode"
-              className="flex h-[23px] overflow-hidden rounded-md border border-line bg-surface"
-            >
-              {(
-                [
-                  { id: 'individual', label: 'Individual' },
-                  { id: 'cumulative', label: 'Cumulative' },
-                ] as const
-              ).map((item, idx) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => app.setPromotionMode(item.id)}
-                  className={cx(
-                    'px-2 text-[11px] transition-colors',
-                    idx > 0 && 'border-l border-line',
-                    app.promotion.mode === item.id
-                      ? 'bg-raised font-semibold text-fg'
-                      : 'text-muted hover:bg-hover hover:text-fg',
-                  )}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            <Button variant="ghost" size="sm" onClick={clearSelection}>
-              Clear
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
       {sourceTab === 'commits' ? (
         <div ref={columnsRef} className="flex min-h-0 flex-1">
           <div
@@ -643,29 +555,36 @@ function CommitWorkspacePanel({
             </span>
           )}
         </div>
-        <Button
-          variant="primary"
-          icon={GitPullRequestArrow}
-          disabled={!canPromote}
-          onClick={openConfirmation}
-          title={
-            hasMultiSelection
-              ? `Open promotion confirmation for ${app.selectedShas.length} selected commit(s)`
-              : !details.data
-                ? 'Select or focus a commit first'
-                : isPromotable
-                  ? `Open promotion confirmation for ${details.data.shortSha}`
-                  : 'Only eligible (or previously reverted) commits can be promoted'
-          }
-        >
-          {hasMultiSelection
-            ? `Promote ${app.selectedShas.length} commit${app.selectedShas.length === 1 ? '' : 's'}`
-            : details.data && isPromotable
-              ? activeExcluded.length > 0
-                ? `Promote ${details.data.shortSha} (${activeExcluded.length} excluded)`
-                : `Promote ${details.data.shortSha}`
-              : 'Continue to confirmation'}
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          {hasMultiSelection ? (
+            <Button variant="ghost" size="sm" onClick={clearSelection}>
+              Clear selection
+            </Button>
+          ) : null}
+          <Button
+            variant="primary"
+            icon={GitPullRequestArrow}
+            disabled={!canPromote}
+            onClick={openConfirmation}
+            title={
+              hasMultiSelection
+                ? `Open promotion confirmation for ${app.selectedShas.length} selected commit(s)`
+                : !details.data
+                  ? 'Select or focus a commit first'
+                  : isPromotable
+                    ? `Open promotion confirmation for ${details.data.shortSha}`
+                    : 'Only eligible (or previously reverted) commits can be promoted'
+            }
+          >
+            {hasMultiSelection
+              ? `Promote ${app.selectedShas.length} commit${app.selectedShas.length === 1 ? '' : 's'}`
+              : details.data && isPromotable
+                ? activeExcluded.length > 0
+                  ? `Promote ${details.data.shortSha} (${activeExcluded.length} excluded)`
+                  : `Promote ${details.data.shortSha}`
+                : 'Continue to confirmation'}
+          </Button>
+        </div>
       </footer>
 
       {!isWide && detailsVisible ? (

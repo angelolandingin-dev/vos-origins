@@ -478,7 +478,7 @@ function ToastNotification({ notice, onDismiss }: { notice: Notice; onDismiss: (
   const ToneIcon = toneMeta.icon;
 
   return (
-    <div className="pointer-events-none fixed top-[58px] right-4 z-50 flex justify-end">
+    <div className="pointer-events-none fixed bottom-[54px] left-1/2 z-50 -translate-x-1/2">
       <div
         role="status"
         aria-live="polite"
