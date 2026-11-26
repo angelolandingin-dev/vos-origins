@@ -1,5 +1,14 @@
 export type SyntaxTokenKind =
-  'plain' | 'keyword' | 'string' | 'comment' | 'tag' | 'attr' | 'entity' | 'number';
+  | 'plain'
+  | 'keyword'
+  | 'atom'
+  | 'variable'
+  | 'string'
+  | 'comment'
+  | 'tag'
+  | 'attr'
+  | 'entity'
+  | 'number';
 
 export interface SyntaxToken {
   kind: SyntaxTokenKind;
@@ -7,6 +16,23 @@ export interface SyntaxToken {
 }
 
 type LanguageFamily = 'js' | 'rust' | 'json' | 'markup' | 'css' | 'config' | 'sql' | 'plain';
+
+const JS_ATOMS = new Set(['true', 'false', 'null', 'undefined', 'NaN', 'Infinity']);
+const RUST_ATOMS = new Set(['true', 'false']);
+const JSON_ATOMS = new Set(['true', 'false', 'null']);
+const CONFIG_ATOMS = new Set(['true', 'false', 'null', 'yes', 'no', 'on', 'off']);
+
+const JS_DEF_KEYWORDS = new Set([
+  'const',
+  'let',
+  'var',
+  'function',
+  'class',
+  'interface',
+  'type',
+  'enum',
+  'import',
+]);
 
 const JS_KEYWORDS = new Set([
   'as',
@@ -26,7 +52,6 @@ const JS_KEYWORDS = new Set([
   'enum',
   'export',
   'extends',
-  'false',
   'finally',
   'for',
   'from',
@@ -39,7 +64,6 @@ const JS_KEYWORDS = new Set([
   'interface',
   'let',
   'new',
-  'null',
   'of',
   'package',
   'private',
@@ -52,11 +76,9 @@ const JS_KEYWORDS = new Set([
   'switch',
   'this',
   'throw',
-  'true',
   'try',
   'type',
   'typeof',
-  'undefined',
   'var',
   'void',
   'while',
@@ -76,7 +98,6 @@ const RUST_KEYWORDS = new Set([
   'else',
   'enum',
   'extern',
-  'false',
   'fn',
   'for',
   'if',
@@ -97,7 +118,6 @@ const RUST_KEYWORDS = new Set([
   'struct',
   'super',
   'trait',
-  'true',
   'type',
   'unsafe',
   'use',
@@ -147,8 +167,6 @@ const SQL_KEYWORDS = new Set([
   'rollback',
 ]);
 
-const CONFIG_KEYWORDS = new Set(['true', 'false', 'null', 'yes', 'no', 'on', 'off']);
-const JSON_KEYWORDS = new Set(['true', 'false', 'null']);
 const CSS_KEYWORDS = new Set([
   '!important',
   '@import',
@@ -232,16 +250,27 @@ function scanQuoted(text: string, start: number, quote: string): number {
   return text.length;
 }
 
+function atomSetFor(family: LanguageFamily): Set<string> | null {
+  switch (family) {
+    case 'js':
+      return JS_ATOMS;
+    case 'rust':
+      return RUST_ATOMS;
+    case 'json':
+      return JSON_ATOMS;
+    case 'config':
+      return CONFIG_ATOMS;
+    default:
+      return null;
+  }
+}
+
 function keywordSetFor(family: LanguageFamily): Set<string> | null {
   switch (family) {
     case 'js':
       return JS_KEYWORDS;
     case 'rust':
       return RUST_KEYWORDS;
-    case 'json':
-      return JSON_KEYWORDS;
-    case 'config':
-      return CONFIG_KEYWORDS;
     case 'sql':
       return SQL_KEYWORDS;
     case 'css':
@@ -258,13 +287,25 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
   }
 
   const keywords = keywordSetFor(family);
+  const atoms = atomSetFor(family);
   const tokens: SyntaxToken[] = [];
   let inTag = false;
+  let inImportList = false;
+  let prevChar = '';
+  let prevWord = '';
   let i = 0;
 
   while (i < text.length) {
     const ch = text[i] ?? '';
     const next = text[i + 1] ?? '';
+
+    if (ch === ' ' || ch === '\t') {
+      let end = i + 1;
+      while (end < text.length && (text[end] === ' ' || text[end] === '\t')) end += 1;
+      pushToken(tokens, 'plain', text.slice(i, end));
+      i = end;
+      continue;
+    }
 
     if (
       ((family === 'js' || family === 'rust' || family === 'json' || family === 'css') &&
@@ -315,15 +356,20 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
       } else {
         pushToken(tokens, 'string', literal);
       }
+      prevChar = ch;
+      prevWord = '';
       i = end;
       continue;
     }
 
-    if (
-      (family === 'markup' || family === 'js') &&
-      ch === '<' &&
-      (isIdentStart(next) || next === '/')
-    ) {
+    const canStartJsxTag =
+      family === 'markup' ||
+      (family === 'js' &&
+        (!prevChar || !isIdentPart(prevChar)) &&
+        prevChar !== ')' &&
+        prevChar !== ']');
+
+    if (canStartJsxTag && ch === '<' && (isIdentStart(next) || next === '/')) {
       let tagStart = i + 1;
       if (next === '/') tagStart += 1;
       let tagEnd = tagStart;
@@ -336,6 +382,8 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
         inTag = next !== '/';
         pushToken(tokens, 'plain', text.slice(i, tagStart));
         pushToken(tokens, 'tag', text.slice(tagStart, tagEnd));
+        prevChar = text[tagEnd - 1] ?? '';
+        prevWord = '';
         i = tagEnd;
         continue;
       }
@@ -344,6 +392,8 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
     if (inTag && ch === '>' && text[i - 1] !== '=') {
       inTag = false;
       pushToken(tokens, 'plain', ch);
+      prevChar = ch;
+      prevWord = '';
       i += 1;
       continue;
     }
@@ -353,6 +403,8 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
       while (end < text.length && isIdentPart(text[end] ?? '')) end += 1;
       const word = text.slice(i, end);
       pushToken(tokens, CSS_KEYWORDS.has(word) ? 'keyword' : 'plain', word);
+      prevChar = word[word.length - 1] ?? '';
+      prevWord = word;
       i = end;
       continue;
     }
@@ -370,6 +422,8 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
         }
       }
       pushToken(tokens, 'number', text.slice(i, end));
+      prevChar = text[end - 1] ?? '';
+      prevWord = '';
       i = end;
       continue;
     }
@@ -388,8 +442,12 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
       const word = text.slice(i, end);
       const lookup = family === 'sql' ? word.toLowerCase() : word;
 
-      if (keywords?.has(lookup)) {
+      if (atoms?.has(lookup)) {
+        pushToken(tokens, 'atom', word);
+      } else if (keywords?.has(lookup)) {
         pushToken(tokens, 'keyword', word);
+        if (family === 'js' && word === 'import') inImportList = true;
+        if (family === 'js' && word === 'from') inImportList = false;
       } else {
         let look = end;
         while (look < text.length && (text[look] === ' ' || text[look] === '\t')) {
@@ -403,23 +461,52 @@ export function tokenizeDiffLine(text: string, language: string): SyntaxToken[] 
           text[look + 1] !== '='
         ) {
           pushToken(tokens, 'attr', word);
-        } else if (after === '(' && family !== 'js' && family !== 'rust') {
-          pushToken(tokens, 'entity', word);
-        } else if (
-          (family === 'config' || family === 'css') &&
-          after === ':' &&
-          text[look + 1] !== ':'
-        ) {
+        } else if (family === 'css' && after === ':' && text[look + 1] !== ':') {
+          pushToken(tokens, 'atom', word);
+        } else if (family === 'config' && after === ':' && text[look + 1] !== ':') {
           pushToken(tokens, 'attr', word);
+        } else if (family === 'js') {
+          const isPropertyAccess = prevChar === '.';
+          const isObjectKey =
+            after === ':' &&
+            text[look + 1] !== ':' &&
+            (prevChar === '{' || prevChar === ',' || prevChar === '');
+          const isDefinition = inImportList || JS_DEF_KEYWORDS.has(prevWord);
+          if (isPropertyAccess || isObjectKey || isDefinition) {
+            pushToken(tokens, 'plain', word);
+          } else {
+            pushToken(tokens, 'variable', word);
+          }
+        } else if (family === 'rust') {
+          const isPropertyAccess = prevChar === '.';
+          const isDefinition =
+            prevWord === 'fn' ||
+            prevWord === 'let' ||
+            prevWord === 'struct' ||
+            prevWord === 'enum' ||
+            prevWord === 'trait' ||
+            prevWord === 'mod';
+          if (isPropertyAccess || isDefinition) {
+            pushToken(tokens, 'plain', word);
+          } else {
+            pushToken(tokens, 'variable', word);
+          }
+        } else if (after === '(') {
+          pushToken(tokens, 'entity', word);
         } else {
           pushToken(tokens, 'plain', word);
         }
       }
+      prevChar = word[word.length - 1] ?? '';
+      prevWord = word;
       i = end;
       continue;
     }
 
+    if (family === 'js' && ch === '}') inImportList = false;
     pushToken(tokens, 'plain', ch);
+    prevChar = ch;
+    prevWord = '';
     i += 1;
   }
 

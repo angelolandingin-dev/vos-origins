@@ -4,6 +4,7 @@ import {
   ArrowDownToLine,
   ArrowDownUp,
   ArrowUpDown,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -31,6 +32,8 @@ import type {
 import { useApp, useAsyncData } from '../app/context';
 import { ChangeKindIcon } from '../components/ChangeKindIcon';
 import { DiffViewer } from '../components/DiffViewer';
+import { ExecutionLogDisclosure, ExecutionProgressView } from '../components/ExecutionProgressView';
+import { appendProgressStep, type ExecutionStage } from '../components/executionProgress';
 import { PathLabel } from '../components/PathLabel';
 import { SubsystemSelector } from '../components/SubsystemSelector';
 import { cx } from '../components/ui/cx';
@@ -51,6 +54,13 @@ import {
 import { splitWidthStyle } from '../components/ui/split-pane';
 import { SplitResizer } from '../components/ui/split-resizer';
 
+const DISTRIBUTION_STAGES: ReadonlyArray<ExecutionStage> = [
+  { id: 'prepare', label: 'Preparing checkouts' },
+  { id: 'plan', label: 'Validating distribution plan' },
+  { id: 'apply', label: 'Applying files and opening pull request' },
+  { id: 'done', label: 'Finished' },
+];
+
 /** Distribute: move one trunk commit's changes into one subsystem via a pull request. */
 export function Distribute() {
   const app = useApp();
@@ -67,9 +77,10 @@ export function Distribute() {
 
   const [message, setMessage] = useState('');
   const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<PromotionProgress | null>(null);
+  const [progressSteps, setProgressSteps] = useState<PromotionProgress[]>([]);
   const [runError, setRunError] = useState<ApiError | null>(null);
   const [outcome, setOutcome] = useState<DistributionOutcome | null>(null);
+  const latestProgress = progressSteps[progressSteps.length - 1] ?? null;
 
   const targetBranches = app.targetBranches;
   const trunkBranch = app.targetBranch || targetBranches.data?.targetBranch || '';
@@ -175,7 +186,7 @@ export function Distribute() {
   const resetRunState = () => {
     setExcludedPaths([]);
     setInspectedPath(null);
-    setProgress(null);
+    setProgressSteps([]);
     setRunError(null);
     setOutcome(null);
   };
@@ -244,7 +255,7 @@ export function Distribute() {
       message: trimmedMessage === '' ? null : trimmedMessage,
     };
     setRunError(null);
-    setProgress(null);
+    setProgressSteps([]);
     setRunning(true);
 
     let stopListening: (() => void) | null = null;
@@ -256,7 +267,7 @@ export function Distribute() {
     };
     void listen<PromotionProgress>('distribution-progress', (event) => {
       if (done) return;
-      setProgress(event.payload);
+      setProgressSteps((current) => appendProgressStep(current, event.payload));
     })
       .then((stop) => {
         if (done) stop();
@@ -562,8 +573,10 @@ export function Distribute() {
             <OutcomePanel
               outcome={outcome}
               subsystemName={selectedSubsystem.name}
+              progressSteps={progressSteps}
               onReset={() => {
                 setOutcome(null);
+                setProgressSteps([]);
                 planQuery.reload();
               }}
             />
@@ -804,28 +817,13 @@ export function Distribute() {
                         />
                       </Field>
 
-                      {running ? (
-                        <div className="space-y-1" role="status" aria-live="polite">
-                          <div className="flex items-center justify-between gap-2 text-[11px]">
-                            <span className="flex min-w-0 items-center gap-1.5 text-fg">
-                              <Spinner className="h-3 w-3" />
-                              <span className="truncate">
-                                {progress?.label ?? 'Starting distribution…'}
-                              </span>
-                            </span>
-                            {progress?.index != null && progress.total != null ? (
-                              <span className="mono shrink-0 text-muted">
-                                {progress.index}/{progress.total}
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="h-[3px] overflow-hidden rounded-full bg-line">
-                            <div
-                              className="h-full bg-accent transition-[width]"
-                              style={{ width: `${progressPercent(progress)}%` }}
-                            />
-                          </div>
-                        </div>
+                      {running || (runError && progressSteps.length > 0) ? (
+                        <ExecutionProgressView
+                          title="Distribution progress"
+                          stages={DISTRIBUTION_STAGES}
+                          steps={progressSteps}
+                          outcome={running ? 'running' : runError ? 'failed' : 'success'}
+                        />
                       ) : null}
 
                       {runError ? <ErrorState compact error={runError} /> : null}
@@ -843,10 +841,10 @@ export function Distribute() {
           {running ? (
             <span className="flex items-center gap-1.5 text-fg">
               <Spinner className="h-3 w-3" />
-              <span className="truncate">{progress?.label ?? 'Starting distribution…'}</span>
-              {progress?.index != null && progress.total != null ? (
+              <span className="truncate">{latestProgress?.label ?? 'Starting distribution…'}</span>
+              {latestProgress?.index != null && latestProgress.total != null ? (
                 <span className="mono shrink-0 text-muted tabular-nums">
-                  ({progress.index}/{progress.total})
+                  ({latestProgress.index}/{latestProgress.total})
                 </span>
               ) : null}
             </span>
@@ -938,13 +936,6 @@ export function Distribute() {
       </footer>
     </div>
   );
-}
-
-function progressPercent(progress: PromotionProgress | null): number {
-  if (!progress || progress.index == null || progress.total == null || progress.total <= 0) {
-    return 10;
-  }
-  return Math.max(10, Math.min(100, Math.round((progress.index / progress.total) * 100)));
 }
 
 function PlanStatusMark({ blocked, hasChanges }: { blocked: boolean; hasChanges: boolean }) {
@@ -1127,41 +1118,139 @@ function DependencyRow({ dependency }: { dependency: DistributionDependency }) {
   );
 }
 
+function OutcomePathList({ title, paths }: { title: string; paths: string[] }) {
+  if (paths.length === 0) return null;
+  return (
+    <details className="group overflow-hidden rounded-md border border-line bg-surface">
+      <summary className="flex h-[29px] cursor-pointer items-center justify-between gap-2 px-2.5 text-[11px] select-none hover:bg-hover">
+        <span className="flex items-center gap-1.5 font-semibold tracking-wide text-muted uppercase">
+          <ChevronRight
+            className="h-3.5 w-3.5 text-disabled transition-transform group-open:rotate-90"
+            aria-hidden="true"
+          />
+          {title}
+        </span>
+        <span className="mono text-muted tabular-nums">
+          {paths.length} path{paths.length === 1 ? '' : 's'}
+        </span>
+      </summary>
+      <ul className="max-h-40 divide-y divide-line overflow-auto border-t border-line">
+        {paths.map((path) => (
+          <li key={path} className="flex h-[26px] items-center px-2.5">
+            <PathLabel path={path} className="min-w-0 flex-1 text-[11px]" />
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 function OutcomePanel({
   outcome,
   subsystemName,
+  progressSteps,
   onReset,
 }: {
   outcome: DistributionOutcome;
   subsystemName: string;
+  progressSteps: PromotionProgress[];
   onReset: () => void;
 }) {
   const pullRequest = outcome.pullRequest;
   const commitSha = outcome.commitSha;
+  const statusBadge = !outcome.ok
+    ? 'Blocked'
+    : pullRequest?.number != null
+      ? `PR #${pullRequest.number} ${pullRequest.state}`
+      : 'Branch pushed';
 
   return (
     <>
       <div className="flex items-center justify-between gap-2 border-b border-line bg-raised px-3 py-2">
         <div className="min-w-0">
           <h2 className="truncate text-xs font-semibold text-fg">{subsystemName}</h2>
-          <p className="truncate text-[11px] text-muted">
-            {outcome.ok
-              ? pullRequest?.number != null
-                ? `Pull request #${pullRequest.number} ${pullRequest.state}`
-                : 'Branch pushed'
-              : 'Distribution blocked'}
-          </p>
+          <p className="truncate text-[11px] text-muted">{statusBadge}</p>
         </div>
         <Button variant="ghost" size="sm" onClick={onReset}>
           Done
         </Button>
       </div>
-      <div className="scroll-area min-h-0 flex-1 space-y-3 p-3.5">
+      <div className="scroll-area min-h-0 flex-1 space-y-4 p-3.5">
+        <div
+          className={cx(
+            'flex items-start gap-2.5 rounded-md border border-l-[3px] px-3.5 py-3',
+            outcome.ok
+              ? 'border-status-applied/40 border-l-status-applied bg-status-applied-soft'
+              : 'border-status-blocked/40 border-l-status-blocked bg-status-blocked-soft',
+          )}
+        >
+          {outcome.ok ? (
+            <CheckCircle2
+              className="mt-0.5 h-4 w-4 shrink-0 text-status-applied-ink"
+              aria-hidden="true"
+            />
+          ) : (
+            <TriangleAlert
+              className="mt-0.5 h-4 w-4 shrink-0 text-status-blocked-ink"
+              aria-hidden="true"
+            />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p
+                className={cx(
+                  'text-xs font-semibold',
+                  outcome.ok ? 'text-status-applied-ink' : 'text-status-blocked-ink',
+                )}
+              >
+                {outcome.ok ? `Distributed to ${subsystemName}` : 'Distribution blocked'}
+              </p>
+              <span
+                className={cx(
+                  'mono rounded border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase',
+                  outcome.ok
+                    ? 'border-status-applied/40 bg-status-applied/15 text-status-applied-ink'
+                    : 'border-status-blocked/40 bg-status-blocked/15 text-status-blocked-ink',
+                )}
+              >
+                {statusBadge}
+              </span>
+            </div>
+            {outcome.message ? (
+              <p className="mt-1 text-[11px] leading-relaxed text-fg/85">{outcome.message}</p>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 divide-x divide-line overflow-hidden rounded-md border border-line bg-surface">
+          {[
+            { label: 'Written', value: outcome.applied.length, tone: 'text-status-applied-ink' },
+            { label: 'Deleted', value: outcome.deleted.length, tone: 'text-status-blocked-ink' },
+            { label: 'Deps', value: outcome.dependencies.length, tone: 'text-accent-ink' },
+          ].map((stat) => (
+            <div key={stat.label} className="px-3 py-2">
+              <p className="text-[10px] font-medium text-muted">{stat.label}</p>
+              <p
+                className={cx(
+                  'mono mt-0.5 text-sm font-semibold tabular-nums',
+                  stat.value > 0 ? stat.tone : 'text-disabled',
+                )}
+              >
+                {stat.value}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-1.5">
+          <OutcomePathList title="Files written" paths={outcome.applied} />
+          <OutcomePathList title="Files deleted" paths={outcome.deleted} />
+        </div>
+
         <BlockerList blockers={outcome.blockers} />
         <WarningsList warnings={outcome.warnings} />
-        {outcome.message ? <p className="text-[11px] text-muted">{outcome.message}</p> : null}
 
-        <dl>
+        <dl className="divide-y divide-line rounded-md border border-line bg-surface px-3">
           <KeyValue label="Source commit">
             <span className="mono">{outcome.sourceCommitSha.slice(0, 7)}</span>
           </KeyValue>
@@ -1171,10 +1260,6 @@ function OutcomePanel({
           <KeyValue label="New commit">
             {commitSha ? <span className="mono">{commitSha.slice(0, 7)}</span> : '—'}
           </KeyValue>
-          <KeyValue label="Files written">{outcome.applied.length}</KeyValue>
-          {outcome.deleted.length > 0 ? (
-            <KeyValue label="Files deleted">{outcome.deleted.length}</KeyValue>
-          ) : null}
           {pullRequest ? (
             <KeyValue label="Target">
               <span className="mono">
@@ -1185,7 +1270,7 @@ function OutcomePanel({
         </dl>
 
         {outcome.dependencies.length > 0 ? (
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">
               Dependencies updated
             </span>
@@ -1199,6 +1284,12 @@ function OutcomePanel({
             </ul>
           </div>
         ) : null}
+
+        <ExecutionLogDisclosure
+          stages={DISTRIBUTION_STAGES}
+          steps={progressSteps}
+          outcome={outcome.ok ? 'success' : 'failed'}
+        />
       </div>
     </>
   );

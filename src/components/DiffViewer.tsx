@@ -163,10 +163,14 @@ function syntaxClasses(kind: SyntaxTokenKind): string {
   switch (kind) {
     case 'keyword':
       return 'text-syntax-keyword';
+    case 'atom':
+      return 'text-syntax-atom';
+    case 'variable':
+      return 'text-syntax-variable';
     case 'string':
       return 'text-syntax-string';
     case 'comment':
-      return 'text-syntax-comment italic';
+      return 'text-syntax-comment';
     case 'tag':
       return 'text-syntax-tag';
     case 'attr':
@@ -195,9 +199,9 @@ function TokenizedCode({
   const tokens = highlights?.length ? applyDiffHighlights(baseTokens, highlights) : null;
   const emphasisClass =
     lineKind === 'added'
-      ? 'rounded-[2px] bg-diff-add-emphasis'
+      ? 'rounded-[2px] bg-diff-add-emphasis text-fg'
       : lineKind === 'removed'
-        ? 'rounded-[2px] bg-diff-del-emphasis'
+        ? 'rounded-[2px] bg-diff-del-emphasis text-fg'
         : '';
 
   if (!tokens) {
@@ -217,7 +221,7 @@ function TokenizedCode({
       {tokens.map((token, idx) => (
         <span
           key={idx}
-          className={cx(syntaxClasses(token.kind), token.emphasized && emphasisClass)}
+          className={cx(token.emphasized ? emphasisClass : syntaxClasses(token.kind))}
         >
           {token.text}
         </span>
