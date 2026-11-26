@@ -1012,7 +1012,9 @@ pub fn integration_history_live(
             inherited_from_branch: None,
         });
     }
-    entries.sort_by(|a, b| b.occurred_at.cmp(&a.occurred_at));
+    // Compare parsed UTC instants so commits with local offsets (e.g. +08:00)
+    // do not sort ahead of newer UTC (Z) commits.
+    entries.sort_by(|a, b| rfc3339_timestamp(&b.occurred_at).cmp(&rfc3339_timestamp(&a.occurred_at)));
     let total = entries.len() as u32;
     let capped = limit.clamp(1, 200) as usize;
     entries.truncate(capped);
@@ -1645,6 +1647,12 @@ fn source_log(repo_dir: &Path, branch: &str, first_parent: bool) -> AppResult<Ve
     Ok(commits)
 }
 
+fn rfc3339_timestamp(iso: &str) -> i64 {
+    fixtures::parse_time(iso)
+        .map(|dt| dt.timestamp())
+        .unwrap_or(0)
+}
+
 fn relative_now(iso: &str) -> String {
     let now = chrono::Utc::now();
     match fixtures::parse_time(iso) {
@@ -2016,10 +2024,14 @@ pub fn commit_page_live(
     }
     match query.sort {
         crate::github::models::CommitSort::Newest => {
-            rows.sort_by(|a, b| b.committed_at.cmp(&a.committed_at));
+            rows.sort_by(|a, b| {
+                rfc3339_timestamp(&b.committed_at).cmp(&rfc3339_timestamp(&a.committed_at))
+            });
         }
         crate::github::models::CommitSort::Oldest => {
-            rows.sort_by(|a, b| a.committed_at.cmp(&b.committed_at));
+            rows.sort_by(|a, b| {
+                rfc3339_timestamp(&a.committed_at).cmp(&rfc3339_timestamp(&b.committed_at))
+            });
         }
     }
     let total = rows.len() as u32;

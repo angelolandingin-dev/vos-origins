@@ -171,8 +171,26 @@ impl GitHubAdapter {
             .collect();
 
         match query.sort {
-            CommitSort::Newest => commits.sort_by(|a, b| b.committed_at.cmp(&a.committed_at)),
-            CommitSort::Oldest => commits.sort_by(|a, b| a.committed_at.cmp(&b.committed_at)),
+            CommitSort::Newest => commits.sort_by(|a, b| {
+                chrono::DateTime::parse_from_rfc3339(&b.committed_at)
+                    .map(|dt| dt.timestamp())
+                    .unwrap_or(0)
+                    .cmp(
+                        &chrono::DateTime::parse_from_rfc3339(&a.committed_at)
+                            .map(|dt| dt.timestamp())
+                            .unwrap_or(0),
+                    )
+            }),
+            CommitSort::Oldest => commits.sort_by(|a, b| {
+                chrono::DateTime::parse_from_rfc3339(&a.committed_at)
+                    .map(|dt| dt.timestamp())
+                    .unwrap_or(0)
+                    .cmp(
+                        &chrono::DateTime::parse_from_rfc3339(&b.committed_at)
+                            .map(|dt| dt.timestamp())
+                            .unwrap_or(0),
+                    )
+            }),
         }
 
         let total = commits.len() as u32;
