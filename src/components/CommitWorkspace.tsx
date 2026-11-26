@@ -7,6 +7,7 @@ import {
   GitPullRequestArrow,
   Package,
   Settings as SettingsIcon,
+  X,
 } from 'lucide-react';
 
 import { api } from '../api/invoke';
@@ -117,10 +118,8 @@ function CommitWorkspacePanel({
   // commit it belongs to so a commit switch falls back to that commit's first
   // file rather than a stale path. The Changes tab opens a file through it.
   const [selectedFile, setSelectedFile] = useState<{ sha: string; path: string } | null>(null);
-  const [excludedState, setExcludedState] = useState<{ sha: string; paths: string[] }>({
-    sha: '',
-    paths: [],
-  });
+  // Excluded paths persist across inspected commits while building a multi-commit selection.
+  const [excludedPaths, setExcludedPaths] = useState<string[]>([]);
   // The commit rail's own width, separate from the diff splitter's. Its ceiling
   // depends on the live pane because the changed-files column and the diff keep
   // their own floors to its right.
@@ -194,6 +193,11 @@ function CommitWorkspacePanel({
   );
 
   const listing = useMemo(() => commitPage.data?.commits ?? [], [commitPage.data]);
+  const { rememberSelectedCommits } = app;
+  useEffect(() => {
+    rememberSelectedCommits(listing);
+  }, [listing, rememberSelectedCommits]);
+
   const focusedSha = useMemo(() => {
     if (app.focusedSha && listing.some((commit) => commit.sha === app.focusedSha))
       return app.focusedSha;
@@ -218,21 +222,29 @@ function CommitWorkspacePanel({
     onSourceTabChange('commits');
   };
 
-  const promoteHandoff = (sha: string, excludedPaths: string[]) => {
-    const commit = listing.find((candidate) => candidate.sha === sha);
-    app.setSelectedShas([sha], commit ? [commit] : []);
-    app.setPromotionExcludedPaths(excludedPaths);
-    app.setFocusedSha(sha);
-    app.navigate('promote-commits');
-  };
-
   const currentSha = details.data?.sha ?? focusedSha ?? '';
+  const hasMultiSelection = app.selectedShas.length > 0;
+
   const activeExcluded = useMemo(() => {
-    if (!currentSha || excludedState.sha !== currentSha) return [];
+    if (hasMultiSelection) return excludedPaths;
     const files = details.data?.files;
-    if (!files) return excludedState.paths;
-    return excludedState.paths.filter((path) => files.some((file) => file.path === path));
-  }, [currentSha, excludedState, details.data?.files]);
+    if (!files) return excludedPaths;
+    return excludedPaths.filter((path) => files.some((file) => file.path === path));
+  }, [hasMultiSelection, excludedPaths, details.data?.files]);
+
+  const openConfirmation = () => {
+    if (hasMultiSelection) {
+      app.openPromotionDialog(app.selectedShas, app.selectedCommits, {
+        excludedPaths,
+      });
+      return;
+    }
+    if (!details.data) return;
+    const commit = listing.find((candidate) => candidate.sha === details.data!.sha);
+    app.openPromotionDialog([details.data.sha], commit ? [commit] : [], {
+      excludedPaths: activeExcluded,
+    });
+  };
 
   if (!subsystem) {
     return (
@@ -253,16 +265,19 @@ function CommitWorkspacePanel({
   }
 
   const toggleExcluded = (path: string) => {
-    if (!currentSha) return;
-    setExcludedState((prev) => {
-      const base = prev.sha === currentSha ? prev.paths : [];
-      const next = base.includes(path) ? base.filter((entry) => entry !== path) : [...base, path];
-      return { sha: currentSha, paths: next };
-    });
+    setExcludedPaths((prev) =>
+      prev.includes(path) ? prev.filter((entry) => entry !== path) : [...prev, path],
+    );
+  };
+
+  const clearSelection = () => {
+    app.clearSelection();
+    setExcludedPaths([]);
   };
 
   const statusKind = details.data?.status.kind;
   const isPromotable = statusKind === 'eligible' || statusKind === 'reverted';
+  const canPromote = hasMultiSelection || Boolean(details.data && isPromotable);
 
   const diffPanel = (
     <CommitDiffView
@@ -337,6 +352,93 @@ function CommitWorkspacePanel({
         </div>
       </div>
 
+      {hasMultiSelection ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-3 py-1.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <span className="shrink-0 text-[11px] font-medium text-muted">
+              Queue ({app.selectedShas.length}):
+            </span>
+            {app.selectedShas.map((sha) => {
+              const summary =
+                app.selectedCommits.find((c) => c.sha === sha) ??
+                listing.find((c) => c.sha === sha);
+              const isInspecting = currentSha === sha;
+              return (
+                <div
+                  key={sha}
+                  className={cx(
+                    'inline-flex h-[23px] max-w-[220px] shrink-0 items-center gap-1 rounded border px-1.5 text-[11px] transition-colors',
+                    isInspecting
+                      ? 'border-accent bg-accent-soft text-accent-ink'
+                      : 'border-line bg-raised text-fg hover:border-line-strong',
+                  )}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      app.setFocusedSha(sha);
+                      onSourceTabChange('commits');
+                    }}
+                    title={
+                      summary
+                        ? `Inspect diff for ${summary.shortSha}: ${summary.subject}`
+                        : `Inspect diff for ${sha.slice(0, 7)}`
+                    }
+                    className="flex min-w-0 items-center gap-1.5 text-left"
+                  >
+                    <span className="mono shrink-0 font-semibold">{sha.slice(0, 7)}</span>
+                    {summary ? (
+                      <span className="truncate text-muted">{summary.subject}</span>
+                    ) : null}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => app.toggleSha(sha)}
+                    aria-label={`Remove ${sha.slice(0, 7)} from promotion selection`}
+                    className="shrink-0 rounded p-0.5 text-muted hover:bg-hover hover:text-fg"
+                  >
+                    <X className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            <div
+              role="group"
+              aria-label="Promotion mode"
+              className="flex h-[23px] overflow-hidden rounded-md border border-line bg-surface"
+            >
+              {(
+                [
+                  { id: 'individual', label: 'Individual' },
+                  { id: 'cumulative', label: 'Cumulative' },
+                ] as const
+              ).map((item, idx) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => app.setPromotionMode(item.id)}
+                  className={cx(
+                    'px-2 text-[11px] transition-colors',
+                    idx > 0 && 'border-l border-line',
+                    app.promotion.mode === item.id
+                      ? 'bg-raised font-semibold text-fg'
+                      : 'text-muted hover:bg-hover hover:text-fg',
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <Button variant="ghost" size="sm" onClick={clearSelection}>
+              Clear
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       {sourceTab === 'commits' ? (
         <div ref={columnsRef} className="flex min-h-0 flex-1">
           <div
@@ -365,6 +467,10 @@ function CommitWorkspacePanel({
               onPageChange={setPageNumber}
               pageSize={pageSize}
               onPageSizeChange={handlePageSizeChange}
+              selectedShas={app.selectedShas}
+              onToggleSha={app.toggleSha}
+              onSelectShas={app.setSelectedShas}
+              onClearSelection={clearSelection}
               focusedSha={focusedSha}
               onFocusSha={handleFocusSha}
               detailsVisible={detailsVisible}
@@ -517,9 +623,15 @@ function CommitWorkspacePanel({
 
       <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-raised px-4 py-2">
         <div className="min-w-0 text-[11px] text-muted">
-          {!details.data ? (
+          {hasMultiSelection ? (
+            <span className="mono tabular-nums">
+              {app.selectedShas.length} commit{app.selectedShas.length === 1 ? '' : 's'} selected ·{' '}
+              {app.promotion.mode} · target {app.targetBranch}
+              {excludedPaths.length > 0 ? ` · ${excludedPaths.length} excluded` : ''}
+            </span>
+          ) : !details.data ? (
             <span>
-              Select a commit to inspect or promote to{' '}
+              Click a commit to inspect its diff, or tick checkboxes to promote multiple commits to{' '}
               <span className="mono">{app.targetBranch}</span>.
             </span>
           ) : (
@@ -527,30 +639,32 @@ function CommitWorkspacePanel({
               {details.data.shortSha} · {details.data.files.length} file
               {details.data.files.length === 1 ? '' : 's'} · target {app.targetBranch}
               {activeExcluded.length > 0 ? ` · ${activeExcluded.length} excluded` : ''}
-              {!isPromotable ? ' · only eligible or reverted commits can be promoted' : ''}
+              {!isPromotable ? ' · tick eligible commits on the left to build a promotion' : ''}
             </span>
           )}
         </div>
         <Button
           variant="primary"
           icon={GitPullRequestArrow}
-          disabled={!details.data || !isPromotable}
-          onClick={() => {
-            if (details.data) promoteHandoff(details.data.sha, activeExcluded);
-          }}
+          disabled={!canPromote}
+          onClick={openConfirmation}
           title={
-            !details.data
-              ? 'Select a commit first'
-              : isPromotable
-                ? activeExcluded.length > 0
-                  ? `Select this commit and open the Promote tab without ${activeExcluded.length} excluded file(s)`
-                  : 'Select this commit and open the Promote tab to confirm it'
-                : 'Only eligible (or previously reverted) commits can be promoted'
+            hasMultiSelection
+              ? `Open promotion confirmation for ${app.selectedShas.length} selected commit(s)`
+              : !details.data
+                ? 'Select or focus a commit first'
+                : isPromotable
+                  ? `Open promotion confirmation for ${details.data.shortSha}`
+                  : 'Only eligible (or previously reverted) commits can be promoted'
           }
         >
-          {activeExcluded.length > 0
-            ? `Promote commit (${activeExcluded.length} excluded)`
-            : 'Promote commit'}
+          {hasMultiSelection
+            ? `Promote ${app.selectedShas.length} commit${app.selectedShas.length === 1 ? '' : 's'}`
+            : details.data && isPromotable
+              ? activeExcluded.length > 0
+                ? `Promote ${details.data.shortSha} (${activeExcluded.length} excluded)`
+                : `Promote ${details.data.shortSha}`
+              : 'Continue to confirmation'}
         </Button>
       </footer>
 

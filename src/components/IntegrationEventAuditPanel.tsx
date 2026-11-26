@@ -67,7 +67,7 @@ export function IntegrationEventAuditPage({
   const openInCommitBrowser = (subsystemId: string, sha: string) => {
     if (app.selectedSubsystemId !== subsystemId) app.selectSubsystem(subsystemId);
     app.setFocusedSha(sha);
-    app.navigate('commit-browser');
+    app.navigate('promote');
   };
 
   useEffect(() => {

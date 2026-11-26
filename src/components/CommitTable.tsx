@@ -338,9 +338,9 @@ export function CommitTable({
                         : undefined
                     }
                     className={cx(
-                      'row-hover flex w-full items-start gap-2.5 px-2.5 py-1.5 text-left',
+                      'row-hover flex w-full items-start gap-2.5 border-l-2 border-l-transparent px-2.5 py-1.5 text-left',
                       interactive && 'cursor-pointer',
-                      (focused || selected) && 'bg-selection',
+                      focused ? 'border-l-accent bg-selection' : selected && 'bg-accent-soft/25',
                     )}
                   >
                     {selectable ? (

@@ -93,7 +93,7 @@ export function BucketMark({
   );
 }
 
-export function SubsystemDiff() {
+export function SubsystemDiff({ embedded = false }: { embedded?: boolean } = {}) {
   const app = useApp();
   const subsystem = app.selectedSubsystem;
 
@@ -106,22 +106,29 @@ export function SubsystemDiff() {
           <EmptyState
             icon={FileText}
             title="Select a subsystem first"
-            message="Open the Commit Browser and pick the subsystem whose gap against main you want to see."
-            action={
-              <Button variant="primary" onClick={() => app.navigate('commit-browser')}>
-                Open Commit Browser
-              </Button>
-            }
+            message="Pick a subsystem to inspect its file drift against the target branch."
           />
         )}
       </div>
     );
   }
 
-  return <SubsystemDiffView key={`${subsystem.id}:${app.targetBranch}`} subsystem={subsystem} />;
+  return (
+    <SubsystemDiffView
+      key={`${subsystem.id}:${app.targetBranch}`}
+      subsystem={subsystem}
+      embedded={embedded}
+    />
+  );
 }
 
-function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
+function SubsystemDiffView({
+  subsystem,
+  embedded,
+}: {
+  subsystem: SubsystemSummary;
+  embedded: boolean;
+}) {
   const app = useApp();
   const [splitWidth, setSplitWidth] = useState(560);
   const [filter, setFilter] = useState('');
@@ -273,52 +280,54 @@ function SubsystemDiffView({ subsystem }: { subsystem: SubsystemSummary }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-2.5">
-        <div className="min-w-0">
-          <h1 className="text-[14px] font-semibold text-fg">Subsystem Diff</h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <SubsystemSelector
-            subsystems={subsystems}
-            selectedId={subsystem.id}
-            onSelect={(next) => app.selectSubsystem(next)}
-          />
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] text-muted">Target</span>
-            <Select
-              ariaLabel="Authorized target main-system branch"
-              className="w-[180px]"
-              value={app.targetBranch}
-              onValueChange={(next) => app.setTargetBranch(next)}
-              options={branches.map((branch) => ({
-                value: branch.name,
-                label: branch.name,
-              }))}
-            />
+      {!embedded ? (
+        <header className="flex min-h-[48px] flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-2.5">
+          <div className="min-w-0">
+            <h1 className="text-[14px] font-semibold text-fg">Subsystem Diff</h1>
           </div>
-          <Button
-            variant="secondary"
-            icon={ArrowDownToLine}
-            loading={app.pullingCheckouts}
-            disabled={app.pullingCheckouts}
-            onClick={() => app.pullLatest(subsystem.id)}
-            title="Fetch the latest refs for this subsystem and main"
-          >
-            {app.pullingCheckouts ? 'Pulling…' : 'Pull latest'}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={RefreshCw}
-            loading={diff.loading}
-            disabled={diff.loading}
-            onClick={diff.reload}
-            title="Recompute file diff against target branch"
-          >
-            Refresh
-          </Button>
-        </div>
-      </header>
+          <div className="flex flex-wrap items-center gap-2">
+            <SubsystemSelector
+              subsystems={subsystems}
+              selectedId={subsystem.id}
+              onSelect={(next) => app.selectSubsystem(next)}
+            />
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-muted">Target</span>
+              <Select
+                ariaLabel="Authorized target main-system branch"
+                className="w-[180px]"
+                value={app.targetBranch}
+                onValueChange={(next) => app.setTargetBranch(next)}
+                options={branches.map((branch) => ({
+                  value: branch.name,
+                  label: branch.name,
+                }))}
+              />
+            </div>
+            <Button
+              variant="secondary"
+              icon={ArrowDownToLine}
+              loading={app.pullingCheckouts}
+              disabled={app.pullingCheckouts}
+              onClick={() => app.pullLatest(subsystem.id)}
+              title="Fetch the latest refs for this subsystem and main"
+            >
+              {app.pullingCheckouts ? 'Pulling…' : 'Pull latest'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={RefreshCw}
+              loading={diff.loading}
+              disabled={diff.loading}
+              onClick={diff.reload}
+              title="Recompute file diff against target branch"
+            >
+              Refresh
+            </Button>
+          </div>
+        </header>
+      ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <section
