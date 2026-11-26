@@ -147,6 +147,9 @@
 
   --line: #e1e4e8;
   --line-strong: #8b939b;
+  --input-bg: #ffffff;
+  --input-border: #d0d7de;
+  --input-border-hover: #8b939b;
 
   --hover: #f6f8fa;
   --active: #e9ecef;
@@ -222,6 +225,9 @@
 
   --line: #141414;
   --line-strong: #727b85;
+  --input-bg: #16191d;
+  --input-border: #363d45;
+  --input-border-hover: #4f5863;
 
   --hover: #2f363d;
   --active: #383f47;
@@ -298,6 +304,9 @@
 
     --line: #141414;
     --line-strong: #727b85;
+    --input-bg: #16191d;
+    --input-border: #363d45;
+    --input-border-hover: #4f5863;
 
     --hover: #2f363d;
     --active: #383f47;
@@ -428,8 +437,9 @@
 }
 
 @utility input {
-  @apply h-[25px] w-full rounded-md border border-line-strong bg-surface px-2 text-xs text-fg
-    placeholder:text-disabled focus:control-focus;
+  @apply h-[27px] w-full rounded-md border border-[var(--input-border)] bg-[var(--input-bg)] px-2.5
+    text-xs text-fg transition-colors placeholder:text-disabled
+    hover:border-[var(--input-border-hover)] focus:control-focus;
 }
 
 @utility select {

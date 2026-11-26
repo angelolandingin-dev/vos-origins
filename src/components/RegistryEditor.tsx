@@ -803,7 +803,7 @@ function RegistryForm({
                 <div className="w-full shrink-0 md:w-[400px]">
                   <textarea
                     id="registry-global-files"
-                    className="input mono h-auto min-h-[104px] py-1.5"
+                    className="input mono h-auto min-h-[104px] resize-none py-2"
                     rows={4}
                     value={globalFilesDraft}
                     spellCheck={false}
