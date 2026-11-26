@@ -562,7 +562,6 @@ export function Distribute() {
             <OutcomePanel
               outcome={outcome}
               subsystemName={selectedSubsystem.name}
-              onOpenPr={(url) => app.openExternal(url)}
               onReset={() => {
                 setOutcome(null);
                 planQuery.reload();
@@ -787,77 +786,156 @@ export function Distribute() {
                         </ul>
                       </div>
                     ) : null}
+
+                    <div className="space-y-2.5 p-3.5">
+                      <Field
+                        label="Commit & PR subject"
+                        htmlFor="distribute-message"
+                        hint="Blank uses the trunk commit's subject."
+                      >
+                        <input
+                          id="distribute-message"
+                          type="text"
+                          className="input"
+                          placeholder={plan.commitSubject}
+                          value={message}
+                          disabled={locked}
+                          onChange={(event) => setMessage(event.target.value)}
+                        />
+                      </Field>
+
+                      {running ? (
+                        <div className="space-y-1" role="status" aria-live="polite">
+                          <div className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="flex min-w-0 items-center gap-1.5 text-fg">
+                              <Spinner className="h-3 w-3" />
+                              <span className="truncate">
+                                {progress?.label ?? 'Starting distribution…'}
+                              </span>
+                            </span>
+                            {progress?.index != null && progress.total != null ? (
+                              <span className="mono shrink-0 text-muted">
+                                {progress.index}/{progress.total}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="h-[3px] overflow-hidden rounded-full bg-line">
+                            <div
+                              className="h-full bg-accent transition-[width]"
+                              style={{ width: `${progressPercent(progress)}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {runError ? <ErrorState compact error={runError} /> : null}
+                    </div>
                   </>
                 ) : null}
               </div>
-
-              {plan ? (
-                <footer className="space-y-2 border-t border-line bg-raised px-3.5 py-3">
-                  <Field
-                    label="Commit & PR subject"
-                    htmlFor="distribute-message"
-                    hint="Blank uses the trunk commit's subject."
-                  >
-                    <input
-                      id="distribute-message"
-                      type="text"
-                      className="input"
-                      placeholder={plan.commitSubject}
-                      value={message}
-                      disabled={locked}
-                      onChange={(event) => setMessage(event.target.value)}
-                    />
-                  </Field>
-
-                  {running ? (
-                    <div className="space-y-1" role="status" aria-live="polite">
-                      <div className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="flex min-w-0 items-center gap-1.5 text-fg">
-                          <Spinner className="h-3 w-3" />
-                          <span className="truncate">
-                            {progress?.label ?? 'Starting distribution…'}
-                          </span>
-                        </span>
-                        {progress?.index != null && progress.total != null ? (
-                          <span className="mono shrink-0 text-muted">
-                            {progress.index}/{progress.total}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="h-[3px] overflow-hidden rounded-full bg-line">
-                        <div
-                          className="h-full bg-accent transition-[width]"
-                          style={{ width: `${progressPercent(progress)}%` }}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {runError ? <ErrorState compact error={runError} /> : null}
-
-                  <Button
-                    variant="primary"
-                    icon={GitPullRequestArrow}
-                    onClick={startDistribution}
-                    disabled={!canRun}
-                    loading={running}
-                    className="w-full"
-                    title={
-                      isBlocked
-                        ? 'Resolve blockers before distributing'
-                        : !hasChanges
-                          ? 'Select at least one file or dependency change'
-                          : undefined
-                    }
-                  >
-                    Open Pull Request in {selectedSubsystem.name}
-                  </Button>
-                </footer>
-              ) : null}
             </>
           )}
         </section>
       </div>
+
+      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-raised px-4 py-2">
+        <div className="min-w-0 text-[11px] text-muted">
+          {running ? (
+            <span className="flex items-center gap-1.5 text-fg">
+              <Spinner className="h-3 w-3" />
+              <span className="truncate">{progress?.label ?? 'Starting distribution…'}</span>
+              {progress?.index != null && progress.total != null ? (
+                <span className="mono shrink-0 text-muted tabular-nums">
+                  ({progress.index}/{progress.total})
+                </span>
+              ) : null}
+            </span>
+          ) : outcome ? (
+            <span>
+              {outcome.ok
+                ? outcome.pullRequest?.number != null
+                  ? `Pull request #${outcome.pullRequest.number} ${outcome.pullRequest.state} in ${selectedSubsystem?.name ?? 'subsystem'}`
+                  : `Branch ${outcome.branch} pushed`
+                : 'Distribution blocked'}
+            </span>
+          ) : !selectedSubsystem ? (
+            <span>Enable or register a subsystem in Settings before distributing commits.</span>
+          ) : !selectedCommit ? (
+            <span>
+              Select a commit from <span className="mono">{trunkBranch || 'the trunk branch'}</span>{' '}
+              to distribute to {selectedSubsystem.name}.
+            </span>
+          ) : planLoading && !plan ? (
+            <span>Building distribution preview for {selectedSubsystem.name}…</span>
+          ) : planError ? (
+            <span className="text-status-blocked-ink">
+              Preview failed — retry to inspect changes.
+            </span>
+          ) : plan ? (
+            isBlocked ? (
+              <span className="text-status-blocked-ink">
+                {plan.blockers.length} blocker{plan.blockers.length === 1 ? '' : 's'} — resolve
+                before opening PR.
+              </span>
+            ) : !hasChanges ? (
+              <span>No file or dependency changes selected for {selectedSubsystem.name}.</span>
+            ) : (
+              <span className="mono tabular-nums">
+                {selectedCommit.shortSha} → {selectedSubsystem.name} (
+                {selectedSubsystem.sourceBranch}) · {includedFiles.length} file
+                {includedFiles.length === 1 ? '' : 's'}
+                {plan.dependencies.length > 0
+                  ? ` · ${plan.dependencies.length} dep${plan.dependencies.length === 1 ? '' : 's'}`
+                  : ''}
+              </span>
+            )
+          ) : null}
+        </div>
+        {outcome ? (
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setOutcome(null);
+                planQuery.reload();
+              }}
+            >
+              Done
+            </Button>
+            {outcome.pullRequest?.url ? (
+              <Button
+                variant="primary"
+                icon={ExternalLink}
+                onClick={() => {
+                  const prUrl = outcome.pullRequest?.url;
+                  if (prUrl) app.openExternal(prUrl);
+                }}
+              >
+                Open Pull Request
+              </Button>
+            ) : null}
+          </div>
+        ) : (
+          <Button
+            variant="primary"
+            icon={GitPullRequestArrow}
+            onClick={startDistribution}
+            disabled={!canRun}
+            loading={running}
+            title={
+              isBlocked
+                ? 'Resolve blockers before distributing'
+                : !hasChanges
+                  ? 'Select at least one file or dependency change'
+                  : undefined
+            }
+          >
+            {selectedSubsystem
+              ? `Open Pull Request in ${selectedSubsystem.name}`
+              : 'Open Pull Request'}
+          </Button>
+        )}
+      </footer>
     </div>
   );
 }
@@ -1052,16 +1130,13 @@ function DependencyRow({ dependency }: { dependency: DistributionDependency }) {
 function OutcomePanel({
   outcome,
   subsystemName,
-  onOpenPr,
   onReset,
 }: {
   outcome: DistributionOutcome;
   subsystemName: string;
-  onOpenPr: (url: string) => void;
   onReset: () => void;
 }) {
   const pullRequest = outcome.pullRequest;
-  const url = pullRequest?.url ?? null;
   const commitSha = outcome.commitSha;
 
   return (
@@ -1108,17 +1183,6 @@ function OutcomePanel({
             </KeyValue>
           ) : null}
         </dl>
-
-        {url ? (
-          <Button
-            variant="primary"
-            icon={ExternalLink}
-            onClick={() => onOpenPr(url)}
-            className="w-full"
-          >
-            Open Pull Request
-          </Button>
-        ) : null}
 
         {outcome.dependencies.length > 0 ? (
           <div className="space-y-1">

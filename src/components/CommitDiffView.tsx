@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Check, Copy, ExternalLink, FileCode2, GitPullRequestArrow, Search } from 'lucide-react';
+import { Check, Copy, ExternalLink, FileCode2, Search } from 'lucide-react';
 
 import type { ApiError } from '../api/invoke';
 import { api } from '../api/invoke';
@@ -12,7 +12,6 @@ import { PathLabel } from './PathLabel';
 import { CommitStatusBadge } from './StatusBadge';
 import { cx } from './ui/cx';
 import {
-  Button,
   Checkbox,
   EmptyState,
   ErrorState,
@@ -33,7 +32,8 @@ export interface CommitDiffViewProps {
   onRetry: () => void;
   selectedPath: string | null;
   onSelectPath: (path: string) => void;
-  onPromoteHandoff: (sha: string, excludedPaths: string[]) => void;
+  excludedPaths: string[];
+  onToggleExcluded: (path: string) => void;
   mainRepository: string | null;
 }
 
@@ -47,14 +47,14 @@ export function CommitDiffView({
   onRetry,
   selectedPath,
   onSelectPath,
-  onPromoteHandoff,
+  excludedPaths,
+  onToggleExcluded,
   mainRepository,
 }: CommitDiffViewProps) {
   const app = useApp();
   const [mode, setMode] = useState<'side' | 'unified'>('unified');
   const [filesWidth, setFilesWidth] = useState(SPLIT_DEFAULT_WIDTH);
   const [filter, setFilter] = useState('');
-  const [excluded, setExcluded] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
 
   const files = useMemo(() => details?.files ?? [], [details]);
@@ -67,12 +67,10 @@ export function CommitDiffView({
       ? selectedPath
       : files[0]?.path) ?? null;
   const activeFile = files.find((file) => file.path === activePath) ?? null;
-  const activeExcluded = excluded.filter((path) => files.some((file) => file.path === path));
+  const activeExcluded = excludedPaths.filter((path) => files.some((file) => file.path === path));
 
   const toggleExcluded = (path: string) => {
-    setExcluded((prev) =>
-      prev.includes(path) ? prev.filter((entry) => entry !== path) : [...prev, path],
-    );
+    onToggleExcluded(path);
   };
 
   const copySha = async () => {
@@ -85,9 +83,6 @@ export function CommitDiffView({
       setCopied(false);
     }
   };
-
-  const statusKind = details?.status.kind;
-  const isPromotable = statusKind === 'eligible' || statusKind === 'reverted';
 
   return (
     <section
@@ -175,24 +170,6 @@ export function CommitDiffView({
                 </button>
               ))}
             </div>
-            <Button
-              size="sm"
-              variant="primary"
-              icon={GitPullRequestArrow}
-              disabled={!isPromotable}
-              onClick={() => onPromoteHandoff(sha, activeExcluded)}
-              title={
-                isPromotable
-                  ? activeExcluded.length > 0
-                    ? `Select this commit and open the Promote tab without ${activeExcluded.length} excluded file(s)`
-                    : 'Select this commit and open the Promote tab to confirm it'
-                  : 'Only eligible (or previously reverted) commits can be promoted'
-              }
-            >
-              {activeExcluded.length > 0
-                ? `Promote… (${activeExcluded.length} excluded)`
-                : 'Promote…'}
-            </Button>
           </div>
         ) : null}
       </header>
