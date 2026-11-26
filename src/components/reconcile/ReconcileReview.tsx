@@ -1,7 +1,10 @@
 import { useMemo, useState } from 'react';
 import {
   ArrowLeft,
+  Check,
+  CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Copy,
   ExternalLink,
   GitPullRequestArrow,
@@ -27,6 +30,8 @@ import type {
 } from '../../api/types';
 import { ChangeKindIcon } from '../ChangeKindIcon';
 import { DiffViewer } from '../DiffViewer';
+import { ExecutionLogDisclosure, ExecutionProgressView } from '../ExecutionProgressView';
+import type { ExecutionStage } from '../executionProgress';
 import { PathLabel } from '../PathLabel';
 import { cx } from '../ui/cx';
 import {
@@ -69,7 +74,7 @@ export interface ReconcileReviewProps {
   confirmed: boolean;
   onConfirmedChange: (confirmed: boolean) => void;
   running: boolean;
-  progress: PromotionProgress | null;
+  progressSteps: PromotionProgress[];
   runError: ApiError | null;
   outcome: ReconcileOutcome | null;
   onBackToFolders: () => void;
@@ -86,6 +91,14 @@ const ACTION_META: Record<
   overwrite: { label: 'Overwrite', dot: 'bg-accent', changeKind: 'modified' },
   delete: { label: 'Delete', dot: 'bg-status-blocked', changeKind: 'deleted' },
 };
+
+const RECONCILE_STAGES: ReadonlyArray<ExecutionStage> = [
+  { id: 'prepare', label: 'Preparing checkouts' },
+  { id: 'plan', label: 'Validating reconcile plan' },
+  { id: 'apply', label: 'Applying folder contents' },
+  { id: 'commit', label: 'Recording reconciliation commit' },
+  { id: 'deliver', label: 'Delivering reconciliation' },
+];
 
 const DELIVERY_OPTIONS: Array<{ value: PromotionDelivery; label: string }> = [
   { value: 'local_direct', label: 'Local commit on target branch (default)' },
@@ -119,7 +132,7 @@ export function ReconcileReview({
   confirmed,
   onConfirmedChange,
   running,
-  progress,
+  progressSteps,
   runError,
   outcome,
   onBackToFolders,
@@ -130,7 +143,7 @@ export function ReconcileReview({
   const [actionFilter, setActionFilter] = useState<'all' | ReconcileFileAction>('all');
   const [pathFilter, setPathFilter] = useState('');
   const [diffMode, setDiffMode] = useState<'unified' | 'side'>('unified');
-  const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
+  const [copiedCommands, setCopiedCommands] = useState(false);
 
   const excludedSet = useMemo(() => new Set(excludedPaths), [excludedPaths]);
   const files = useMemo(() => plan?.files ?? [], [plan?.files]);
@@ -167,10 +180,12 @@ export function ReconcileReview({
   const defaultSubject =
     folders.length === 1 ? `sync ${folders[0]}` : `sync ${folders.length} folders`;
 
-  const copyCommand = (cmd: string) => {
-    void navigator.clipboard.writeText(cmd).then(() => {
-      setCopiedCommand(cmd);
-      window.setTimeout(() => setCopiedCommand(null), 1500);
+  const copyAllCommands = (commands: string[]) => {
+    const text = commands.join('\n');
+    if (!text) return;
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopiedCommands(true);
+      window.setTimeout(() => setCopiedCommands(false), 1600);
     });
   };
 
@@ -200,58 +215,236 @@ export function ReconcileReview({
       </div>
 
       {outcome ? (
-        <div className="scroll-area min-h-0 flex-1 p-4">
-          <div className="mx-auto max-w-2xl">
-            <Panel
-              title={`${subsystemName} reconciliation`}
-              subtitle={
-                outcome.ok
-                  ? outcome.pullRequest?.number != null
-                    ? `Pull request #${outcome.pullRequest.number} ${outcome.pullRequest.state}`
-                    : 'Completed'
-                  : 'Reconciliation blocked'
-              }
-              actions={
-                <Button variant="primary" size="sm" onClick={onDone}>
-                  Done
-                </Button>
-              }
-              bodyClassName="space-y-3 p-3"
-            >
-              <BlockerList blockers={outcome.blockers} />
-              <WarningsList warnings={outcome.warnings} />
-              {outcome.message ? <p className="text-xs text-fg">{outcome.message}</p> : null}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="scroll-area min-h-0 flex-1 p-5">
+            <div className="mx-auto max-w-5xl space-y-5">
+              {(() => {
+                const statusBadge = !outcome.ok
+                  ? 'Blocked'
+                  : outcome.pullRequest?.number != null
+                    ? `PR #${outcome.pullRequest.number} ${outcome.pullRequest.state}`
+                    : outcome.delivery === 'local_direct'
+                      ? 'Committed locally'
+                      : outcome.delivery === 'worktree'
+                        ? 'Staged in working tree'
+                        : outcome.delivery === 'local'
+                          ? 'Branch created'
+                          : 'Completed';
+                const headline = !outcome.ok
+                  ? `${subsystemName} reconciliation blocked`
+                  : outcome.pullRequest?.number != null
+                    ? `Pull request #${outcome.pullRequest.number} opened for ${subsystemName}`
+                    : outcome.delivery === 'local_direct'
+                      ? `Reconciled ${subsystemName} into ${outcome.destBranch} locally`
+                      : outcome.delivery === 'worktree'
+                        ? `Staged ${subsystemName} reconciliation on ${outcome.destBranch}`
+                        : `Reconciled ${subsystemName} on ${outcome.branch}`;
 
-              <dl>
-                <KeyValue label="Source">
-                  <span className="mono">
-                    {outcome.sourceBranch} @ {outcome.sourceSha.slice(0, 7)}
-                  </span>
-                </KeyValue>
-                <KeyValue label="Destination">
-                  <span className="mono">{outcome.destBranch}</span>
-                </KeyValue>
-                <KeyValue label="Branch">
-                  <span className="mono">{outcome.branch}</span>
-                </KeyValue>
-                <KeyValue label="Commit">
-                  {outcome.commitSha ? (
-                    <span className="mono">{outcome.commitSha.slice(0, 7)}</span>
-                  ) : (
-                    '— (staged only)'
-                  )}
-                </KeyValue>
-                <KeyValue label="Changes">
-                  <span className="mono tabular-nums">
-                    +{outcome.applied.length} added · ~{outcome.overwritten.length} overwritten · -
-                    {outcome.deleted.length} deleted
-                  </span>
-                </KeyValue>
-              </dl>
+                return (
+                  <div
+                    className={cx(
+                      'flex flex-wrap items-start justify-between gap-4 rounded-md border border-l-[3px] px-4 py-3.5',
+                      outcome.ok
+                        ? 'border-status-applied/40 border-l-status-applied bg-status-applied-soft'
+                        : 'border-status-blocked/40 border-l-status-blocked bg-status-blocked-soft',
+                    )}
+                  >
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
+                      {outcome.ok ? (
+                        <CheckCircle2
+                          className="mt-0.5 h-5 w-5 shrink-0 text-status-applied-ink"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <TriangleAlert
+                          className="mt-0.5 h-5 w-5 shrink-0 text-status-blocked-ink"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h2
+                            className={cx(
+                              'text-[13px] font-semibold',
+                              outcome.ok ? 'text-status-applied-ink' : 'text-status-blocked-ink',
+                            )}
+                          >
+                            {headline}
+                          </h2>
+                          <span
+                            className={cx(
+                              'mono rounded border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase',
+                              outcome.ok
+                                ? 'border-status-applied/40 bg-status-applied/15 text-status-applied-ink'
+                                : 'border-status-blocked/40 bg-status-blocked/15 text-status-blocked-ink',
+                            )}
+                          >
+                            {statusBadge}
+                          </span>
+                          {outcome.warnings.length > 0 ? (
+                            <span className="mono rounded border border-status-unknown/40 bg-status-unknown-soft px-1.5 py-0.5 text-[10px] font-semibold text-status-unknown-ink">
+                              {outcome.warnings.length} warning
+                              {outcome.warnings.length === 1 ? '' : 's'}
+                            </span>
+                          ) : null}
+                        </div>
+                        {outcome.message ? (
+                          <p className="mt-1 text-[11px] leading-relaxed text-fg/85">
+                            {outcome.message}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
 
+                    <div className="flex shrink-0 flex-col items-end gap-1 text-[11px]">
+                      <span className="mono rounded border border-line bg-surface/80 px-2 py-0.5 font-medium text-fg">
+                        {outcome.destBranch}
+                      </span>
+                      <span className="mono text-muted">
+                        {outcome.commitSha ? outcome.commitSha.slice(0, 7) : 'staged only'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
+                {/* Left: change counts, expandable paths & execution log */}
+                <div className="min-w-0 space-y-4">
+                  <section className="space-y-3">
+                    <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                      What changed
+                    </h3>
+                    <div className="grid grid-cols-4 divide-x divide-line overflow-hidden rounded-md border border-line bg-surface">
+                      {[
+                        {
+                          label: 'Added',
+                          value: outcome.applied.length,
+                          tone: 'text-status-applied-ink',
+                        },
+                        {
+                          label: 'Overwritten',
+                          value: outcome.overwritten.length,
+                          tone: 'text-accent-ink',
+                        },
+                        {
+                          label: 'Deleted',
+                          value: outcome.deleted.length,
+                          tone: 'text-status-blocked-ink',
+                        },
+                        {
+                          label: 'Deps',
+                          value: outcome.dependencies.length,
+                          tone: 'text-fg',
+                        },
+                      ].map((stat) => (
+                        <div key={stat.label} className="px-3 py-2">
+                          <p className="text-[10px] font-medium text-muted">{stat.label}</p>
+                          <p
+                            className={cx(
+                              'mono mt-0.5 text-sm font-semibold tabular-nums',
+                              stat.value > 0 ? stat.tone : 'text-disabled',
+                            )}
+                          >
+                            {stat.value}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <OutcomePathList title="Added" paths={outcome.applied} />
+                      <OutcomePathList title="Overwritten" paths={outcome.overwritten} />
+                      <OutcomePathList title="Deleted" paths={outcome.deleted} />
+                    </div>
+                  </section>
+
+                  {outcome.dependencies.length > 0 ? (
+                    <section className="space-y-2">
+                      <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        Dependencies updated ({outcome.dependencies.length})
+                      </h3>
+                      <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+                        {outcome.dependencies.map((dep) => (
+                          <DependencyRow key={`${dep.section}:${dep.name}`} dependency={dep} />
+                        ))}
+                      </ul>
+                    </section>
+                  ) : null}
+
+                  <ExecutionLogDisclosure
+                    stages={RECONCILE_STAGES}
+                    steps={progressSteps}
+                    outcome={outcome.ok ? 'success' : 'failed'}
+                  />
+                </div>
+
+                {/* Right: next commands, metadata, blockers & warnings */}
+                <div className="min-w-0 space-y-4">
+                  {outcome.localCommands.length > 0 ? (
+                    <section className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                          Next commands
+                        </h3>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          icon={copiedCommands ? Check : Copy}
+                          onClick={() => copyAllCommands(outcome.localCommands)}
+                        >
+                          {copiedCommands ? 'Copied' : 'Copy'}
+                        </Button>
+                      </div>
+                      <pre className="mono overflow-x-auto rounded-md border border-line bg-ground p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-fg">
+                        {outcome.localCommands.join('\n')}
+                      </pre>
+                    </section>
+                  ) : null}
+
+                  <section className="space-y-2">
+                    <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                      Details
+                    </h3>
+                    <dl className="divide-y divide-line rounded-md border border-line bg-surface px-3">
+                      <KeyValue label="Source">
+                        <span className="mono">
+                          {outcome.sourceBranch} @ {outcome.sourceSha.slice(0, 7)}
+                        </span>
+                      </KeyValue>
+                      <KeyValue label="Destination">
+                        <span className="mono">{outcome.destBranch}</span>
+                      </KeyValue>
+                      <KeyValue label="Branch">
+                        <span className="mono">{outcome.branch}</span>
+                      </KeyValue>
+                      <KeyValue label="Commit">
+                        {outcome.commitSha ? (
+                          <span className="mono">{outcome.commitSha.slice(0, 7)}</span>
+                        ) : (
+                          '— (staged only)'
+                        )}
+                      </KeyValue>
+                    </dl>
+                  </section>
+
+                  <BlockerList blockers={outcome.blockers} />
+                  <WarningsList warnings={outcome.warnings} />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-raised px-4 py-2">
+            <span className="mono text-[11px] text-muted tabular-nums">
+              {outcome.ok
+                ? `+${outcome.applied.length} added · ~${outcome.overwritten.length} overwritten · -${outcome.deleted.length} deleted`
+                : 'Reconciliation blocked'}
+            </span>
+            <div className="flex shrink-0 items-center gap-2">
               {outcome.pullRequest?.url ? (
                 <Button
-                  variant="primary"
+                  variant="secondary"
                   icon={ExternalLink}
                   onClick={() => {
                     if (outcome.pullRequest?.url) onOpenExternal(outcome.pullRequest.url);
@@ -260,36 +453,11 @@ export function ReconcileReview({
                   Open Pull Request
                 </Button>
               ) : null}
-
-              {outcome.localCommands.length > 0 ? (
-                <div className="space-y-1">
-                  <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                    Next commands
-                  </span>
-                  <ul className="divide-y divide-line rounded-md border border-line bg-raised">
-                    {outcome.localCommands.map((cmd) => (
-                      <li
-                        key={cmd}
-                        className="flex items-center justify-between gap-2 px-2.5 py-1.5"
-                      >
-                        <code className="mono min-w-0 flex-1 truncate text-[11px] text-fg">
-                          {cmd}
-                        </code>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          icon={Copy}
-                          onClick={() => copyCommand(cmd)}
-                        >
-                          {copiedCommand === cmd ? 'Copied' : 'Copy'}
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </Panel>
-          </div>
+              <Button variant="primary" onClick={onDone}>
+                Done
+              </Button>
+            </div>
+          </footer>
         </div>
       ) : (
         <div className="grid min-h-0 flex-1 gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_minmax(380px,440px)]">
@@ -638,32 +806,13 @@ export function ReconcileReview({
                         : `Reconcile into ${plan.destBranch}`}
                   </Button>
 
-                  {running ? (
-                    <div className="space-y-1" role="status" aria-live="polite">
-                      <div className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="flex min-w-0 items-center gap-1.5 text-fg">
-                          <Spinner className="h-3 w-3" />
-                          <span className="truncate">{progress?.label ?? 'Reconciling…'}</span>
-                        </span>
-                        {progress?.index != null && progress.total != null ? (
-                          <span className="mono shrink-0 text-muted">
-                            {progress.index}/{progress.total}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="h-[3px] overflow-hidden rounded-full bg-line">
-                        <div
-                          className="h-full bg-accent transition-[width]"
-                          style={{
-                            width: `${
-                              progress?.index && progress.total
-                                ? Math.max(10, Math.round((progress.index / progress.total) * 100))
-                                : 15
-                            }%`,
-                          }}
-                        />
-                      </div>
-                    </div>
+                  {running || (runError && progressSteps.length > 0) ? (
+                    <ExecutionProgressView
+                      title="Reconciliation progress"
+                      stages={RECONCILE_STAGES}
+                      steps={progressSteps}
+                      outcome={running ? 'running' : runError ? 'failed' : 'success'}
+                    />
                   ) : null}
 
                   {runError ? <ErrorState compact error={runError} /> : null}
@@ -674,6 +823,33 @@ export function ReconcileReview({
         </div>
       )}
     </div>
+  );
+}
+
+function OutcomePathList({ title, paths }: { title: string; paths: string[] }) {
+  if (paths.length === 0) return null;
+  return (
+    <details className="group overflow-hidden rounded-md border border-line bg-surface">
+      <summary className="flex h-[31px] cursor-pointer items-center justify-between gap-2 px-3 text-[11px] select-none hover:bg-hover">
+        <span className="flex items-center gap-1.5 font-semibold tracking-wide text-muted uppercase">
+          <ChevronRight
+            className="h-3.5 w-3.5 text-disabled transition-transform group-open:rotate-90"
+            aria-hidden="true"
+          />
+          {title}
+        </span>
+        <span className="mono text-muted tabular-nums">
+          {paths.length} path{paths.length === 1 ? '' : 's'}
+        </span>
+      </summary>
+      <ul className="max-h-48 divide-y divide-line overflow-auto border-t border-line">
+        {paths.map((path) => (
+          <li key={path} className="flex h-[27px] items-center px-3">
+            <PathLabel path={path} className="min-w-0 flex-1 text-[11px]" />
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

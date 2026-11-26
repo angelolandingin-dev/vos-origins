@@ -17,6 +17,7 @@ import type {
 } from '../api/types';
 import { useApp, useAsyncData } from '../app/context';
 import { SubsystemSelector } from '../components/SubsystemSelector';
+import { appendProgressStep } from '../components/executionProgress';
 import { DirectorySelector } from '../components/reconcile/DirectorySelector';
 import { ReconcileReview } from '../components/reconcile/ReconcileReview';
 import { addFolderWithConsolidation, scopesEqual } from '../components/reconcile/scopeUtils';
@@ -134,7 +135,7 @@ function ReconcileWorkspace({
   const [message, setMessage] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<PromotionProgress | null>(null);
+  const [progressSteps, setProgressSteps] = useState<PromotionProgress[]>([]);
   const [runError, setRunError] = useState<ApiError | null>(null);
   const [outcome, setOutcome] = useState<ReconcileOutcome | null>(null);
 
@@ -199,7 +200,7 @@ function ReconcileWorkspace({
     setExcludedPaths([]);
     setInspectedFile(null);
     setConfirmed(false);
-    setProgress(null);
+    setProgressSteps([]);
     setRunError(null);
     setOutcome(null);
   };
@@ -270,7 +271,7 @@ function ReconcileWorkspace({
   const startRun = () => {
     if (running || !planQuery.data || !confirmed) return;
     setRunError(null);
-    setProgress(null);
+    setProgressSteps([]);
     setRunning(true);
 
     let stopListening: (() => void) | null = null;
@@ -283,7 +284,7 @@ function ReconcileWorkspace({
 
     void listen<PromotionProgress>('reconcile-progress', (event) => {
       if (done) return;
-      setProgress(event.payload);
+      setProgressSteps((current) => appendProgressStep(current, event.payload));
     })
       .then((stop) => {
         if (done) stop();
@@ -521,7 +522,7 @@ function ReconcileWorkspace({
           confirmed={confirmed}
           onConfirmedChange={setConfirmed}
           running={running}
-          progress={progress}
+          progressSteps={progressSteps}
           runError={runError}
           outcome={outcome}
           onBackToFolders={() => {
