@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import {
   ArrowUpRight,
+  ChevronRight,
   ExternalLink,
   FolderGit2,
   GitBranch,
@@ -103,7 +104,7 @@ function PolicyRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between gap-3 py-1.5 text-[11px]">
       <dt className="text-muted">{label}</dt>
-      <dd className="mono truncate text-right text-fg/80">{value}</dd>
+      <dd className="mono truncate text-right text-muted">{value}</dd>
     </div>
   );
 }
@@ -196,7 +197,7 @@ function RegistryForm({
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [subsystemFilter, setSubsystemFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [inspectorWidth, setInspectorWidth] = useState(380);
+  const [inspectorWidth, setInspectorWidth] = useState(440);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const idInputRef = useRef<HTMLInputElement>(null);
@@ -323,7 +324,7 @@ function RegistryForm({
             aria-label="Registered subsystems"
             className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface"
           >
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-4 py-2">
+            <div className="flex h-[42px] shrink-0 items-center justify-between gap-2 border-b border-line bg-surface px-4">
               <div className="relative w-full max-w-[320px] min-w-[180px] flex-1">
                 <Search
                   className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-disabled"
@@ -512,8 +513,8 @@ function RegistryForm({
             width={inspectorWidth}
             onWidthChange={setInspectorWidth}
             label="Resize subsystem inspector"
-            min={320}
-            max={520}
+            min={360}
+            max={580}
           />
 
           {/* Right: always-present subsystem inspector */}
@@ -524,46 +525,60 @@ function RegistryForm({
           >
             {activeRow ? (
               <>
-                <div className="flex items-start justify-between gap-2 border-b border-line bg-raised px-4 py-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span
-                        aria-hidden="true"
-                        className={cx(
-                          'h-2 w-2 shrink-0 rounded-full',
-                          !activeRow.entry.enabled
-                            ? 'bg-disabled'
-                            : activeLive
-                              ? CONNECTIVITY_DOT[activeLive.connectivity].dot
-                              : 'bg-accent',
-                        )}
-                      />
-                      <h2 className="truncate text-[13px] font-semibold text-fg">
-                        {activeRow.entry.name || activeRow.entry.id || 'New subsystem'}
-                      </h2>
-                    </div>
-                    <p className="mt-1 truncate text-[11px] text-muted">
-                      {activeLive
-                        ? `${CONNECTIVITY_DOT[activeLive.connectivity].label} · verified ${formatDateTime(activeLive.lastSyncedAt)}`
-                        : 'Unsaved draft — save registry to apply'}
-                    </p>
+                <div className="flex h-[42px] shrink-0 items-center justify-between gap-2 border-b border-line bg-surface px-4">
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <span
+                      aria-hidden="true"
+                      className={cx(
+                        'h-2 w-2 shrink-0 rounded-full',
+                        !activeRow.entry.enabled
+                          ? 'bg-disabled'
+                          : activeLive
+                            ? CONNECTIVITY_DOT[activeLive.connectivity].dot
+                            : 'bg-accent',
+                      )}
+                    />
+                    <h2 className="truncate text-xs font-semibold text-fg">
+                      {activeRow.entry.name || activeRow.entry.id || 'New subsystem'}
+                    </h2>
                   </div>
 
-                  {activeRow.entry.repository ? (
-                    <IconButton
-                      icon={ExternalLink}
-                      label="Open repository on GitHub"
-                      onClick={() =>
-                        app.openExternal(
-                          `https://github.com/${activeRow.entry.repository}/tree/${activeRow.entry.sourceBranch || 'master'}`,
-                        )
-                      }
-                    />
-                  ) : null}
+                  <div className="flex shrink-0 items-center gap-1">
+                    {activeLive && activeRow.entry.enabled ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        trailingIcon={ArrowUpRight}
+                        onClick={() => {
+                          app.selectSubsystem(activeLive.id);
+                          app.navigate('commit-browser');
+                        }}
+                      >
+                        Browse
+                      </Button>
+                    ) : null}
+                    {activeRow.entry.repository ? (
+                      <IconButton
+                        icon={ExternalLink}
+                        label="Open repository on GitHub"
+                        onClick={() =>
+                          app.openExternal(
+                            `https://github.com/${activeRow.entry.repository}/tree/${activeRow.entry.sourceBranch || 'master'}`,
+                          )
+                        }
+                      />
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className="scroll-area min-h-0 flex-1 divide-y divide-line">
                   <div className="space-y-3.5 px-4 py-4">
+                    <p className="truncate text-[11px] text-muted">
+                      {activeLive
+                        ? `${CONNECTIVITY_DOT[activeLive.connectivity].label} · verified ${formatDateTime(activeLive.lastSyncedAt)}`
+                        : 'Unsaved draft — save registry to apply'}
+                    </p>
+
                     <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-2.5">
                       <label className="block">
                         <span className="text-[11px] font-medium text-muted">Id</span>
@@ -636,9 +651,20 @@ function RegistryForm({
                     </div>
                   </div>
 
-                  <div className="px-4 py-3.5">
-                    <h3 className="mb-2 text-[11px] font-medium text-muted">Integration policy</h3>
-                    <dl className="divide-y divide-line/60">
+                  <details className="group">
+                    <summary className="flex h-[36px] cursor-pointer items-center justify-between gap-2 px-4 text-[11px] text-muted select-none hover:bg-hover hover:text-fg">
+                      <span className="flex items-center gap-1.5 font-medium">
+                        <ChevronRight
+                          className="h-3.5 w-3.5 text-disabled transition-transform group-open:rotate-90"
+                          aria-hidden="true"
+                        />
+                        Integration policy
+                      </span>
+                      <span className="mono text-[11px] text-disabled">
+                        {activeRow.entry.pathStrategy}
+                      </span>
+                    </summary>
+                    <dl className="divide-y divide-line/60 border-t border-line/60 bg-raised/20 px-4 py-1">
                       <PolicyRow label="Path strategy" value={activeRow.entry.pathStrategy} />
                       <PolicyRow
                         label="Dependency strategy"
@@ -665,32 +691,20 @@ function RegistryForm({
                         value={activeRow.entry.integrationPolicy.secretFiles}
                       />
                     </dl>
-                  </div>
-                </div>
+                  </details>
 
-                <div className="flex items-center justify-between gap-2 border-t border-line bg-raised/40 px-4 py-2">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    icon={Trash2}
-                    onClick={() => removeRow(activeRow.key)}
-                    className="text-status-blocked-ink hover:bg-status-blocked-soft hover:text-status-blocked-ink"
-                  >
-                    Remove
-                  </Button>
-                  {activeLive && activeRow.entry.enabled ? (
+                  <div className="flex items-center justify-between gap-3 px-4 py-3">
+                    <span className="text-[11px] text-muted">Remove from local registry</span>
                     <Button
                       size="sm"
                       variant="ghost"
-                      trailingIcon={ArrowUpRight}
-                      onClick={() => {
-                        app.selectSubsystem(activeLive.id);
-                        app.navigate('commit-browser');
-                      }}
+                      icon={Trash2}
+                      onClick={() => removeRow(activeRow.key)}
+                      className="text-status-blocked-ink hover:bg-status-blocked-soft hover:text-status-blocked-ink"
                     >
-                      Browse commits
+                      Remove
                     </Button>
-                  ) : null}
+                  </div>
                 </div>
               </>
             ) : (
