@@ -13,7 +13,10 @@ jobs:
     name: Build and publish Windows release
     runs-on: windows-latest
     steps:
+      # Full history and tags: the notes step lists the commits since the previous release.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -30,6 +33,39 @@ jobs:
 
       - run: npm ci
 
+      # The release body is what the in-app update panel shows, so it lists the
+      # commits that came in since the previous release instead of a fixed line.
+      - id: notes
+        name: Compose release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          previous=$(git tag --list 'app-v*' --sort=-v:refname | grep -v "^app-v${version}$" | head -n 1 || true)
+          {
+            echo "body<<VOS_RELEASE_NOTES"
+            echo "## What changed"
+            echo
+            if [ -n "$previous" ]; then
+              git log --no-merges --pretty='- %s' "${previous}..HEAD"
+            else
+              git log --no-merges --pretty='- %s' -n 20 HEAD
+            fi
+            echo
+            echo "## Updating"
+            echo
+            echo 'Installed copies: **Settings > Updates**, or use the prompt that appears when a release is found.'
+            echo
+            echo "First install: download \`VOS.Origins_${version}_x64-setup.exe\` below."
+            echo
+            echo 'Auto-update works on the NSIS setup install. An install made from the `.msi` has to be replaced by hand.'
+            if [ -n "$previous" ]; then
+              echo
+              echo "**Compare**: https://github.com/${GITHUB_REPOSITORY}/compare/${previous}...app-v${version}"
+            fi
+            echo "VOS_RELEASE_NOTES"
+          } >> "$GITHUB_OUTPUT"
+
       # The updater refuses unsigned artifacts, so the private key is mandatory here.
       - uses: tauri-apps/tauri-action@v1
         env:
@@ -39,7 +75,7 @@ jobs:
         with:
           tagName: app-v__VERSION__
           releaseName: 'VOS Origins v__VERSION__'
-          releaseBody: 'Windows installers plus the signed update bundle. Existing installs update themselves from Settings › Updates.'
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
