@@ -1749,14 +1749,18 @@ fn all_superseded(paths: &[&String], latest: &HashMap<String, usize>, index: usi
             .all(|path| latest.get(*path).is_some_and(|newer| *newer < index))
 }
 
+struct TargetPathDates {
+    dates: HashMap<String, i64>,
+    truncated: bool,
+    oldest_epoch: Option<i64>,
+}
+
 /// Epoch of the target branch's most recent change per path (bounded scan).
 /// Compared against a source commit's date it answers "which side is newer?"
 /// for DISPLAY ORDER ONLY — never correctness (blob membership decides, E3).
-/// Returns `(map, truncated)`: `truncated` is true when the 800-commit scan
-/// hit its limit. A truncated scan that finds no hit is `Unknown` plus the
-/// truncation flag, never `Integrated` (E3) — history is deeper than the scan
-/// and dates may be skewed.
-fn target_path_dates(target_dir: &Path, target_branch: &str) -> (HashMap<String, i64>, bool) {
+/// Tracks `oldest_epoch` so truncation only marks a commit `Unknown` when the
+/// 800-commit window did not even reach back to that commit's timestamp.
+fn target_path_dates_scan(target_dir: &Path, target_branch: &str) -> TargetPathDates {
     const LIMIT: usize = 800;
     let mut map: HashMap<String, i64> = HashMap::new();
     let Ok(out) = git::run(
@@ -1769,12 +1773,21 @@ fn target_path_dates(target_dir: &Path, target_branch: &str) -> (HashMap<String,
             target_branch,
         ],
     ) else {
-        return (map, false);
+        return TargetPathDates {
+            dates: map,
+            truncated: false,
+            oldest_epoch: None,
+        };
     };
     if out.status != 0 {
-        return (map, false);
+        return TargetPathDates {
+            dates: map,
+            truncated: false,
+            oldest_epoch: None,
+        };
     }
     let mut commits_seen = 0usize;
+    let mut oldest_epoch: Option<i64> = None;
     for chunk in out.stdout_str().split('\u{1e}') {
         let mut lines = chunk.lines();
         let Some(epoch) = lines
@@ -1785,6 +1798,10 @@ fn target_path_dates(target_dir: &Path, target_branch: &str) -> (HashMap<String,
             continue;
         };
         commits_seen += 1;
+        oldest_epoch = Some(match oldest_epoch {
+            Some(prev) => prev.min(epoch),
+            None => epoch,
+        });
         for path in lines {
             let path = path.trim();
             if !path.is_empty() {
@@ -1792,7 +1809,150 @@ fn target_path_dates(target_dir: &Path, target_branch: &str) -> (HashMap<String,
             }
         }
     }
-    (map, commits_seen >= LIMIT)
+    TargetPathDates {
+        dates: map,
+        truncated: commits_seen >= LIMIT,
+        oldest_epoch,
+    }
+}
+
+#[cfg(test)]
+fn target_path_dates(target_dir: &Path, target_branch: &str) -> (HashMap<String, i64>, bool) {
+    let scan = target_path_dates_scan(target_dir, target_branch);
+    (scan.dates, scan.truncated)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn refine_content_status(
+    mut status: CommitStatus,
+    target_branch: &str,
+    policy: &crate::services::registry::IntegrationPolicy,
+    deltas: &[(String, char)],
+    committed_unix: i64,
+    source_tree: &HashMap<String, String>,
+    target_blobs: &HashMap<String, String>,
+    target_scan: &TargetPathDates,
+    supersede_ctx: Option<(&HashMap<String, usize>, usize)>,
+) -> CommitStatus {
+    if !matches!(
+        status.kind,
+        CommitStatusKind::Eligible | CommitStatusKind::Unknown
+    ) {
+        return status;
+    }
+
+    let out_of_sync: Vec<(&String, char)> = deltas
+        .iter()
+        // A deletion leaves nothing to compare: `None == None` would
+        // read a removal the target never saw as "already applied", so
+        // an add+delete bundle could not be handed over as a pair. Count
+        // it as promotable — re-applying an absent file is a no-op.
+        .filter(|(path, kind)| {
+            *kind == 'D' || {
+                let voted = classify::classify_path(path, policy, None);
+                is_status_voting(voted.status)
+                    && source_tree.get(path.as_str()) != target_blobs.get(path.as_str())
+            }
+        })
+        .map(|(path, kind)| (path, *kind))
+        .collect();
+
+    let out_of_sync_paths: Vec<&String> = out_of_sync.iter().map(|(p, _)| *p).collect();
+
+    // Manifest and lockfile paths are delta-merged or deferred to the
+    // deployment (which regenerates the lockfile), never written
+    // wholesale (spec §6.4/§7), so a newer copy on the target does
+    // not invalidate this commit — reconciliation decides those.
+    // Deletions of files already absent on target also do not vote on
+    // target recency (nothing on target would be reverted).
+    let recency_paths: Vec<&String> = out_of_sync
+        .iter()
+        .filter(|(path, kind)| {
+            !is_dependency_path(path)
+                && (*kind != 'D' || target_blobs.contains_key(path.as_str()))
+        })
+        .map(|(path, _)| *path)
+        .collect();
+
+    if out_of_sync.is_empty() {
+        return CommitStatus::of(
+            CommitStatusKind::Applied,
+            target_branch,
+            Some(
+                "Every promotable file this commit changes already matches the target branch; deferred, main-owned, or never-imported paths are not counted. There is nothing to promote."
+                    .to_string(),
+            ),
+            None,
+        );
+    }
+
+    if let Some((path_latest, index)) = supersede_ctx {
+        if all_superseded(&out_of_sync_paths, path_latest, index) {
+            return CommitStatus::of(
+                CommitStatusKind::Superseded,
+                target_branch,
+                Some(
+                    "A newer commit on the source branch changes the same files; promoting this one would re-apply stale content."
+                        .to_string(),
+                ),
+                None,
+            );
+        }
+    }
+
+    let newer_on_target = recency_paths
+        .iter()
+        .filter(|path| {
+            target_scan
+                .dates
+                .get(**path)
+                .is_some_and(|epoch| *epoch > committed_unix)
+        })
+        .count();
+
+    if !recency_paths.is_empty() && newer_on_target == recency_paths.len() {
+        return CommitStatus::of(
+            CommitStatusKind::Divergent,
+            target_branch,
+            Some(
+                "The target branch's copies of every promotable file this commit changes were themselves changed more recently; promoting would revert newer work. (The dependency manifest is exempt — it is merged; deferred, main-owned, or never-imported paths are not counted.)"
+                    .to_string(),
+            ),
+            None,
+        );
+    }
+
+    let scan_stopped_before_commit = target_scan.truncated
+        && target_scan
+            .oldest_epoch
+            .is_some_and(|floor| floor >= committed_unix)
+        && recency_paths
+            .iter()
+            .any(|path| !target_scan.dates.contains_key(*path));
+
+    if scan_stopped_before_commit {
+        // Fail-closed (E3): the 800-commit scan did not reach back to this
+        // commit's timestamp and at least one path had no hit in the scanned
+        // window — report Unknown rather than a confident Eligible.
+        return CommitStatus::of(
+            CommitStatusKind::Unknown,
+            target_branch,
+            Some(
+                "The 800-commit target history scan did not reach back to this commit's date; verify whether target changed these paths more recently (Unknown, not Eligible)."
+                    .to_string(),
+            ),
+            None,
+        );
+    }
+
+    if newer_on_target > 0 && status.kind == CommitStatusKind::Eligible {
+        status.detail = Some(format!(
+            "{newer_on_target} of {} promotable files this commit changes were modified more recently on {target_branch}; preflight will show what will be overwritten.",
+            recency_paths.len()
+        ));
+    }
+
+    status
 }
 
 /// `+`/`-` counts for the returned page only: `--numstat` across a whole history
@@ -1860,7 +2020,7 @@ pub fn commit_page_live(
     let source_tree = tree_blobs(source_dir, &entry.source_branch);
     let target_blobs = tree_blobs(target_dir, &target_branch);
     let path_latest = latest_toucher_index(&commits);
-    let (target_dates, path_dates_truncated) = target_path_dates(target_dir, &target_branch);
+    let target_scan = target_path_dates_scan(target_dir, &target_branch);
     let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
     let results = history::compute_branch_status(target_dir, &target_branch, &entry.id, &shas);
     let converted = branch_results_to_statuses(target_dir, &target_branch, &results);
@@ -1874,7 +2034,9 @@ pub fn commit_page_live(
     let mut open_by_sha: HashMap<String, PullRequestInfo> = HashMap::new();
     for pr in &open_prs {
         for sha in history::extract_source_commits(&pr.body) {
-            open_by_sha.entry(sha).or_insert_with(|| pr.clone());
+            if history::pr_references_requested_shas(pr, &entry.id, std::slice::from_ref(&sha)) {
+                open_by_sha.entry(sha).or_insert_with(|| pr.clone());
+            }
         }
     }
     let search = query.search.trim().to_lowercase();
@@ -1909,93 +2071,22 @@ pub fn commit_page_live(
                 status = open_pr_status(pr, &target_branch);
             }
         }
-        if matches!(
-            status.kind,
-            CommitStatusKind::Eligible | CommitStatusKind::Unknown
-        ) {
-            let out_of_sync: Vec<&String> = commit
-                .deltas
-                .iter()
-                // A deletion leaves nothing to compare: `None == None` would
-                // read a removal the target never saw as "already applied", so
-                // an add+delete bundle could not be handed over as a pair. Count
-                // it as promotable — re-applying an absent file is a no-op.
-                .filter(|(path, _, kind)| {
-                    *kind == 'D' || {
-                        let voted = classify::classify_path(path, &entry.integration_policy, None);
-                        is_status_voting(voted.status)
-                            && source_tree.get(path.as_str()) != target_blobs.get(path.as_str())
-                    }
-                })
-                .map(|(path, _, _)| path)
-                .collect();
-            // Manifest and lockfile paths are delta-merged or deferred to the
-            // deployment (which regenerates the lockfile), never written
-            // wholesale (spec §6.4/§7), so a newer copy on the target does
-            // not invalidate this commit — reconciliation decides those.
-            let recency_paths: Vec<&String> = out_of_sync
-                .iter()
-                .copied()
-                .filter(|path| !is_dependency_path(path))
-                .collect();
-            if out_of_sync.is_empty() {
-                status = CommitStatus::of(
-                    CommitStatusKind::Applied,
-                    &target_branch,
-                    Some(
-                        "Every promotable file this commit changes already matches the target branch; deferred or never-imported paths are not counted. There is nothing to promote."
-                            .to_string(),
-                    ),
-                    None,
-                );
-            } else if all_superseded(&out_of_sync, &path_latest, index) {
-                status = CommitStatus::of(
-                    CommitStatusKind::Superseded,
-                    &target_branch,
-                    Some(
-                        "A newer commit on the source branch changes the same files; promoting this one would re-apply stale content."
-                            .to_string(),
-                    ),
-                    None,
-                );
-            } else if !recency_paths.is_empty()
-                && recency_paths.iter().all(|path| {
-                    target_dates
-                        .get(*path)
-                        .is_some_and(|epoch| *epoch > commit.committed_unix)
-                })
-            {
-                status = CommitStatus::of(
-                    CommitStatusKind::Divergent,
-                    &target_branch,
-                    Some(
-                        "The target branch's copies of every promotable file this commit changes were themselves changed more recently; promoting would revert newer work. (The dependency manifest is exempt — it is merged; deferred or never-imported paths are not counted.)"
-                            .to_string(),
-                    ),
-                    None,
-                );
-            } else if path_dates_truncated
-                && matches!(
-                    status.kind,
-                    CommitStatusKind::Eligible | CommitStatusKind::Unknown
-                )
-                && !out_of_sync.is_empty()
-            {
-                // Fail-closed (E3): history is deeper than the 800-commit scan
-                // and dates may be skewed. A truncated scan that finds no
-                // Divergent hit proves nothing — report Unknown plus the
-                // truncation flag, never Integrated (and never a confident
-                // Eligible). Dates determine display order only.
-                status = CommitStatus::of(
-                    CommitStatusKind::Unknown,
-                    &target_branch,
-                    Some(
-                        "The 800-commit target history scan hit its limit without finding a newer change; history is deeper than the scan, so this SHA needs verification (Unknown, not Eligible).".to_string(),
-                    ),
-                    None,
-                );
-            }
-        }
+        let commit_deltas: Vec<(String, char)> = commit
+            .deltas
+            .iter()
+            .map(|(path, _, kind)| (path.clone(), *kind))
+            .collect();
+        status = refine_content_status(
+            status,
+            &target_branch,
+            &entry.integration_policy,
+            &commit_deltas,
+            commit.committed_unix,
+            &source_tree,
+            &target_blobs,
+            &target_scan,
+            Some((&path_latest, index)),
+        );
         if let Some(filter) = query.status_filter {
             if status.kind != filter {
                 continue;
@@ -2061,7 +2152,7 @@ pub fn commit_page_live(
         commits: paged,
         fetched_at: now_rfc3339(),
         data_source: DataSource::Live,
-        path_dates_truncated,
+        path_dates_truncated: target_scan.truncated,
     })
 }
 
@@ -2341,7 +2432,7 @@ pub fn commit_details_live(
     // degrades to Unknown and the related section stays empty (previously the
     // status call errored into Unknown and the related call failed open).
     let open_prs = github.list_open_pull_requests(&registry.main_repository, &target_branch);
-    let status = match &open_prs {
+    let base_status = match &open_prs {
         Ok(prs) => integration_statuses_with_prs(
             target_dir,
             registry,
@@ -2359,6 +2450,42 @@ pub fn commit_details_live(
             CommitStatus::unknown(&target_branch, "Status unavailable for this SHA.")
         }),
         Err(_) => CommitStatus::unknown(&target_branch, "Status unavailable for this SHA."),
+    };
+    let status = if matches!(
+        base_status.kind,
+        CommitStatusKind::Eligible | CommitStatusKind::Unknown
+    ) && git::branch_exists(target_dir, &target_branch)
+    {
+        let source_tree = tree_blobs(source_dir, &entry.source_branch);
+        let target_blobs = tree_blobs(target_dir, &target_branch);
+        let target_scan = target_path_dates_scan(target_dir, &target_branch);
+        let detail_deltas: Vec<(String, char)> = deltas
+            .iter()
+            .filter_map(|delta| {
+                let path = match delta.status {
+                    'R' | 'C' => delta.new_path.clone(),
+                    _ => delta.path.clone(),
+                }?;
+                if path.is_empty() {
+                    None
+                } else {
+                    Some((path, delta.status))
+                }
+            })
+            .collect();
+        refine_content_status(
+            base_status,
+            &target_branch,
+            &entry.integration_policy,
+            &detail_deltas,
+            rfc3339_timestamp(&committed_at),
+            &source_tree,
+            &target_blobs,
+            &target_scan,
+            None,
+        )
+    } else {
+        base_status
     };
     let mut related: Vec<PullRequestRef> = Vec::new();
     if let Ok(prs) = &open_prs {
