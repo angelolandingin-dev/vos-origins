@@ -76,6 +76,7 @@ export function Distribute() {
   const [diffMode, setDiffMode] = useState<'unified' | 'side'>('unified');
 
   const [message, setMessage] = useState('');
+  const [confirmed, setConfirmed] = useState(false);
   const [running, setRunning] = useState(false);
   const [progressSteps, setProgressSteps] = useState<PromotionProgress[]>([]);
   const [runError, setRunError] = useState<ApiError | null>(null);
@@ -174,7 +175,13 @@ export function Distribute() {
   const isBlocked = plan !== null && plan.blockers.length > 0;
   const locked = running;
   const canRun =
-    plan !== null && !planLoading && !isBlocked && hasChanges && !running && outcome === null;
+    plan !== null &&
+    !planLoading &&
+    !isBlocked &&
+    hasChanges &&
+    confirmed &&
+    !running &&
+    outcome === null;
 
   const branchOptions = (targetBranches.data?.branches ?? []).map((branch) => ({
     value: branch.name,
@@ -186,6 +193,7 @@ export function Distribute() {
   const resetRunState = () => {
     setExcludedPaths([]);
     setInspectedPath(null);
+    setConfirmed(false);
     setProgressSteps([]);
     setRunError(null);
     setOutcome(null);
@@ -221,6 +229,7 @@ export function Distribute() {
 
   const togglePath = (path: string, included: boolean) => {
     setOutcome(null);
+    setConfirmed(false);
     setRunError(null);
     setExcludedPaths((current) =>
       included
@@ -233,6 +242,7 @@ export function Distribute() {
 
   const selectAllFiles = () => {
     setOutcome(null);
+    setConfirmed(false);
     setRunError(null);
     setExcludedPaths([]);
   };
@@ -240,6 +250,7 @@ export function Distribute() {
   const selectNoFiles = () => {
     if (!plan) return;
     setOutcome(null);
+    setConfirmed(false);
     setRunError(null);
     setExcludedPaths(plan.files.map((f) => f.path));
   };
@@ -817,6 +828,33 @@ export function Distribute() {
                         />
                       </Field>
 
+                      <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-line bg-raised/50 p-3 text-xs text-fg select-none">
+                        <Checkbox
+                          checked={confirmed}
+                          disabled={locked || isBlocked || !hasChanges}
+                          onChange={(event) => setConfirmed(event.target.checked)}
+                          label={`Acknowledge opening a pull request in ${selectedSubsystem.name}`}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          <span>
+                            Copies {includedFiles.length} file
+                            {includedFiles.length === 1 ? '' : 's'}
+                            {plan.dependencies.length > 0
+                              ? ` and ${plan.dependencies.length} dependency update${plan.dependencies.length === 1 ? '' : 's'}`
+                              : ''}{' '}
+                            from <span className="mono">{trunkBranch}</span> onto branch{' '}
+                            <span className="mono">{plan.branch}</span> and opens a pull request
+                            targeting <span className="mono">{selectedSubsystem.sourceBranch}</span>{' '}
+                            in <span className="mono">{selectedSubsystem.repository}</span>.
+                          </span>
+                          <span className="mt-0.5 block text-[11px] text-muted">
+                            Does not merge automatically — review and merge the PR in the subsystem
+                            repository.
+                          </span>
+                        </span>
+                      </label>
+
                       {running || (runError && progressSteps.length > 0) ? (
                         <ExecutionProgressView
                           title="Distribution progress"
@@ -877,6 +915,10 @@ export function Distribute() {
               </span>
             ) : !hasChanges ? (
               <span>No file or dependency changes selected for {selectedSubsystem.name}.</span>
+            ) : !confirmed ? (
+              <span className="text-status-unknown-ink">
+                Tick the confirmation checkbox to enable opening the pull request.
+              </span>
             ) : (
               <span className="mono tabular-nums">
                 {selectedCommit.shortSha} → {selectedSubsystem.name} (

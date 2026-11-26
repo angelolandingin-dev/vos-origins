@@ -2,10 +2,12 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   Building2,
+  CheckCircle2,
   ChevronDown,
   CircleAlert,
   Copy,
   GitBranch,
+  Info,
   Maximize2,
   Minus,
   RefreshCw,
@@ -422,35 +424,101 @@ export function AppShell({
       </main>
 
       {notice ? (
-        <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex justify-end">
-          <div
-            className={cx(
-              'pointer-events-auto flex max-w-[20rem] items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-2 text-xs text-fg animate-fade-in',
-              notice.onClick && 'transition-colors hover:border-accent/60',
-            )}
-          >
-            {notice.onClick ? (
-              <button
-                type="button"
-                onClick={notice.onClick}
-                className="min-w-0 flex-1 cursor-pointer truncate text-left hover:underline"
-                title={notice.title}
-              >
-                <span className="font-semibold">{notice.title}</span>
-                {notice.message ? <span className="text-muted"> — {notice.message}</span> : null}
-              </button>
-            ) : (
-              <p className="min-w-0 flex-1 truncate" title={notice.title}>
-                <span className="font-semibold">{notice.title}</span>
-                {notice.message ? <span className="text-muted"> — {notice.message}</span> : null}
-              </p>
-            )}
-            <IconButton icon={X} label="Dismiss message" onClick={onDismissNotice} />
-          </div>
-        </div>
+        <ToastNotification key={notice.id} notice={notice} onDismiss={onDismissNotice} />
       ) : null}
 
       <WindowResizeHandles />
+    </div>
+  );
+}
+
+const TOAST_DURATION_MS: Record<Notice['tone'], number> = {
+  success: 4500,
+  info: 5500,
+  warning: 6500,
+  danger: 8500,
+};
+
+function ToastNotification({ notice, onDismiss }: { notice: Notice; onDismiss: () => void }) {
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    if (paused) return;
+    const ms = notice.onClick
+      ? Math.max(TOAST_DURATION_MS[notice.tone], 8000)
+      : TOAST_DURATION_MS[notice.tone];
+    const timer = window.setTimeout(onDismiss, ms);
+    return () => window.clearTimeout(timer);
+  }, [notice.id, notice.tone, notice.onClick, paused, onDismiss]);
+
+  const toneMeta =
+    notice.tone === 'success'
+      ? {
+          icon: CheckCircle2,
+          iconColor: 'text-status-applied-ink',
+          border: 'border-l-status-applied',
+        }
+      : notice.tone === 'warning'
+        ? {
+            icon: TriangleAlert,
+            iconColor: 'text-status-unknown-ink',
+            border: 'border-l-status-unknown',
+          }
+        : notice.tone === 'danger'
+          ? {
+              icon: CircleAlert,
+              iconColor: 'text-status-blocked-ink',
+              border: 'border-l-status-blocked',
+            }
+          : {
+              icon: Info,
+              iconColor: 'text-accent-ink',
+              border: 'border-l-accent',
+            };
+  const ToneIcon = toneMeta.icon;
+
+  return (
+    <div className="pointer-events-none fixed top-[58px] right-4 z-50 flex justify-end">
+      <div
+        role="status"
+        aria-live="polite"
+        onMouseEnter={() => setPaused(true)}
+        onMouseLeave={() => setPaused(false)}
+        className={cx(
+          'pointer-events-auto flex w-[22rem] max-w-[calc(100vw-2rem)] items-start gap-2.5 rounded-md border border-line-strong border-l-[3px] bg-overlay px-3 py-2.5 text-xs text-fg shadow-dialog animate-fade-in',
+          toneMeta.border,
+          notice.onClick && 'transition-colors hover:border-accent',
+        )}
+      >
+        <ToneIcon
+          className={cx('mt-0.5 h-4 w-4 shrink-0', toneMeta.iconColor)}
+          aria-hidden="true"
+        />
+        {notice.onClick ? (
+          <button
+            type="button"
+            onClick={notice.onClick}
+            className="min-w-0 flex-1 cursor-pointer text-left"
+          >
+            <p className="font-semibold text-fg hover:underline">{notice.title}</p>
+            {notice.message ? (
+              <p className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-muted">
+                {notice.message}
+              </p>
+            ) : null}
+          </button>
+        ) : (
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-fg">{notice.title}</p>
+            {notice.message ? (
+              <p className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-muted">
+                {notice.message}
+              </p>
+            ) : null}
+          </div>
+        )}
+        <IconButton icon={X} label="Dismiss message" onClick={onDismiss} />
+      </div>
     </div>
   );
 }

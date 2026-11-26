@@ -273,7 +273,6 @@ function PromoteCommitsPanel({
             selectedShas={app.selectedShas}
             onToggleSha={app.toggleSha}
             onSelectShas={app.setSelectedShas}
-            onPromoteSelected={() => app.openPromotionDialog(app.selectedShas, selectedCommits)}
             onClearSelection={app.clearSelection}
           />
         </section>

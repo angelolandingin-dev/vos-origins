@@ -44,6 +44,7 @@ import {
   InlineAlert,
   KeyValue,
   LoadingState,
+  Modal,
   Panel,
   Select,
   Spinner,
@@ -214,614 +215,626 @@ export function ReconcileReview({
         ) : null}
       </div>
 
-      {outcome ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className="scroll-area min-h-0 flex-1 p-5">
-            <div className="mx-auto max-w-5xl space-y-5">
-              {(() => {
-                const statusBadge = !outcome.ok
-                  ? 'Blocked'
-                  : outcome.pullRequest?.number != null
-                    ? `PR #${outcome.pullRequest.number} ${outcome.pullRequest.state}`
-                    : outcome.delivery === 'local_direct'
-                      ? 'Committed locally'
-                      : outcome.delivery === 'worktree'
-                        ? 'Staged in working tree'
-                        : outcome.delivery === 'local'
-                          ? 'Branch created'
-                          : 'Completed';
-                const headline = !outcome.ok
-                  ? `${subsystemName} reconciliation blocked`
-                  : outcome.pullRequest?.number != null
-                    ? `Pull request #${outcome.pullRequest.number} opened for ${subsystemName}`
-                    : outcome.delivery === 'local_direct'
-                      ? `Reconciled ${subsystemName} into ${outcome.destBranch} locally`
-                      : outcome.delivery === 'worktree'
-                        ? `Staged ${subsystemName} reconciliation on ${outcome.destBranch}`
-                        : `Reconciled ${subsystemName} on ${outcome.branch}`;
-
-                return (
+      <div className="grid min-h-0 flex-1 gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_minmax(380px,440px)]">
+        {/* Left column: file actions + inline diff viewer */}
+        <div className="flex min-h-0 flex-col gap-3">
+          <Panel
+            title="Files to mirror"
+            subtitle={
+              plan
+                ? `${includedCount} of ${plan.files.length} selected · ${plan.unchangedCount} unchanged`
+                : undefined
+            }
+            actions={
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={running || !plan || excludedPaths.length === 0}
+                  onClick={onSelectAll}
+                >
+                  All
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={running || !plan || excludedPaths.length === files.length}
+                  onClick={onSelectNone}
+                >
+                  None
+                </Button>
+                <IconButton
+                  icon={RefreshCw}
+                  label="Refresh reconcile preview"
+                  disabled={planLoading || running}
+                  onClick={onReloadPlan}
+                />
+              </div>
+            }
+            className="flex min-h-0 flex-1 flex-col"
+            bodyClassName="flex min-h-0 flex-1 flex-col"
+          >
+            {planLoading && !plan ? (
+              <LoadingState label="Computing folder mirror plan" />
+            ) : planError ? (
+              <ErrorState compact error={planError} onRetry={onReloadPlan} />
+            ) : plan ? (
+              <>
+                {planLoading ? (
                   <div
-                    className={cx(
-                      'flex flex-wrap items-start justify-between gap-4 rounded-md border border-l-[3px] px-4 py-3.5',
-                      outcome.ok
-                        ? 'border-status-applied/40 border-l-status-applied bg-status-applied-soft'
-                        : 'border-status-blocked/40 border-l-status-blocked bg-status-blocked-soft',
-                    )}
+                    role="progressbar"
+                    aria-label="Updating reconcile plan"
+                    className="h-[2px] w-full shrink-0 overflow-hidden bg-accent-soft"
                   >
-                    <div className="flex min-w-0 flex-1 items-start gap-3">
-                      {outcome.ok ? (
-                        <CheckCircle2
-                          className="mt-0.5 h-5 w-5 shrink-0 text-status-applied-ink"
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <TriangleAlert
-                          className="mt-0.5 h-5 w-5 shrink-0 text-status-blocked-ink"
-                          aria-hidden="true"
-                        />
-                      )}
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h2
+                    <div className="h-full w-1/2 animate-pulse bg-accent" />
+                  </div>
+                ) : null}
+                <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
+                  <div
+                    role="group"
+                    aria-label="Filter by action"
+                    className="flex h-[25px] overflow-hidden rounded-md border border-line bg-surface"
+                  >
+                    {(
+                      [
+                        { id: 'all', label: `All (${files.length})` },
+                        { id: 'add', label: 'Add' },
+                        { id: 'overwrite', label: 'Overwrite' },
+                        { id: 'delete', label: 'Delete' },
+                      ] as const
+                    ).map((tab, index) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setActionFilter(tab.id)}
+                        className={cx(
+                          'px-2 text-[11px] transition-colors',
+                          index > 0 && 'border-l border-line',
+                          actionFilter === tab.id
+                            ? 'bg-raised font-semibold text-fg'
+                            : 'text-muted hover:bg-hover hover:text-fg',
+                        )}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="relative min-w-[160px] flex-1">
+                    <Search
+                      className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-disabled"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="search"
+                      value={pathFilter}
+                      onChange={(event) => setPathFilter(event.target.value)}
+                      placeholder="Filter paths…"
+                      aria-label="Filter changed paths"
+                      className="input pl-8"
+                    />
+                  </div>
+                </div>
+
+                <div
+                  className={cx(
+                    'scroll-area min-h-0 flex-1 transition-opacity',
+                    planLoading && 'pointer-events-none opacity-55',
+                  )}
+                >
+                  {visibleFiles.length === 0 ? (
+                    <EmptyState
+                      title="No matching file changes"
+                      message={
+                        files.length === 0
+                          ? 'All files inside the selected folders already match the source.'
+                          : 'Adjust the action or path filter to see other files.'
+                      }
+                    />
+                  ) : (
+                    <ul className="divide-y divide-line">
+                      {visibleFiles.map((file) => {
+                        const included = !excludedSet.has(file.path);
+                        const inspected = inspectedFile?.path === file.path;
+                        const meta = ACTION_META[file.action];
+                        return (
+                          <li
+                            key={file.path}
                             className={cx(
-                              'text-[13px] font-semibold',
-                              outcome.ok ? 'text-status-applied-ink' : 'text-status-blocked-ink',
+                              'row-hover flex h-[29px] items-center gap-2 px-2.5',
+                              inspected && 'bg-selection',
                             )}
                           >
-                            {headline}
-                          </h2>
-                          <span
-                            className={cx(
-                              'mono rounded border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase',
-                              outcome.ok
-                                ? 'border-status-applied/40 bg-status-applied/15 text-status-applied-ink'
-                                : 'border-status-blocked/40 bg-status-blocked/15 text-status-blocked-ink',
-                            )}
-                          >
-                            {statusBadge}
-                          </span>
-                          {outcome.warnings.length > 0 ? (
-                            <span className="mono rounded border border-status-unknown/40 bg-status-unknown-soft px-1.5 py-0.5 text-[10px] font-semibold text-status-unknown-ink">
-                              {outcome.warnings.length} warning
-                              {outcome.warnings.length === 1 ? '' : 's'}
+                            <Checkbox
+                              checked={included}
+                              disabled={running || isBlocked}
+                              onChange={(event) => onTogglePath(file.path, event.target.checked)}
+                              label={`Include ${file.path}`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => onInspectFile(inspected ? null : file)}
+                              className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                              title="Click to inspect diff against destination"
+                            >
+                              <ChangeKindIcon change={meta.changeKind} label={meta.label} />
+                              <PathLabel
+                                path={file.path}
+                                muted={!included}
+                                className="min-w-0 flex-1 text-xs"
+                              />
+                            </button>
+                            <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted">
+                              <span
+                                className={cx('h-1.5 w-1.5 rounded-full', meta.dot)}
+                                aria-hidden="true"
+                              />
+                              {meta.label}
                             </span>
-                          ) : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+
+                {inspectedFile ? (
+                  <div className="flex h-[260px] shrink-0 flex-col border-t border-line">
+                    <div className="flex items-center justify-between gap-2 border-b border-line bg-raised px-3 py-1.5">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="text-[11px] font-semibold text-fg">Diff</span>
+                        <PathLabel path={inspectedFile.path} className="min-w-0 text-[11px]" />
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <div
+                          role="group"
+                          aria-label="Diff view mode"
+                          className="flex h-[21px] overflow-hidden rounded-sm border border-line bg-surface"
+                        >
+                          {(['unified', 'side'] as const).map((mode, idx) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => setDiffMode(mode)}
+                              className={cx(
+                                'px-1.5 text-[10px]',
+                                idx > 0 && 'border-l border-line',
+                                diffMode === mode
+                                  ? 'bg-raised font-semibold text-fg'
+                                  : 'text-muted hover:text-fg',
+                              )}
+                            >
+                              {mode === 'unified' ? 'Unified' : 'Split'}
+                            </button>
+                          ))}
                         </div>
-                        {outcome.message ? (
-                          <p className="mt-1 text-[11px] leading-relaxed text-fg/85">
-                            {outcome.message}
-                          </p>
-                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => onInspectFile(null)}
+                          className="text-[11px] text-muted hover:text-fg"
+                        >
+                          Close
+                        </button>
                       </div>
                     </div>
-
-                    <div className="flex shrink-0 flex-col items-end gap-1 text-[11px]">
-                      <span className="mono rounded border border-line bg-surface/80 px-2 py-0.5 font-medium text-fg">
-                        {outcome.destBranch}
-                      </span>
-                      <span className="mono text-muted">
-                        {outcome.commitSha ? outcome.commitSha.slice(0, 7) : 'staged only'}
-                      </span>
+                    <div className="min-h-0 flex-1 overflow-auto bg-surface">
+                      <DiffViewer
+                        diff={
+                          fileDiff ? { ...fileDiff, sourceUrl: fileDiff.sourceUrl ?? '' } : null
+                        }
+                        loading={diffLoading}
+                        error={diffError}
+                        onRetry={onReloadDiff}
+                        mode={diffMode}
+                        onOpenExternal={onOpenExternal}
+                      />
                     </div>
                   </div>
-                );
-              })()}
+                ) : null}
+              </>
+            ) : null}
+          </Panel>
+        </div>
 
-              <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
-                {/* Left: change counts, expandable paths & execution log */}
-                <div className="min-w-0 space-y-4">
-                  <section className="space-y-3">
-                    <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                      What changed
-                    </h3>
-                    <div className="grid grid-cols-4 divide-x divide-line overflow-hidden rounded-md border border-line bg-surface">
-                      {[
-                        {
-                          label: 'Added',
-                          value: outcome.applied.length,
-                          tone: 'text-status-applied-ink',
-                        },
-                        {
-                          label: 'Overwritten',
-                          value: outcome.overwritten.length,
-                          tone: 'text-accent-ink',
-                        },
-                        {
-                          label: 'Deleted',
-                          value: outcome.deleted.length,
-                          tone: 'text-status-blocked-ink',
-                        },
-                        {
-                          label: 'Deps',
-                          value: outcome.dependencies.length,
-                          tone: 'text-fg',
-                        },
-                      ].map((stat) => (
-                        <div key={stat.label} className="px-3 py-2">
-                          <p className="text-[10px] font-medium text-muted">{stat.label}</p>
-                          <p
-                            className={cx(
-                              'mono mt-0.5 text-sm font-semibold tabular-nums',
-                              stat.value > 0 ? stat.tone : 'text-disabled',
-                            )}
-                          >
-                            {stat.value}
-                          </p>
-                        </div>
+        {/* Right column: blockers, dependencies, delivery, confirmation & run */}
+        <div className="scroll-area min-h-0 space-y-3">
+          <Panel
+            title={
+              direction === 'subsystem_to_main'
+                ? `${subsystemName} → Main`
+                : `Main → ${subsystemName}`
+            }
+            subtitle={
+              plan
+                ? `${plan.destBranch} ← ${plan.delivery === 'push_pr' ? plan.branch : plan.sourceBranch}`
+                : undefined
+            }
+            bodyClassName="space-y-3 p-3"
+          >
+            {planLoading ? (
+              <div className="flex items-center gap-1.5 text-[11px] text-muted">
+                <Spinner className="h-3 w-3" />
+                Updating preview…
+              </div>
+            ) : null}
+
+            {plan ? (
+              <>
+                <BlockerList blockers={plan.blockers} />
+                <WarningsList warnings={plan.warnings} />
+
+                <dl>
+                  <KeyValue label="Changes">
+                    <span className="mono tabular-nums">
+                      +{counts.add} added · ~{counts.overwrite} overwritten · -{counts.delete}{' '}
+                      deleted
+                    </span>
+                  </KeyValue>
+                  <KeyValue label="Unchanged">
+                    <span className="mono tabular-nums">{plan.unchangedCount}</span>
+                  </KeyValue>
+                </dl>
+
+                {plan.dependencies.length > 0 ? (
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                      Dependencies ({plan.dependencies.length})
+                    </span>
+                    <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+                      {plan.dependencies.map((dep) => (
+                        <DependencyRow key={`${dep.section}:${dep.name}`} dependency={dep} />
                       ))}
-                    </div>
+                    </ul>
+                  </div>
+                ) : null}
 
-                    <div className="space-y-1.5">
-                      <OutcomePathList title="Added" paths={outcome.applied} />
-                      <OutcomePathList title="Overwritten" paths={outcome.overwritten} />
-                      <OutcomePathList title="Deleted" paths={outcome.deleted} />
-                    </div>
-                  </section>
+                {plan.skipped.length > 0 ? <SkippedList skipped={plan.skipped} /> : null}
 
-                  {outcome.dependencies.length > 0 ? (
-                    <section className="space-y-2">
-                      <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                        Dependencies updated ({outcome.dependencies.length})
-                      </h3>
-                      <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
-                        {outcome.dependencies.map((dep) => (
-                          <DependencyRow key={`${dep.section}:${dep.name}`} dependency={dep} />
-                        ))}
-                      </ul>
-                    </section>
-                  ) : null}
+                {direction === 'subsystem_to_main' ? (
+                  <Field label="Delivery" htmlFor="reconcile-delivery">
+                    <Select
+                      ariaLabel="Delivery mode"
+                      value={delivery}
+                      onValueChange={(value) => onDeliveryChange(value as PromotionDelivery)}
+                      options={DELIVERY_OPTIONS}
+                      disabled={running}
+                    />
+                  </Field>
+                ) : (
+                  <dl>
+                    <KeyValue label="Delivery">
+                      <span className="mono">
+                        PR → {plan.destBranch} ({plan.branch})
+                      </span>
+                    </KeyValue>
+                  </dl>
+                )}
 
-                  <ExecutionLogDisclosure
+                {plan.delivery === 'worktree' ? (
+                  <p className="text-[11px] text-muted">
+                    Worktree delivery stages files in your checked-out working tree without creating
+                    a commit.
+                  </p>
+                ) : (
+                  <Field
+                    label="Commit message"
+                    htmlFor="reconcile-message"
+                    hint={`Blank uses "${defaultSubject}".`}
+                  >
+                    <input
+                      id="reconcile-message"
+                      type="text"
+                      className="input"
+                      placeholder={defaultSubject}
+                      value={message}
+                      disabled={running}
+                      onChange={(event) => onMessageChange(event.target.value)}
+                    />
+                  </Field>
+                )}
+
+                <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-line bg-raised/50 p-3 text-xs text-fg select-none">
+                  <Checkbox
+                    checked={confirmed}
+                    disabled={running || isBlocked || !hasChanges}
+                    onChange={(event) => onConfirmedChange(event.target.checked)}
+                    label={`Confirm mirror of ${includedCount} file(s) into ${plan.destBranch}`}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span>
+                      Mirrors {includedCount} file{includedCount === 1 ? '' : 's'}
+                      {counts.delete > 0
+                        ? ` (including ${counts.delete} deletion${counts.delete === 1 ? '' : 's'})`
+                        : ''}{' '}
+                      into <span className="mono">{plan.destRepo}</span> (
+                      <span className="mono">{plan.destBranch}</span>).
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-muted">
+                      {direction === 'main_to_subsystem' || plan.delivery === 'push_pr'
+                        ? 'Pushes a branch and opens a pull request — does not merge automatically.'
+                        : plan.delivery === 'worktree'
+                          ? 'Stages files in your checked-out working tree without committing or pushing.'
+                          : plan.delivery === 'local'
+                            ? 'Creates a local reconcile branch and commit with no push and no PR.'
+                            : 'Commits directly onto your local target branch with no push and no PR — push manually when ready.'}
+                    </span>
+                  </span>
+                </label>
+
+                <Button
+                  variant="primary"
+                  icon={GitPullRequestArrow}
+                  disabled={!canRun}
+                  loading={running}
+                  onClick={onRun}
+                  className="w-full"
+                >
+                  {direction === 'main_to_subsystem' || plan.delivery === 'push_pr'
+                    ? `Open Reconcile PR targeting ${plan.destBranch}`
+                    : plan.delivery === 'worktree'
+                      ? `Stage Reconcile on ${plan.destBranch}`
+                      : `Reconcile into ${plan.destBranch}`}
+                </Button>
+
+                {running || (runError && progressSteps.length > 0) ? (
+                  <ExecutionProgressView
+                    title="Reconciliation progress"
                     stages={RECONCILE_STAGES}
                     steps={progressSteps}
-                    outcome={outcome.ok ? 'success' : 'failed'}
+                    outcome={running ? 'running' : runError ? 'failed' : 'success'}
                   />
-                </div>
+                ) : null}
 
-                {/* Right: next commands, metadata, blockers & warnings */}
-                <div className="min-w-0 space-y-4">
-                  {outcome.localCommands.length > 0 ? (
-                    <section className="space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                          Next commands
-                        </h3>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          icon={copiedCommands ? Check : Copy}
-                          onClick={() => copyAllCommands(outcome.localCommands)}
+                {runError ? <ErrorState compact error={runError} /> : null}
+              </>
+            ) : null}
+          </Panel>
+        </div>
+      </div>
+
+      <Modal
+        open={Boolean(outcome)}
+        onClose={onDone}
+        size="xl"
+        title="Reconciliation result"
+        description={subsystemName}
+        footer={
+          <>
+            {outcome?.pullRequest?.url ? (
+              <Button
+                variant="secondary"
+                icon={ExternalLink}
+                onClick={() => {
+                  if (outcome.pullRequest?.url) onOpenExternal(outcome.pullRequest.url);
+                }}
+              >
+                Open Pull Request
+              </Button>
+            ) : null}
+            <Button variant="primary" onClick={onDone}>
+              Close
+            </Button>
+          </>
+        }
+      >
+        {outcome ? (
+          <div className="space-y-5">
+            {(() => {
+              const statusBadge = !outcome.ok
+                ? 'Blocked'
+                : outcome.pullRequest?.number != null
+                  ? `PR #${outcome.pullRequest.number} ${outcome.pullRequest.state}`
+                  : outcome.delivery === 'local_direct'
+                    ? 'Committed locally'
+                    : outcome.delivery === 'worktree'
+                      ? 'Staged in working tree'
+                      : outcome.delivery === 'local'
+                        ? 'Branch created'
+                        : 'Completed';
+              const headline = !outcome.ok
+                ? `${subsystemName} reconciliation blocked`
+                : outcome.pullRequest?.number != null
+                  ? `Pull request #${outcome.pullRequest.number} opened for ${subsystemName}`
+                  : outcome.delivery === 'local_direct'
+                    ? `Reconciled ${subsystemName} into ${outcome.destBranch} locally`
+                    : outcome.delivery === 'worktree'
+                      ? `Staged ${subsystemName} reconciliation on ${outcome.destBranch}`
+                      : `Reconciled ${subsystemName} on ${outcome.branch}`;
+
+              return (
+                <div
+                  className={cx(
+                    'flex flex-wrap items-start justify-between gap-4 rounded-md border border-l-[3px] px-4 py-3.5',
+                    outcome.ok
+                      ? 'border-status-applied/40 border-l-status-applied bg-status-applied-soft'
+                      : 'border-status-blocked/40 border-l-status-blocked bg-status-blocked-soft',
+                  )}
+                >
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
+                    {outcome.ok ? (
+                      <CheckCircle2
+                        className="mt-0.5 h-5 w-5 shrink-0 text-status-applied-ink"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <TriangleAlert
+                        className="mt-0.5 h-5 w-5 shrink-0 text-status-blocked-ink"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3
+                          className={cx(
+                            'text-[13px] font-semibold',
+                            outcome.ok ? 'text-status-applied-ink' : 'text-status-blocked-ink',
+                          )}
                         >
-                          {copiedCommands ? 'Copied' : 'Copy'}
-                        </Button>
+                          {headline}
+                        </h3>
+                        <span
+                          className={cx(
+                            'mono rounded border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase',
+                            outcome.ok
+                              ? 'border-status-applied/40 bg-status-applied/15 text-status-applied-ink'
+                              : 'border-status-blocked/40 bg-status-blocked/15 text-status-blocked-ink',
+                          )}
+                        >
+                          {statusBadge}
+                        </span>
+                        {outcome.warnings.length > 0 ? (
+                          <span className="mono rounded border border-status-unknown/40 bg-status-unknown-soft px-1.5 py-0.5 text-[10px] font-semibold text-status-unknown-ink">
+                            {outcome.warnings.length} warning
+                            {outcome.warnings.length === 1 ? '' : 's'}
+                          </span>
+                        ) : null}
                       </div>
-                      <pre className="mono overflow-x-auto rounded-md border border-line bg-ground p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-fg">
-                        {outcome.localCommands.join('\n')}
-                      </pre>
-                    </section>
-                  ) : null}
+                      {outcome.message ? (
+                        <p className="mt-1 text-[11px] leading-relaxed text-fg/85">
+                          {outcome.message}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
 
+                  <div className="flex shrink-0 flex-col items-end gap-1 text-[11px]">
+                    <span className="mono rounded border border-line bg-surface/80 px-2 py-0.5 font-medium text-fg">
+                      {outcome.destBranch}
+                    </span>
+                    <span className="mono text-muted">
+                      {outcome.commitSha ? outcome.commitSha.slice(0, 7) : 'staged only'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
+              <div className="min-w-0 space-y-4">
+                <section className="space-y-3">
+                  <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                    What changed
+                  </h3>
+                  <div className="grid grid-cols-4 divide-x divide-line overflow-hidden rounded-md border border-line bg-surface">
+                    {[
+                      {
+                        label: 'Added',
+                        value: outcome.applied.length,
+                        tone: 'text-status-applied-ink',
+                      },
+                      {
+                        label: 'Overwritten',
+                        value: outcome.overwritten.length,
+                        tone: 'text-accent-ink',
+                      },
+                      {
+                        label: 'Deleted',
+                        value: outcome.deleted.length,
+                        tone: 'text-status-blocked-ink',
+                      },
+                      {
+                        label: 'Deps',
+                        value: outcome.dependencies.length,
+                        tone: 'text-fg',
+                      },
+                    ].map((stat) => (
+                      <div key={stat.label} className="px-3 py-2">
+                        <p className="text-[10px] font-medium text-muted">{stat.label}</p>
+                        <p
+                          className={cx(
+                            'mono mt-0.5 text-sm font-semibold tabular-nums',
+                            stat.value > 0 ? stat.tone : 'text-disabled',
+                          )}
+                        >
+                          {stat.value}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <OutcomePathList title="Added" paths={outcome.applied} />
+                    <OutcomePathList title="Overwritten" paths={outcome.overwritten} />
+                    <OutcomePathList title="Deleted" paths={outcome.deleted} />
+                  </div>
+                </section>
+
+                {outcome.dependencies.length > 0 ? (
                   <section className="space-y-2">
                     <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                      Details
+                      Dependencies updated ({outcome.dependencies.length})
                     </h3>
-                    <dl className="divide-y divide-line rounded-md border border-line bg-surface px-3">
-                      <KeyValue label="Source">
-                        <span className="mono">
-                          {outcome.sourceBranch} @ {outcome.sourceSha.slice(0, 7)}
-                        </span>
-                      </KeyValue>
-                      <KeyValue label="Destination">
-                        <span className="mono">{outcome.destBranch}</span>
-                      </KeyValue>
-                      <KeyValue label="Branch">
-                        <span className="mono">{outcome.branch}</span>
-                      </KeyValue>
-                      <KeyValue label="Commit">
-                        {outcome.commitSha ? (
-                          <span className="mono">{outcome.commitSha.slice(0, 7)}</span>
-                        ) : (
-                          '— (staged only)'
-                        )}
-                      </KeyValue>
-                    </dl>
+                    <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
+                      {outcome.dependencies.map((dep) => (
+                        <DependencyRow key={`${dep.section}:${dep.name}`} dependency={dep} />
+                      ))}
+                    </ul>
                   </section>
+                ) : null}
 
-                  <BlockerList blockers={outcome.blockers} />
-                  <WarningsList warnings={outcome.warnings} />
-                </div>
+                <ExecutionLogDisclosure
+                  stages={RECONCILE_STAGES}
+                  steps={progressSteps}
+                  outcome={outcome.ok ? 'success' : 'failed'}
+                />
+              </div>
+
+              <div className="min-w-0 space-y-4">
+                {outcome.localCommands.length > 0 ? (
+                  <section className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                        Next commands
+                      </h3>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        icon={copiedCommands ? Check : Copy}
+                        onClick={() => copyAllCommands(outcome.localCommands)}
+                      >
+                        {copiedCommands ? 'Copied' : 'Copy'}
+                      </Button>
+                    </div>
+                    <pre className="mono overflow-x-auto rounded-md border border-line bg-ground p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-fg">
+                      {outcome.localCommands.join('\n')}
+                    </pre>
+                  </section>
+                ) : null}
+
+                <section className="space-y-2">
+                  <h3 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
+                    Details
+                  </h3>
+                  <dl className="divide-y divide-line rounded-md border border-line bg-surface px-3">
+                    <KeyValue label="Source">
+                      <span className="mono">
+                        {outcome.sourceBranch} @ {outcome.sourceSha.slice(0, 7)}
+                      </span>
+                    </KeyValue>
+                    <KeyValue label="Destination">
+                      <span className="mono">{outcome.destBranch}</span>
+                    </KeyValue>
+                    <KeyValue label="Branch">
+                      <span className="mono">{outcome.branch}</span>
+                    </KeyValue>
+                    <KeyValue label="Commit">
+                      {outcome.commitSha ? (
+                        <span className="mono">{outcome.commitSha.slice(0, 7)}</span>
+                      ) : (
+                        '— (staged only)'
+                      )}
+                    </KeyValue>
+                  </dl>
+                </section>
+
+                <BlockerList blockers={outcome.blockers} />
+                <WarningsList warnings={outcome.warnings} />
               </div>
             </div>
           </div>
-
-          <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-raised px-4 py-2">
-            <span className="mono text-[11px] text-muted tabular-nums">
-              {outcome.ok
-                ? `+${outcome.applied.length} added · ~${outcome.overwritten.length} overwritten · -${outcome.deleted.length} deleted`
-                : 'Reconciliation blocked'}
-            </span>
-            <div className="flex shrink-0 items-center gap-2">
-              {outcome.pullRequest?.url ? (
-                <Button
-                  variant="secondary"
-                  icon={ExternalLink}
-                  onClick={() => {
-                    if (outcome.pullRequest?.url) onOpenExternal(outcome.pullRequest.url);
-                  }}
-                >
-                  Open Pull Request
-                </Button>
-              ) : null}
-              <Button variant="primary" onClick={onDone}>
-                Done
-              </Button>
-            </div>
-          </footer>
-        </div>
-      ) : (
-        <div className="grid min-h-0 flex-1 gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_minmax(380px,440px)]">
-          {/* Left column: file actions + inline diff viewer */}
-          <div className="flex min-h-0 flex-col gap-3">
-            <Panel
-              title="Files to mirror"
-              subtitle={
-                plan
-                  ? `${includedCount} of ${plan.files.length} selected · ${plan.unchangedCount} unchanged`
-                  : undefined
-              }
-              actions={
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={running || !plan || excludedPaths.length === 0}
-                    onClick={onSelectAll}
-                  >
-                    All
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={running || !plan || excludedPaths.length === files.length}
-                    onClick={onSelectNone}
-                  >
-                    None
-                  </Button>
-                  <IconButton
-                    icon={RefreshCw}
-                    label="Refresh reconcile preview"
-                    disabled={planLoading || running}
-                    onClick={onReloadPlan}
-                  />
-                </div>
-              }
-              className="flex min-h-0 flex-1 flex-col"
-              bodyClassName="flex min-h-0 flex-1 flex-col"
-            >
-              {planLoading && !plan ? (
-                <LoadingState label="Computing folder mirror plan" />
-              ) : planError ? (
-                <ErrorState compact error={planError} onRetry={onReloadPlan} />
-              ) : plan ? (
-                <>
-                  {planLoading ? (
-                    <div
-                      role="progressbar"
-                      aria-label="Updating reconcile plan"
-                      className="h-[2px] w-full shrink-0 overflow-hidden bg-accent-soft"
-                    >
-                      <div className="h-full w-1/2 animate-pulse bg-accent" />
-                    </div>
-                  ) : null}
-                  <div className="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
-                    <div
-                      role="group"
-                      aria-label="Filter by action"
-                      className="flex h-[25px] overflow-hidden rounded-md border border-line bg-surface"
-                    >
-                      {(
-                        [
-                          { id: 'all', label: `All (${files.length})` },
-                          { id: 'add', label: 'Add' },
-                          { id: 'overwrite', label: 'Overwrite' },
-                          { id: 'delete', label: 'Delete' },
-                        ] as const
-                      ).map((tab, index) => (
-                        <button
-                          key={tab.id}
-                          type="button"
-                          onClick={() => setActionFilter(tab.id)}
-                          className={cx(
-                            'px-2 text-[11px] transition-colors',
-                            index > 0 && 'border-l border-line',
-                            actionFilter === tab.id
-                              ? 'bg-raised font-semibold text-fg'
-                              : 'text-muted hover:bg-hover hover:text-fg',
-                          )}
-                        >
-                          {tab.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="relative min-w-[160px] flex-1">
-                      <Search
-                        className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-disabled"
-                        aria-hidden="true"
-                      />
-                      <input
-                        type="search"
-                        value={pathFilter}
-                        onChange={(event) => setPathFilter(event.target.value)}
-                        placeholder="Filter paths…"
-                        aria-label="Filter changed paths"
-                        className="input pl-8"
-                      />
-                    </div>
-                  </div>
-
-                  <div
-                    className={cx(
-                      'scroll-area min-h-0 flex-1 transition-opacity',
-                      planLoading && 'pointer-events-none opacity-55',
-                    )}
-                  >
-                    {visibleFiles.length === 0 ? (
-                      <EmptyState
-                        title="No matching file changes"
-                        message={
-                          files.length === 0
-                            ? 'All files inside the selected folders already match the source.'
-                            : 'Adjust the action or path filter to see other files.'
-                        }
-                      />
-                    ) : (
-                      <ul className="divide-y divide-line">
-                        {visibleFiles.map((file) => {
-                          const included = !excludedSet.has(file.path);
-                          const inspected = inspectedFile?.path === file.path;
-                          const meta = ACTION_META[file.action];
-                          return (
-                            <li
-                              key={file.path}
-                              className={cx(
-                                'row-hover flex h-[29px] items-center gap-2 px-2.5',
-                                inspected && 'bg-selection',
-                              )}
-                            >
-                              <Checkbox
-                                checked={included}
-                                disabled={running || isBlocked}
-                                onChange={(event) => onTogglePath(file.path, event.target.checked)}
-                                label={`Include ${file.path}`}
-                              />
-                              <button
-                                type="button"
-                                onClick={() => onInspectFile(inspected ? null : file)}
-                                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                                title="Click to inspect diff against destination"
-                              >
-                                <ChangeKindIcon change={meta.changeKind} label={meta.label} />
-                                <PathLabel
-                                  path={file.path}
-                                  muted={!included}
-                                  className="min-w-0 flex-1 text-xs"
-                                />
-                              </button>
-                              <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted">
-                                <span
-                                  className={cx('h-1.5 w-1.5 rounded-full', meta.dot)}
-                                  aria-hidden="true"
-                                />
-                                {meta.label}
-                              </span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </div>
-
-                  {inspectedFile ? (
-                    <div className="flex h-[260px] shrink-0 flex-col border-t border-line">
-                      <div className="flex items-center justify-between gap-2 border-b border-line bg-raised px-3 py-1.5">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="text-[11px] font-semibold text-fg">Diff</span>
-                          <PathLabel path={inspectedFile.path} className="min-w-0 text-[11px]" />
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <div
-                            role="group"
-                            aria-label="Diff view mode"
-                            className="flex h-[21px] overflow-hidden rounded-sm border border-line bg-surface"
-                          >
-                            {(['unified', 'side'] as const).map((mode, idx) => (
-                              <button
-                                key={mode}
-                                type="button"
-                                onClick={() => setDiffMode(mode)}
-                                className={cx(
-                                  'px-1.5 text-[10px]',
-                                  idx > 0 && 'border-l border-line',
-                                  diffMode === mode
-                                    ? 'bg-raised font-semibold text-fg'
-                                    : 'text-muted hover:text-fg',
-                                )}
-                              >
-                                {mode === 'unified' ? 'Unified' : 'Split'}
-                              </button>
-                            ))}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => onInspectFile(null)}
-                            className="text-[11px] text-muted hover:text-fg"
-                          >
-                            Close
-                          </button>
-                        </div>
-                      </div>
-                      <div className="min-h-0 flex-1 overflow-auto bg-surface">
-                        <DiffViewer
-                          diff={
-                            fileDiff ? { ...fileDiff, sourceUrl: fileDiff.sourceUrl ?? '' } : null
-                          }
-                          loading={diffLoading}
-                          error={diffError}
-                          onRetry={onReloadDiff}
-                          mode={diffMode}
-                          onOpenExternal={onOpenExternal}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-                </>
-              ) : null}
-            </Panel>
-          </div>
-
-          {/* Right column: blockers, dependencies, delivery, confirmation & run */}
-          <div className="scroll-area min-h-0 space-y-3">
-            <Panel
-              title={
-                direction === 'subsystem_to_main'
-                  ? `${subsystemName} → Main`
-                  : `Main → ${subsystemName}`
-              }
-              subtitle={
-                plan
-                  ? `${plan.destBranch} ← ${plan.delivery === 'push_pr' ? plan.branch : plan.sourceBranch}`
-                  : undefined
-              }
-              bodyClassName="space-y-3 p-3"
-            >
-              {planLoading ? (
-                <div className="flex items-center gap-1.5 text-[11px] text-muted">
-                  <Spinner className="h-3 w-3" />
-                  Updating preview…
-                </div>
-              ) : null}
-
-              {plan ? (
-                <>
-                  <BlockerList blockers={plan.blockers} />
-                  <WarningsList warnings={plan.warnings} />
-
-                  <dl>
-                    <KeyValue label="Changes">
-                      <span className="mono tabular-nums">
-                        +{counts.add} added · ~{counts.overwrite} overwritten · -{counts.delete}{' '}
-                        deleted
-                      </span>
-                    </KeyValue>
-                    <KeyValue label="Unchanged">
-                      <span className="mono tabular-nums">{plan.unchangedCount}</span>
-                    </KeyValue>
-                  </dl>
-
-                  {plan.dependencies.length > 0 ? (
-                    <div className="space-y-1">
-                      <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">
-                        Dependencies ({plan.dependencies.length})
-                      </span>
-                      <ul className="divide-y divide-line overflow-hidden rounded-md border border-line bg-surface">
-                        {plan.dependencies.map((dep) => (
-                          <DependencyRow key={`${dep.section}:${dep.name}`} dependency={dep} />
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-
-                  {plan.skipped.length > 0 ? <SkippedList skipped={plan.skipped} /> : null}
-
-                  {direction === 'subsystem_to_main' ? (
-                    <Field label="Delivery" htmlFor="reconcile-delivery">
-                      <Select
-                        ariaLabel="Delivery mode"
-                        value={delivery}
-                        onValueChange={(value) => onDeliveryChange(value as PromotionDelivery)}
-                        options={DELIVERY_OPTIONS}
-                        disabled={running}
-                      />
-                    </Field>
-                  ) : (
-                    <dl>
-                      <KeyValue label="Delivery">
-                        <span className="mono">
-                          PR → {plan.destBranch} ({plan.branch})
-                        </span>
-                      </KeyValue>
-                    </dl>
-                  )}
-
-                  {plan.delivery === 'worktree' ? (
-                    <p className="text-[11px] text-muted">
-                      Worktree delivery stages files in your checked-out working tree without
-                      creating a commit.
-                    </p>
-                  ) : (
-                    <Field
-                      label="Commit message"
-                      htmlFor="reconcile-message"
-                      hint={`Blank uses "${defaultSubject}".`}
-                    >
-                      <input
-                        id="reconcile-message"
-                        type="text"
-                        className="input"
-                        placeholder={defaultSubject}
-                        value={message}
-                        disabled={running}
-                        onChange={(event) => onMessageChange(event.target.value)}
-                      />
-                    </Field>
-                  )}
-
-                  <div className="rounded-md border border-line bg-raised p-2.5">
-                    <Checkbox
-                      checked={confirmed}
-                      disabled={running || isBlocked || !hasChanges}
-                      onChange={(event) => onConfirmedChange(event.target.checked)}
-                      label={
-                        counts.delete > 0
-                          ? `Confirm full overwrite of ${includedCount} file(s) (including ${counts.delete} deletion(s)) into ${plan.destBranch} via ${plan.delivery}.`
-                          : `Confirm mirror of ${includedCount} file(s) into ${plan.destBranch} via ${plan.delivery}.`
-                      }
-                    />
-                  </div>
-
-                  <Button
-                    variant="primary"
-                    icon={GitPullRequestArrow}
-                    disabled={!canRun}
-                    loading={running}
-                    onClick={onRun}
-                    className="w-full"
-                  >
-                    {direction === 'main_to_subsystem' || plan.delivery === 'push_pr'
-                      ? `Open Reconcile PR targeting ${plan.destBranch}`
-                      : plan.delivery === 'worktree'
-                        ? `Stage Reconcile on ${plan.destBranch}`
-                        : `Reconcile into ${plan.destBranch}`}
-                  </Button>
-
-                  {running || (runError && progressSteps.length > 0) ? (
-                    <ExecutionProgressView
-                      title="Reconciliation progress"
-                      stages={RECONCILE_STAGES}
-                      steps={progressSteps}
-                      outcome={running ? 'running' : runError ? 'failed' : 'success'}
-                    />
-                  ) : null}
-
-                  {runError ? <ErrorState compact error={runError} /> : null}
-                </>
-              ) : null}
-            </Panel>
-          </div>
-        </div>
-      )}
+        ) : null}
+      </Modal>
     </div>
   );
 }
