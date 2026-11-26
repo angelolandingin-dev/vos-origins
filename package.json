@@ -1,7 +1,7 @@
 {
   "name": "vos-origins",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "VOS Origins - desktop app for commit-selective, branch-scoped subsystem promotion (app-driven, no files added to target repos).",
   "license": "UNLICENSED",
