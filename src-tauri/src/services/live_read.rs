@@ -1853,6 +1853,7 @@ pub(crate) struct ContentRefinementCtx<'a> {
     pub(crate) source_history_blobs: &'a HashSet<String>,
     pub(crate) target_scan: &'a TargetPathDates,
     crlf_cache: HashMap<(String, String), bool>,
+    target_manifest_cache: HashMap<String, Option<serde_json::Value>>,
 }
 
 impl<'a> ContentRefinementCtx<'a> {
@@ -1872,8 +1873,64 @@ impl<'a> ContentRefinementCtx<'a> {
             source_history_blobs,
             target_scan,
             crlf_cache: HashMap::new(),
+            target_manifest_cache: HashMap::new(),
         }
     }
+
+    fn target_manifest(&mut self, path: &str) -> Option<&serde_json::Value> {
+        if !self.target_manifest_cache.contains_key(path) {
+            let parsed = self.target_blobs.get(path).and_then(|blob| {
+                let out = git::run(self.target_dir, &["cat-file", "blob", blob]).ok()?;
+                if out.status != 0 {
+                    return None;
+                }
+                serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()
+            });
+            self.target_manifest_cache.insert(path.to_string(), parsed);
+        }
+        self.target_manifest_cache
+            .get(path)
+            .and_then(Option::as_ref)
+    }
+}
+
+fn dependency_delta_already_satisfied(
+    ctx: &mut ContentRefinementCtx<'_>,
+    commit_sha: &str,
+    base_sha: Option<&str>,
+    path: &str,
+) -> bool {
+    let Some(new_pkg) = git::read_blob(ctx.source_dir, commit_sha, path)
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    else {
+        return false;
+    };
+    let resolved_base = base_sha
+        .map(str::to_string)
+        .or_else(|| git::rev_parse(ctx.source_dir, &format!("{commit_sha}^")));
+    let old_pkg = resolved_base
+        .as_deref()
+        .and_then(|base| git::read_blob(ctx.source_dir, base, path))
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let delta = deps::compute_dependency_delta(&old_pkg, &new_pkg);
+    if delta.added.is_empty()
+        && delta.updated.is_empty()
+        && delta.removed.is_empty()
+        && delta.moved.is_empty()
+    {
+        return true;
+    }
+    let Some(target_pkg) = ctx.target_manifest(path).cloned() else {
+        return false;
+    };
+    let reconciled = deps::reconcile_dependencies(&[delta], &target_pkg, false);
+    reconciled.added.is_empty()
+        && reconciled.updated.is_empty()
+        && reconciled.removed.is_empty()
+        && reconciled.moved.is_empty()
+        && reconciled.review.is_empty()
+        && reconciled.blockers.is_empty()
 }
 
 fn blobs_match_text_crlf(
@@ -1908,6 +1965,8 @@ pub(crate) fn refine_content_status(
     mut status: CommitStatus,
     target_branch: &str,
     policy: &crate::services::registry::IntegrationPolicy,
+    commit_sha: &str,
+    base_sha: Option<&str>,
     deltas: &[(String, char)],
     committed_unix: i64,
     ctx: &mut ContentRefinementCtx<'_>,
@@ -1926,6 +1985,9 @@ pub(crate) fn refine_content_status(
             let voted = classify::classify_path(path, policy, None);
             if !is_status_voting(voted.status) {
                 return false;
+            }
+            if voted.status == classify::PathStatus::DependencyMerge {
+                return !dependency_delta_already_satisfied(ctx, commit_sha, base_sha, path);
             }
             match (
                 ctx.source_tree.get(path.as_str()),
@@ -2198,6 +2260,8 @@ pub fn commit_page_live(
             status,
             &target_branch,
             &entry.integration_policy,
+            &commit.sha,
+            commit.parents.first().map(String::as_str),
             &commit_deltas,
             commit.committed_unix,
             &mut refine_ctx,
@@ -2608,6 +2672,8 @@ pub fn commit_details_live(
             base_status,
             &target_branch,
             &entry.integration_policy,
+            &full_sha,
+            base_sha.as_deref(),
             &detail_deltas,
             rfc3339_timestamp(&committed_at),
             &mut refine_ctx,
@@ -4944,6 +5010,44 @@ mod tests {
             status.kind,
             CommitStatusKind::Eligible,
             "target holding an older subsystem blob must stay Eligible regardless of timestamp"
+        );
+    }
+
+    #[test]
+    fn root_manifest_delta_already_present_on_target_reports_applied() {
+        let main = tmp("status-manifest-applied-main");
+        init(&main, "master");
+        write(&main, "app.txt", "v1\n");
+        write(
+            &main,
+            "package.json",
+            "{\"name\":\"main-system\",\"dependencies\":{\"sanitize-html\":\"^2.18.1\",\"other\":\"^1.0.0\"},\"devDependencies\":{\"@types/sanitize-html\":\"^2.16.2\"}}\n",
+        );
+        let _ = commit_all(&main, "main already has deps");
+        git(&main, &["branch", "staging"]);
+
+        let src = tmp("status-manifest-applied-src");
+        init(&src, "master");
+        write(&src, "app.txt", "v1\n");
+        write(
+            &src,
+            "package.json",
+            "{\"name\":\"subsystem\",\"dependencies\":{},\"devDependencies\":{}}\n",
+        );
+        let _ = commit_all(&src, "base");
+        write(
+            &src,
+            "package.json",
+            "{\"name\":\"subsystem\",\"dependencies\":{\"sanitize-html\":\"^2.18.1\"},\"devDependencies\":{\"@types/sanitize-html\":\"^2.16.2\"}}\n",
+        );
+        write(&src, "package-lock.json", "{\"lockfileVersion\":3}\n");
+        let feature = commit_all(&src, "add sanitize-html");
+
+        let status = status_page_for(&src, &main, &single_registry(), &feature);
+        assert_eq!(
+            status.kind,
+            CommitStatusKind::Applied,
+            "when every dependency added by package.json is already satisfied on target, status must be Applied"
         );
     }
 }

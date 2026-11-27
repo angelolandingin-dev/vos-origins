@@ -321,6 +321,8 @@ pub fn subsystem_diff_live(
             base_status,
             &branch,
             &entry.integration_policy,
+            sha,
+            None,
             deltas,
             committed_unix,
             &mut refine_ctx,
