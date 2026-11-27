@@ -3266,6 +3266,33 @@ mod tests {
         git(dir, &["rev-parse", "HEAD"])
     }
 
+    fn commit_all_at(dir: &Path, message: &str, iso_date: &str) -> String {
+        git(dir, &["add", "-A"]);
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .env("GIT_AUTHOR_DATE", iso_date)
+            .env("GIT_COMMITTER_DATE", iso_date)
+            .args([
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "--no-verify",
+                "-q",
+                "-m",
+                message,
+            ])
+            .output()
+            .expect("git commit");
+        assert!(
+            out.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        git(dir, &["rev-parse", "HEAD"])
+    }
+
     fn single_registry() -> Registry {
         let subsystems = subsystem_json("hr-management", "HR", "ORG/hr-management", "master", true);
         Registry::from_json(&registry_json(&subsystems), "test").expect("registry")
@@ -3456,11 +3483,11 @@ mod tests {
         .expect("details");
         assert_eq!(details.status.kind, CommitStatusKind::Applied);
 
-        // Now add `b.txt` on `development` with a newer timestamp than `drop_sha`:
-        // target holds newer work, so the deletion must report `Divergent`.
+        // Now add `b.txt` on `development` with a strictly newer timestamp than
+        // `drop_sha`: target holds newer work, so the deletion must report `Divergent`.
         git(&main, &["checkout", "-q", "development"]);
         write(&main, "b.txt", "still on target\n");
-        let _ = commit_all(&main, "Add b.txt on development");
+        let _ = commit_all_at(&main, "Add b.txt on development", "2099-01-01T00:00:00Z");
         let details_newer = commit_details_live(
             &main,
             &src,
@@ -3476,11 +3503,11 @@ mod tests {
         // Now create a file already on `development`, then delete it on `src`
         // AFTERWARD: the deletion is newer than target and must be `Eligible`.
         write(&main, "c.txt", "old copy on target\n");
-        let _ = commit_all(&main, "Add c.txt on development");
+        let _ = commit_all_at(&main, "Add c.txt on development", "2020-01-01T00:00:00Z");
         write(&src, "c.txt", "old copy on target\n");
-        let _ = commit_all(&src, "Add c.txt on src");
+        let _ = commit_all_at(&src, "Add c.txt on src", "2020-01-01T00:00:00Z");
         std::fs::remove_file(src.join("c.txt")).expect("remove c.txt");
-        let _ = commit_all(&src, "Delete c.txt on src");
+        let _ = commit_all_at(&src, "Delete c.txt on src", "2020-01-02T00:00:00Z");
         let drop_c = git(&src, &["rev-parse", "HEAD"]);
         let details_eligible = commit_details_live(
             &main,
@@ -4899,18 +4926,17 @@ mod tests {
         let src = tmp("status-behind-src");
         init(&src, "master");
         write(&src, "src/app.ts", "v1\n");
-        let _c1 = commit_all(&src, "c1");
+        let _c1 = commit_all_at(&src, "c1", "2020-01-01T00:00:00Z");
         write(&src, "src/app.ts", "v2\n");
-        let c2 = commit_all(&src, "c2");
+        let c2 = commit_all_at(&src, "c2", "2020-01-02T00:00:00Z");
 
         // Target receives c1's exact blob AFTER c2 was committed on source
         // (e.g., an earlier promotion landed later). Pure timestamps would
         // falsely mark c2 Divergent; blob-history membership proves target is behind.
-        std::thread::sleep(std::time::Duration::from_secs(2));
         let main = tmp("status-behind-main");
         init(&main, "master");
         write(&main, "src/app.ts", "v1\n");
-        let _ = commit_all(&main, "promoted c1 later");
+        let _ = commit_all_at(&main, "promoted c1 later", "2020-01-03T00:00:00Z");
         git(&main, &["branch", "staging"]);
 
         let status = status_page_for(&src, &main, &single_registry(), &c2);
