@@ -265,30 +265,37 @@ pub fn replay_events(events: &[Event]) -> ReplayResult {
     for event in events {
         match event.kind {
             EventType::Integrate => {
-                integration_order.push(event.commit.clone());
-                integration_index.insert(
-                    event.commit.clone(),
-                    IntegrationInfo {
-                        subsystem: event.subsystem.clone().unwrap_or_default(),
-                        source_commits: event.source_commits.clone(),
-                        target: event.target.clone(),
-                        subject: event.subject.clone(),
-                    },
-                );
-                let subsystem = event.subsystem.clone().unwrap_or_default();
-                for sha in &event.source_commits {
-                    statuses.insert(
-                        status_key(&subsystem, sha),
-                        StatusRecord {
-                            subsystem: subsystem.clone(),
-                            sha: sha.clone(),
-                            status: ReplayStatus::Integrated,
-                            integration_commit: event.commit.clone(),
-                            promotion_target: event.target.clone(),
-                            at: event.committed_at,
-                            reverted_by: None,
+                // Reconcile mirrors selected folders from a source tip rather
+                // than promoting a specific commit wholesale. Keep the event
+                // in `history` for auditability, but do not mark the arbitrary
+                // source tip SHA as `Integrated` — content comparison decides
+                // each commit's status instead.
+                if event.mode.as_deref() != Some("reconcile") {
+                    integration_order.push(event.commit.clone());
+                    integration_index.insert(
+                        event.commit.clone(),
+                        IntegrationInfo {
+                            subsystem: event.subsystem.clone().unwrap_or_default(),
+                            source_commits: event.source_commits.clone(),
+                            target: event.target.clone(),
+                            subject: event.subject.clone(),
                         },
                     );
+                    let subsystem = event.subsystem.clone().unwrap_or_default();
+                    for sha in &event.source_commits {
+                        statuses.insert(
+                            status_key(&subsystem, sha),
+                            StatusRecord {
+                                subsystem: subsystem.clone(),
+                                sha: sha.clone(),
+                                status: ReplayStatus::Integrated,
+                                integration_commit: event.commit.clone(),
+                                promotion_target: event.target.clone(),
+                                at: event.committed_at,
+                                reverted_by: None,
+                            },
+                        );
+                    }
                 }
                 history.push(event.clone());
             }
@@ -755,6 +762,27 @@ mod tests {
             replayed.statuses[&status_key("hr-management", &old_sha)].status,
             ReplayStatus::Reverted,
             "unique prefix resolves"
+        );
+    }
+
+    #[test]
+    fn reconcile_event_stays_in_history_without_marking_tip_integrated() {
+        let reconcile_commit = "9".repeat(40);
+        let tip_sha = "c".repeat(40);
+        let mut event =
+            integrate_event(&reconcile_commit, "reconcile(ca): CA Updates", &tip_sha, 1);
+        event.subsystem = Some("ca".to_string());
+        event.mode = Some("reconcile".to_string());
+
+        let replayed = replay_events(&[event]);
+        assert_eq!(
+            replayed.history.len(),
+            1,
+            "reconcile event remains visible in integration history"
+        );
+        assert!(
+            !replayed.statuses.contains_key(&status_key("ca", &tip_sha)),
+            "reconcile must not mark the arbitrary source HEAD commit as Integrated"
         );
     }
 }
