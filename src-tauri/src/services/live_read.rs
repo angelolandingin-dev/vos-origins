@@ -1016,7 +1016,7 @@ pub fn integration_history_live(
     // do not sort ahead of newer UTC (Z) commits.
     entries.sort_by_key(|entry| std::cmp::Reverse(rfc3339_timestamp(&entry.occurred_at)));
     let total = entries.len() as u32;
-    let capped = limit.clamp(1, 200) as usize;
+    let capped = limit.clamp(1, 5000) as usize;
     entries.truncate(capped);
     Ok(IntegrationHistory {
         target_branch: branch,

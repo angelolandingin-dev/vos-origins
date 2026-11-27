@@ -1,6 +1,8 @@
 import { Fragment, useCallback, useMemo, useState } from 'react';
 import {
   ArrowDownToLine,
+  ChevronLeft,
+  ChevronRight,
   ExternalLink,
   History,
   RefreshCw,
@@ -30,8 +32,8 @@ import {
 
 /** Integration History (spec §§3.3/8.3). Pending PRs are never shown as integrated; provenance problems surface. */
 
-const HISTORY_LIMITS = [50, 100, 200];
-const HISTORY_CAP = 200;
+const HISTORY_FETCH_LIMIT = 5000;
+const PAGE_SIZES = [25, 50, 100];
 
 function prStateBadge(pr: IntegrationPr) {
   if (pr.state === 'merged') return <StatusBadge kind="integrated" label="Merged" />;
@@ -43,20 +45,21 @@ function prStateBadge(pr: IntegrationPr) {
 export function IntegrationHistory() {
   const app = useApp();
   const [subsystemFilter, setSubsystemFilter] = useState<string>('all');
-  const [limit, setLimit] = useState<number>(HISTORY_LIMITS[0] ?? 50);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<'events' | 'prs'>('events');
   const [search, setSearch] = useState('');
   const [kindFilter, setKindFilter] = useState<'all' | IntegrationHistoryKind>('all');
+  const [page, setPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(PAGE_SIZES[0] ?? 25);
 
   const history = useAsyncData(
     () =>
       api.listIntegrationHistory(
         app.targetBranch,
         subsystemFilter === 'all' ? null : subsystemFilter,
-        limit,
+        HISTORY_FETCH_LIMIT,
       ),
-    [app.targetBranch, subsystemFilter, limit, app.dataVersion],
+    [app.targetBranch, subsystemFilter, app.dataVersion],
   );
 
   const prs = useAsyncData(
@@ -130,12 +133,34 @@ export function IntegrationHistory() {
     (branch) => branch.name === app.targetBranch,
   );
 
-  const countLine = history.data
-    ? shown === total
-      ? `${total} event(s)`
-      : `Showing ${shown} of ${total}`
-    : undefined;
-  const capped = limit >= HISTORY_CAP && total > shown;
+  const activeTotal = view === 'events' ? filteredEntries.length : filteredPrs.length;
+  const totalPages = Math.max(1, Math.ceil(activeTotal / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pageStartIndex = (currentPage - 1) * pageSize;
+  const pagedEntries = useMemo(
+    () => filteredEntries.slice(pageStartIndex, pageStartIndex + pageSize),
+    [filteredEntries, pageStartIndex, pageSize],
+  );
+  const pagedPrs = useMemo(
+    () => filteredPrs.slice(pageStartIndex, pageStartIndex + pageSize),
+    [filteredPrs, pageStartIndex, pageSize],
+  );
+  const rangeStart = activeTotal === 0 ? 0 : pageStartIndex + 1;
+  const rangeEnd = Math.min(activeTotal, pageStartIndex + pageSize);
+
+  const countLine =
+    view === 'events'
+      ? history.data
+        ? filteredEntries.length === total
+          ? `${total} event(s)`
+          : `${filteredEntries.length} of ${total} event(s)`
+        : undefined
+      : prs.data
+        ? filteredPrs.length === prsList.length
+          ? `${prsList.length} PR(s)`
+          : `${filteredPrs.length} of ${prsList.length} PR(s)`
+        : undefined;
+  const truncatedByFetchCap = total > shown;
   const isRefreshing =
     (view === 'events' && history.loading && shown > 0) ||
     (view === 'prs' && prs.loading && prsList.length > 0);
@@ -161,7 +186,10 @@ export function IntegrationHistory() {
               ariaLabel="Target main-system branch"
               className="w-[180px]"
               value={app.targetBranch}
-              onValueChange={(next) => app.setTargetBranch(next)}
+              onValueChange={(next) => {
+                app.setTargetBranch(next);
+                setPage(1);
+              }}
               options={branches.map((branch) => ({
                 value: branch.name,
                 label: branch.name,
@@ -174,7 +202,10 @@ export function IntegrationHistory() {
               ariaLabel="Filter history by subsystem"
               className="w-[210px]"
               value={subsystemFilter}
-              onValueChange={(next) => setSubsystemFilter(next)}
+              onValueChange={(next) => {
+                setSubsystemFilter(next);
+                setPage(1);
+              }}
               options={[
                 { value: 'all', label: 'All subsystems' },
                 ...(app.subsystems.data ?? []).map((subsystem) => ({
@@ -233,14 +264,17 @@ export function IntegrationHistory() {
             >
               {(
                 [
-                  { id: 'events', label: `Events (${shown})` },
+                  { id: 'events', label: `Events (${total})` },
                   { id: 'prs', label: `Pull requests (${prsList.length})` },
                 ] as const
               ).map((tab, idx) => (
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setView(tab.id)}
+                  onClick={() => {
+                    setView(tab.id);
+                    setPage(1);
+                  }}
                   className={cx(
                     'px-2.5 text-[11px] tabular-nums transition-colors',
                     idx > 0 && 'border-l border-line',
@@ -262,7 +296,10 @@ export function IntegrationHistory() {
               <input
                 type="search"
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setPage(1);
+                }}
                 placeholder="Filter by SHA, subsystem, detail, or actor…"
                 aria-label="Filter history"
                 className="input pl-8"
@@ -277,7 +314,10 @@ export function IntegrationHistory() {
               >
                 <button
                   type="button"
-                  onClick={() => setKindFilter('all')}
+                  onClick={() => {
+                    setKindFilter('all');
+                    setPage(1);
+                  }}
                   className={cx(
                     'px-2 text-[11px] transition-colors',
                     kindFilter === 'all'
@@ -291,7 +331,10 @@ export function IntegrationHistory() {
                   <button
                     key={id}
                     type="button"
-                    onClick={() => setKindFilter(id)}
+                    onClick={() => {
+                      setKindFilter(id);
+                      setPage(1);
+                    }}
                     className={cx(
                       'border-l border-line px-2 text-[11px] transition-colors',
                       kindFilter === id
@@ -362,10 +405,10 @@ export function IntegrationHistory() {
                 />
               ) : (
                 <>
-                  {capped ? (
+                  {truncatedByFetchCap ? (
                     <InlineAlert
                       tone="info"
-                      title={`Showing ${shown} of ${total} events — the list is capped at ${HISTORY_CAP}`}
+                      title={`Loaded ${shown} of ${total} events — capped at ${HISTORY_FETCH_LIMIT}`}
                       className="m-3 mb-0"
                     >
                       Narrow the branch or subsystem filter to reach older events.
@@ -395,7 +438,7 @@ export function IntegrationHistory() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredEntries.map((entry) => {
+                      {pagedEntries.map((entry) => {
                         const auditable = entry.mainCommitSha != null;
                         const selected = selectedId === entry.id;
                         const select = () => setSelectedId(entry.id);
@@ -501,23 +544,6 @@ export function IntegrationHistory() {
                       })}
                     </tbody>
                   </table>
-                  {shown < total ? (
-                    <div className="flex justify-center border-b border-line px-4 py-2">
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        disabled={history.loading}
-                        onClick={() =>
-                          setLimit((current) =>
-                            Math.min(HISTORY_CAP, current >= 100 ? HISTORY_CAP : 100),
-                          )
-                        }
-                        title={`Load more events (${shown} of ${total} shown)`}
-                      >
-                        Show more ({shown} of {total})
-                      </Button>
-                    </div>
-                  ) : null}
                 </>
               )
             ) : prs.loading && prsList.length === 0 ? (
@@ -543,7 +569,7 @@ export function IntegrationHistory() {
               />
             ) : (
               <ul className="divide-y divide-line">
-                {filteredPrs.map((pr) => (
+                {pagedPrs.map((pr) => (
                   <li key={pr.number} className="space-y-1.5 px-4 py-3">
                     <div className="flex flex-wrap items-center gap-2">
                       {prStateBadge(pr)}
@@ -583,6 +609,50 @@ export function IntegrationHistory() {
               </ul>
             )}
           </div>
+
+          <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-raised px-4 py-2">
+            <p className="truncate text-[11px] text-muted tabular-nums">
+              {activeTotal === 0
+                ? view === 'events'
+                  ? 'No events'
+                  : 'No pull requests'
+                : `Showing ${rangeStart}–${rangeEnd} of ${activeTotal} ${view === 'events' ? 'event' : 'pull request'}${activeTotal === 1 ? '' : 's'}`}
+              <span className="ml-1 text-disabled">· target {app.targetBranch}</span>
+            </p>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 text-[11px] text-muted">
+                Rows
+                <Select
+                  className="w-[76px]"
+                  value={String(pageSize)}
+                  onValueChange={(next) => {
+                    setPageSize(Number(next));
+                    setPage(1);
+                  }}
+                  ariaLabel="Rows per page"
+                  options={PAGE_SIZES.map((size) => ({
+                    value: String(size),
+                    label: String(size),
+                  }))}
+                />
+              </label>
+              <IconButton
+                icon={ChevronLeft}
+                label="Previous page"
+                disabled={currentPage <= 1}
+                onClick={() => setPage((p) => Math.max(1, Math.min(p, totalPages) - 1))}
+              />
+              <span className="mono text-right text-[11px] text-muted tabular-nums">
+                {currentPage} / {totalPages}
+              </span>
+              <IconButton
+                icon={ChevronRight}
+                label="Next page"
+                disabled={currentPage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, Math.min(p, totalPages) + 1))}
+              />
+            </div>
+          </footer>
         </div>
       )}
     </div>
