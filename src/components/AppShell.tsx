@@ -462,12 +462,10 @@ function ToastNotification({ notice, onDismiss }: { notice: Notice; onDismiss: (
 
   useEffect(() => {
     if (paused) return;
-    const ms = notice.onClick
-      ? Math.max(TOAST_DURATION_MS[notice.tone], 8000)
-      : TOAST_DURATION_MS[notice.tone];
+    const ms = TOAST_DURATION_MS[notice.tone];
     const timer = window.setTimeout(onDismiss, ms);
     return () => window.clearTimeout(timer);
-  }, [notice.id, notice.tone, notice.onClick, paused, onDismiss]);
+  }, [notice.id, notice.tone, paused, onDismiss]);
 
   const toneMeta =
     notice.tone === 'success'
