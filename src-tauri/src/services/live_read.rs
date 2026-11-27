@@ -1742,6 +1742,29 @@ fn is_status_voting(status: classify::PathStatus) -> bool {
     )
 }
 
+/// Paths touched by any commit strictly after `sha` on `source_branch`.
+/// Used by `commit_details_live` so `Superseded` matches `commit_page_live`
+/// without walking the entire repository log.
+fn newer_source_touched_paths(
+    source_dir: &Path,
+    sha: &str,
+    source_branch: &str,
+) -> HashSet<String> {
+    let range = format!("{sha}..{source_branch}");
+    let Ok(out) = git::run(source_dir, &["log", "--format=", "--name-only", &range]) else {
+        return HashSet::new();
+    };
+    if out.status != 0 {
+        return HashSet::new();
+    }
+    out.stdout_str()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn all_superseded(paths: &[&String], latest: &HashMap<String, usize>, index: usize) -> bool {
     !paths.is_empty()
         && paths
@@ -1843,16 +1866,10 @@ fn refine_content_status(
 
     let out_of_sync: Vec<(&String, char)> = deltas
         .iter()
-        // A deletion leaves nothing to compare: `None == None` would
-        // read a removal the target never saw as "already applied", so
-        // an add+delete bundle could not be handed over as a pair. Count
-        // it as promotable — re-applying an absent file is a no-op.
-        .filter(|(path, kind)| {
-            *kind == 'D' || {
-                let voted = classify::classify_path(path, policy, None);
-                is_status_voting(voted.status)
-                    && source_tree.get(path.as_str()) != target_blobs.get(path.as_str())
-            }
+        .filter(|(path, _)| {
+            let voted = classify::classify_path(path, policy, None);
+            is_status_voting(voted.status)
+                && source_tree.get(path.as_str()) != target_blobs.get(path.as_str())
         })
         .map(|(path, kind)| (path, *kind))
         .collect();
@@ -2472,6 +2489,9 @@ pub fn commit_details_live(
                 }
             })
             .collect();
+        let newer_paths = newer_source_touched_paths(source_dir, &full_sha, &entry.source_branch);
+        let synthetic_latest: HashMap<String, usize> =
+            newer_paths.into_iter().map(|path| (path, 0usize)).collect();
         refine_content_status(
             base_status,
             &target_branch,
@@ -2481,7 +2501,7 @@ pub fn commit_details_live(
             &source_tree,
             &target_blobs,
             &target_scan,
-            None,
+            Some((&synthetic_latest, 1usize)),
         )
     } else {
         base_status
@@ -3283,27 +3303,86 @@ mod tests {
     }
 
     #[test]
-    fn a_deletion_stays_promotable_when_the_target_lacks_the_file() {
+    fn deletion_is_applied_when_absent_on_target_and_eligible_when_present() {
         let (src, main, _a, _b, registry) = sandbox_status();
+        // `b.txt` is NOT on `development` yet; deleting it on `src` makes both
+        // trees match (neither has `b.txt`), so `commit_page_live` and
+        // `commit_details_live` report `Applied` — nothing left to delete.
         std::fs::remove_file(src.join("b.txt")).expect("remove b.txt");
         let _dropped = commit_all(&src, "Drop b.txt");
         let drop_sha = git(&src, &["rev-parse", "HEAD"]);
-        let statuses = integration_statuses_live(
+        let page = commit_page_live(
             &main,
+            &src,
             &registry,
             &StubGitHubOps::new(),
-            "development",
-            Some("hr-management"),
-            std::slice::from_ref(&drop_sha),
+            &CommitQuery {
+                subsystem_id: "hr-management".to_string(),
+                target_branch: "development".to_string(),
+                page: 1,
+                page_size: 25,
+                search: String::new(),
+                status_filter: None,
+                sort: crate::github::models::CommitSort::Newest,
+                shas: Some(vec![drop_sha.clone()]),
+            },
         )
-        .expect("statuses");
-        assert_eq!(statuses.len(), 1);
-        assert_ne!(
-            statuses[0].status.kind,
+        .expect("page");
+        assert_eq!(page.commits.len(), 1);
+        assert_eq!(
+            page.commits[0].status.kind,
             CommitStatusKind::Applied,
-            "absent on both sides proves nothing; a removal must stay promotable"
+            "file already absent on target means deletion has nothing left to apply"
         );
-        assert_eq!(statuses[0].status.kind, CommitStatusKind::Eligible);
+        let details = commit_details_live(
+            &main,
+            &src,
+            &registry,
+            &StubGitHubOps::new(),
+            "hr-management",
+            &drop_sha,
+            "development",
+        )
+        .expect("details");
+        assert_eq!(details.status.kind, CommitStatusKind::Applied);
+
+        // Now add `b.txt` on `development` with a newer timestamp than `drop_sha`:
+        // target holds newer work, so the deletion must report `Divergent`.
+        git(&main, &["checkout", "-q", "development"]);
+        write(&main, "b.txt", "still on target\n");
+        let _ = commit_all(&main, "Add b.txt on development");
+        let details_newer = commit_details_live(
+            &main,
+            &src,
+            &registry,
+            &StubGitHubOps::new(),
+            "hr-management",
+            &drop_sha,
+            "development",
+        )
+        .expect("details when newer on target");
+        assert_eq!(details_newer.status.kind, CommitStatusKind::Divergent);
+
+        // Now create a file already on `development`, then delete it on `src`
+        // AFTERWARD: the deletion is newer than target and must be `Eligible`.
+        write(&main, "c.txt", "old copy on target\n");
+        let _ = commit_all(&main, "Add c.txt on development");
+        write(&src, "c.txt", "old copy on target\n");
+        let _ = commit_all(&src, "Add c.txt on src");
+        std::fs::remove_file(src.join("c.txt")).expect("remove c.txt");
+        let _ = commit_all(&src, "Delete c.txt on src");
+        let drop_c = git(&src, &["rev-parse", "HEAD"]);
+        let details_eligible = commit_details_live(
+            &main,
+            &src,
+            &registry,
+            &StubGitHubOps::new(),
+            "hr-management",
+            &drop_c,
+            "development",
+        )
+        .expect("details when deletion is newer");
+        assert_eq!(details_eligible.status.kind, CommitStatusKind::Eligible);
     }
 
     #[test]
