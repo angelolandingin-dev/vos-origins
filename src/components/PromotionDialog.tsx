@@ -440,10 +440,39 @@ function PromotionDialogContent({
     onDeliveryChange(next);
   };
 
+  const blockedCommitStatuses = new Set([
+    'integrated',
+    'pr_open',
+    'in_review',
+    'applied',
+    'blocked',
+  ]);
+  const blockedCommits = sourceShas
+    .map((sha) => commits.find((candidate) => candidate.sha === sha))
+    .filter(
+      (commit): commit is CommitSummary =>
+        commit !== undefined && blockedCommitStatuses.has(commit.status.kind),
+    );
+  const removeBlockedCommits = () => {
+    for (const commit of blockedCommits) {
+      onRemoveSha(commit.sha);
+    }
+  };
+  const toggleablePreflightFiles = (preflight?.files ?? []).filter(
+    (file) => file.outcome !== 'skipped',
+  );
+  const allFilesExcluded =
+    !preflightLoading &&
+    toggleablePreflightFiles.length > 0 &&
+    toggleablePreflightFiles.every((file) => isExcluded(file.path));
+
   const canDispatch =
     !dispatching &&
+    !dependenciesLoading &&
     acknowledged &&
     sourceShas.length > 0 &&
+    blockedCommits.length === 0 &&
+    !allFilesExcluded &&
     message.trim().length > 0 &&
     Boolean(subsystem) &&
     Boolean(selectedBranch?.allowed) &&
@@ -452,19 +481,25 @@ function PromotionDialogContent({
   // A disabled primary button with no stated reason reads as a broken click.
   const blockedReason = dispatching
     ? null
-    : !acknowledged
-      ? 'Acknowledge the delivery checkbox to continue.'
-      : sourceShas.length === 0
-        ? 'Select at least one commit to promote.'
-        : message.trim().length === 0
-          ? 'Enter a commit message to continue.'
-          : !subsystem
-            ? 'Select a subsystem first.'
-            : !selectedBranch?.allowed
-              ? `Target branch ${targetBranch} is not permitted by registry policy.`
-              : cumulative && baseSha.trim().length === 0
-                ? 'Enter the cumulative baseline SHA.'
-                : null;
+    : dependenciesLoading
+      ? `Verifying commit status on ${targetBranch}…`
+      : blockedCommits.length > 0
+        ? `${blockedCommits.length} selected commit${blockedCommits.length === 1 ? ' is' : 's are'} not promotable on ${targetBranch} — remove ${blockedCommits.length === 1 ? 'it' : 'them'} or choose another target branch.`
+        : allFilesExcluded
+          ? 'Every file is excluded — include at least one file to promote.'
+          : !acknowledged
+            ? 'Acknowledge the delivery checkbox to continue.'
+            : sourceShas.length === 0
+              ? 'Select at least one commit to promote.'
+              : message.trim().length === 0
+                ? 'Enter a commit message to continue.'
+                : !subsystem
+                  ? 'Select a subsystem first.'
+                  : !selectedBranch?.allowed
+                    ? `Target branch ${targetBranch} is not permitted by registry policy.`
+                    : cumulative && baseSha.trim().length === 0
+                      ? 'Enter the cumulative baseline SHA.'
+                      : null;
 
   const copyNextCommands = () => {
     const text = (result?.nextCommands ?? []).join('\n');
@@ -709,6 +744,25 @@ function PromotionDialogContent({
                   })}
                 </ul>
               )}
+              {blockedCommits.length > 0 ? (
+                <InlineAlert
+                  tone="danger"
+                  title={`${blockedCommits.length} selected commit${blockedCommits.length === 1 ? ' is' : 's are'} already on or blocked for ${targetBranch}`}
+                  actions={
+                    <Button size="sm" variant="secondary" onClick={removeBlockedCommits}>
+                      Remove {blockedCommits.length}
+                    </Button>
+                  }
+                >
+                  <p>
+                    {blockedCommits
+                      .map((commit) => `${commit.shortSha} (${commit.status.label})`)
+                      .join(', ')}
+                    . Remove {blockedCommits.length === 1 ? 'it' : 'them'} or switch to another
+                    target branch.
+                  </p>
+                </InlineAlert>
+              ) : null}
             </section>
 
             <section className="rounded-md border border-line bg-surface p-3">
@@ -789,10 +843,23 @@ function PromotionDialogContent({
                   Mergeability preflight
                 </h3>
                 <InlineAlert
-                  tone={preflight.conflict > 0 ? 'warning' : 'info'}
+                  tone={
+                    blockedCommits.length > 0 || allFilesExcluded
+                      ? 'danger'
+                      : preflight.conflict > 0
+                        ? 'warning'
+                        : 'info'
+                  }
                   title={preflightSummary(preflight)}
                 >
-                  {replaced.length > 0 ? (
+                  {blockedCommits.length > 0 ? (
+                    <p>
+                      Blocked: remove already-integrated or non-promotable commits above before
+                      promoting.
+                    </p>
+                  ) : allFilesExcluded ? (
+                    <p>All files are excluded — include at least one file to promote.</p>
+                  ) : replaced.length > 0 ? (
                     <p>
                       {replaced.length} path{replaced.length === 1 ? '' : 's'} changed in main will
                       be overwritten with the subsystem&apos;s version.
