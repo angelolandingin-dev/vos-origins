@@ -21,6 +21,7 @@ pub struct CollectedDiff {
     pub touches: HashMap<String, Vec<(String, char)>>,
     pub touches_truncated: HashSet<String>,
     pub commit_paths: HashMap<String, Vec<String>>,
+    pub commit_deltas: HashMap<String, Vec<(String, char)>>,
     pub commit_meta: HashMap<String, (String, String, String)>,
     pub commit_order: Vec<String>,
 }
@@ -40,6 +41,7 @@ pub fn collect_diff(
 
     let mut touches: HashMap<String, Vec<(String, char)>> = HashMap::new();
     let mut commit_paths: HashMap<String, Vec<String>> = HashMap::new();
+    let mut commit_deltas: HashMap<String, Vec<(String, char)>> = HashMap::new();
     let mut commit_meta: HashMap<String, (String, String, String)> = HashMap::new();
     let mut commit_order: Vec<String> = Vec::new();
     // A failed walk degrades to empty touches (fail-closed downstream: with
@@ -77,6 +79,10 @@ pub fn collect_diff(
                         .entry(commit.sha.clone())
                         .or_default()
                         .push(path.to_string());
+                    commit_deltas
+                        .entry(commit.sha.clone())
+                        .or_default()
+                        .push((path.to_string(), *status));
                 }
             }
         }
@@ -99,6 +105,7 @@ pub fn collect_diff(
         touches,
         touches_truncated,
         commit_paths,
+        commit_deltas,
         commit_meta,
         commit_order,
     }
@@ -278,6 +285,48 @@ pub fn subsystem_diff_live(
     let mut status_by_sha: HashMap<String, CommitStatus> = HashMap::new();
     for status in statuses {
         status_by_sha.insert(status.source_sha.clone(), status.status);
+    }
+    let mut path_latest: HashMap<String, usize> = HashMap::new();
+    for (index, sha) in collected.commit_order.iter().enumerate() {
+        if let Some(deltas) = collected.commit_deltas.get(sha) {
+            for (path, _) in deltas {
+                path_latest.entry(path.clone()).or_insert(index);
+            }
+        }
+    }
+    let target_scan = live_read::target_path_dates_scan(target_dir, &branch);
+    let mut refine_ctx = live_read::ContentRefinementCtx::new(
+        source_dir,
+        target_dir,
+        &collected.source_tree,
+        &collected.target_tree,
+        &collected.history_blobs,
+        &target_scan,
+    );
+    for (index, sha) in collected.commit_order.iter().enumerate() {
+        let Some(base_status) = status_by_sha.remove(sha) else {
+            continue;
+        };
+        let deltas = collected
+            .commit_deltas
+            .get(sha)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let committed_unix = collected
+            .commit_meta
+            .get(sha)
+            .map(|(_, _, committed_at)| live_read::rfc3339_timestamp(committed_at))
+            .unwrap_or(0);
+        let refined = live_read::refine_content_status(
+            base_status,
+            &branch,
+            &entry.integration_policy,
+            deltas,
+            committed_unix,
+            &mut refine_ctx,
+            Some((&path_latest, index)),
+        );
+        status_by_sha.insert(sha.clone(), refined);
     }
 
     let mut paths: Vec<&String> = collected.source_tree.keys().collect();
@@ -842,10 +891,14 @@ mod tests {
             "the merge keeps B's version, so it touches nothing: {order:?}"
         );
         for commit in &entry.commits {
+            let expected = if commit.sha == b {
+                crate::github::models::CommitStatusKind::Eligible
+            } else {
+                crate::github::models::CommitStatusKind::Superseded
+            };
             assert_eq!(
-                commit.status.kind,
-                crate::github::models::CommitStatusKind::Eligible,
-                "statuses reuse the per-branch machinery (no trailers: eligible)"
+                commit.status.kind, expected,
+                "newest toucher stays Eligible while older touchers of f.txt refine to Superseded"
             );
         }
         let warn = entry

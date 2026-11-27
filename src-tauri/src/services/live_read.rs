@@ -16,7 +16,7 @@ use crate::github::models::{
 };
 use crate::services::engine::github_ops::{BranchInfo, GitHubOps, PullRequestInfo};
 use crate::services::engine::history::BranchStatusKind;
-use crate::services::engine::{classify, deps, git, history};
+use crate::services::engine::{apply, blobset, classify, deps, git, history};
 use crate::services::registry::{Registry, SubsystemEntry};
 
 pub const MAX_DIFF_LINES: usize = 1500;
@@ -1016,7 +1016,7 @@ pub fn integration_history_live(
     // do not sort ahead of newer UTC (Z) commits.
     entries.sort_by_key(|entry| std::cmp::Reverse(rfc3339_timestamp(&entry.occurred_at)));
     let total = entries.len() as u32;
-    let capped = limit.clamp(1, 200) as usize;
+    let capped = limit.clamp(1, 5000) as usize;
     entries.truncate(capped);
     Ok(IntegrationHistory {
         target_branch: branch,
@@ -1647,7 +1647,7 @@ fn source_log(repo_dir: &Path, branch: &str, first_parent: bool) -> AppResult<Ve
     Ok(commits)
 }
 
-fn rfc3339_timestamp(iso: &str) -> i64 {
+pub(crate) fn rfc3339_timestamp(iso: &str) -> i64 {
     fixtures::parse_time(iso)
         .map(|dt| dt.timestamp())
         .unwrap_or(0)
@@ -1742,6 +1742,29 @@ fn is_status_voting(status: classify::PathStatus) -> bool {
     )
 }
 
+/// Paths touched by any commit strictly after `sha` on `source_branch`.
+/// Used by `commit_details_live` so `Superseded` matches `commit_page_live`
+/// without walking the entire repository log.
+fn newer_source_touched_paths(
+    source_dir: &Path,
+    sha: &str,
+    source_branch: &str,
+) -> HashSet<String> {
+    let range = format!("{sha}..{source_branch}");
+    let Ok(out) = git::run(source_dir, &["log", "--format=", "--name-only", &range]) else {
+        return HashSet::new();
+    };
+    if out.status != 0 {
+        return HashSet::new();
+    }
+    out.stdout_str()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn all_superseded(paths: &[&String], latest: &HashMap<String, usize>, index: usize) -> bool {
     !paths.is_empty()
         && paths
@@ -1749,7 +1772,7 @@ fn all_superseded(paths: &[&String], latest: &HashMap<String, usize>, index: usi
             .all(|path| latest.get(*path).is_some_and(|newer| *newer < index))
 }
 
-struct TargetPathDates {
+pub(crate) struct TargetPathDates {
     dates: HashMap<String, i64>,
     truncated: bool,
     oldest_epoch: Option<i64>,
@@ -1760,7 +1783,7 @@ struct TargetPathDates {
 /// for DISPLAY ORDER ONLY — never correctness (blob membership decides, E3).
 /// Tracks `oldest_epoch` so truncation only marks a commit `Unknown` when the
 /// 800-commit window did not even reach back to that commit's timestamp.
-fn target_path_dates_scan(target_dir: &Path, target_branch: &str) -> TargetPathDates {
+pub(crate) fn target_path_dates_scan(target_dir: &Path, target_branch: &str) -> TargetPathDates {
     const LIMIT: usize = 800;
     let mut map: HashMap<String, i64> = HashMap::new();
     let Ok(out) = git::run(
@@ -1822,16 +1845,72 @@ fn target_path_dates(target_dir: &Path, target_branch: &str) -> (HashMap<String,
     (scan.dates, scan.truncated)
 }
 
+pub(crate) struct ContentRefinementCtx<'a> {
+    pub(crate) source_dir: &'a Path,
+    pub(crate) target_dir: &'a Path,
+    pub(crate) source_tree: &'a HashMap<String, String>,
+    pub(crate) target_blobs: &'a HashMap<String, String>,
+    pub(crate) source_history_blobs: &'a HashSet<String>,
+    pub(crate) target_scan: &'a TargetPathDates,
+    crlf_cache: HashMap<(String, String), bool>,
+}
+
+impl<'a> ContentRefinementCtx<'a> {
+    pub(crate) fn new(
+        source_dir: &'a Path,
+        target_dir: &'a Path,
+        source_tree: &'a HashMap<String, String>,
+        target_blobs: &'a HashMap<String, String>,
+        source_history_blobs: &'a HashSet<String>,
+        target_scan: &'a TargetPathDates,
+    ) -> Self {
+        Self {
+            source_dir,
+            target_dir,
+            source_tree,
+            target_blobs,
+            source_history_blobs,
+            target_scan,
+            crlf_cache: HashMap::new(),
+        }
+    }
+}
+
+fn blobs_match_text_crlf(
+    source_dir: &Path,
+    target_dir: &Path,
+    cache: &mut HashMap<(String, String), bool>,
+    src_blob: &str,
+    tgt_blob: &str,
+) -> bool {
+    let key = (src_blob.to_string(), tgt_blob.to_string());
+    if let Some(&matched) = cache.get(&key) {
+        return matched;
+    }
+    let matched = (|| {
+        let src_out = git::run(source_dir, &["cat-file", "blob", src_blob]).ok()?;
+        if src_out.status != 0 || apply::is_binary(&src_out.stdout) {
+            return Some(false);
+        }
+        let tgt_out = git::run(target_dir, &["cat-file", "blob", tgt_blob]).ok()?;
+        if tgt_out.status != 0 || apply::is_binary(&tgt_out.stdout) {
+            return Some(false);
+        }
+        Some(apply::strip_cr(&src_out.stdout) == apply::strip_cr(&tgt_out.stdout))
+    })()
+    .unwrap_or(false);
+    cache.insert(key, matched);
+    matched
+}
+
 #[allow(clippy::too_many_arguments)]
-fn refine_content_status(
+pub(crate) fn refine_content_status(
     mut status: CommitStatus,
     target_branch: &str,
     policy: &crate::services::registry::IntegrationPolicy,
     deltas: &[(String, char)],
     committed_unix: i64,
-    source_tree: &HashMap<String, String>,
-    target_blobs: &HashMap<String, String>,
-    target_scan: &TargetPathDates,
+    ctx: &mut ContentRefinementCtx<'_>,
     supersede_ctx: Option<(&HashMap<String, usize>, usize)>,
 ) -> CommitStatus {
     if !matches!(
@@ -1843,15 +1922,25 @@ fn refine_content_status(
 
     let out_of_sync: Vec<(&String, char)> = deltas
         .iter()
-        // A deletion leaves nothing to compare: `None == None` would
-        // read a removal the target never saw as "already applied", so
-        // an add+delete bundle could not be handed over as a pair. Count
-        // it as promotable — re-applying an absent file is a no-op.
-        .filter(|(path, kind)| {
-            *kind == 'D' || {
-                let voted = classify::classify_path(path, policy, None);
-                is_status_voting(voted.status)
-                    && source_tree.get(path.as_str()) != target_blobs.get(path.as_str())
+        .filter(|(path, _)| {
+            let voted = classify::classify_path(path, policy, None);
+            if !is_status_voting(voted.status) {
+                return false;
+            }
+            match (
+                ctx.source_tree.get(path.as_str()),
+                ctx.target_blobs.get(path.as_str()),
+            ) {
+                (None, None) => false,
+                (Some(src_blob), Some(tgt_blob)) if src_blob == tgt_blob => false,
+                (Some(src_blob), Some(tgt_blob)) => !blobs_match_text_crlf(
+                    ctx.source_dir,
+                    ctx.target_dir,
+                    &mut ctx.crlf_cache,
+                    src_blob,
+                    tgt_blob,
+                ),
+                _ => true,
             }
         })
         .map(|(path, kind)| (path, *kind))
@@ -1868,7 +1957,8 @@ fn refine_content_status(
     let recency_paths: Vec<&String> = out_of_sync
         .iter()
         .filter(|(path, kind)| {
-            !is_dependency_path(path) && (*kind != 'D' || target_blobs.contains_key(path.as_str()))
+            !is_dependency_path(path)
+                && (*kind != 'D' || ctx.target_blobs.contains_key(path.as_str()))
         })
         .map(|(path, _)| *path)
         .collect();
@@ -1899,10 +1989,28 @@ fn refine_content_status(
         }
     }
 
+    // A path whose target blob belongs to the subsystem's own history while
+    // this commit is the latest source toucher is provably behind — never
+    // divergent, even if target committed that older blob later (e.g. a
+    // previous promotion landed after this commit was authored).
+    let is_proven_behind = |path: &String| -> bool {
+        let has_newer_source = supersede_ctx.is_some_and(|(path_latest, index)| {
+            path_latest.get(path).is_some_and(|&latest| latest < index)
+        });
+        !has_newer_source
+            && ctx
+                .target_blobs
+                .get(path.as_str())
+                .is_some_and(|tb| ctx.source_history_blobs.contains(tb))
+    };
+
     let newer_on_target = recency_paths
         .iter()
         .filter(|path| {
-            target_scan
+            if is_proven_behind(path) {
+                return false;
+            }
+            ctx.target_scan
                 .dates
                 .get(**path)
                 .is_some_and(|epoch| *epoch > committed_unix)
@@ -1921,13 +2029,14 @@ fn refine_content_status(
         );
     }
 
-    let scan_stopped_before_commit = target_scan.truncated
-        && target_scan
+    let scan_stopped_before_commit = ctx.target_scan.truncated
+        && ctx
+            .target_scan
             .oldest_epoch
             .is_some_and(|floor| floor >= committed_unix)
         && recency_paths
             .iter()
-            .any(|path| !target_scan.dates.contains_key(*path));
+            .any(|path| !is_proven_behind(path) && !ctx.target_scan.dates.contains_key(*path));
 
     if scan_stopped_before_commit {
         // Fail-closed (E3): the 800-commit scan did not reach back to this
@@ -2018,8 +2127,18 @@ pub fn commit_page_live(
     // content diffing, and no add-vs-modify ambiguity.
     let source_tree = tree_blobs(source_dir, &entry.source_branch);
     let target_blobs = tree_blobs(target_dir, &target_branch);
+    let source_history_blobs =
+        blobset::blobs_in_selected_history(source_dir, std::slice::from_ref(&entry.source_branch));
     let path_latest = latest_toucher_index(&commits);
     let target_scan = target_path_dates_scan(target_dir, &target_branch);
+    let mut refine_ctx = ContentRefinementCtx::new(
+        source_dir,
+        target_dir,
+        &source_tree,
+        &target_blobs,
+        &source_history_blobs,
+        &target_scan,
+    );
     let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
     let results = history::compute_branch_status(target_dir, &target_branch, &entry.id, &shas);
     let converted = branch_results_to_statuses(target_dir, &target_branch, &results);
@@ -2081,9 +2200,7 @@ pub fn commit_page_live(
             &entry.integration_policy,
             &commit_deltas,
             commit.committed_unix,
-            &source_tree,
-            &target_blobs,
-            &target_scan,
+            &mut refine_ctx,
             Some((&path_latest, index)),
         );
         if let Some(filter) = query.status_filter {
@@ -2457,7 +2574,19 @@ pub fn commit_details_live(
     {
         let source_tree = tree_blobs(source_dir, &entry.source_branch);
         let target_blobs = tree_blobs(target_dir, &target_branch);
+        let source_history_blobs = blobset::blobs_in_selected_history(
+            source_dir,
+            std::slice::from_ref(&entry.source_branch),
+        );
         let target_scan = target_path_dates_scan(target_dir, &target_branch);
+        let mut refine_ctx = ContentRefinementCtx::new(
+            source_dir,
+            target_dir,
+            &source_tree,
+            &target_blobs,
+            &source_history_blobs,
+            &target_scan,
+        );
         let detail_deltas: Vec<(String, char)> = deltas
             .iter()
             .filter_map(|delta| {
@@ -2472,16 +2601,17 @@ pub fn commit_details_live(
                 }
             })
             .collect();
+        let newer_paths = newer_source_touched_paths(source_dir, &full_sha, &entry.source_branch);
+        let synthetic_latest: HashMap<String, usize> =
+            newer_paths.into_iter().map(|path| (path, 0usize)).collect();
         refine_content_status(
             base_status,
             &target_branch,
             &entry.integration_policy,
             &detail_deltas,
             rfc3339_timestamp(&committed_at),
-            &source_tree,
-            &target_blobs,
-            &target_scan,
-            None,
+            &mut refine_ctx,
+            Some((&synthetic_latest, 1usize)),
         )
     } else {
         base_status
@@ -3136,6 +3266,33 @@ mod tests {
         git(dir, &["rev-parse", "HEAD"])
     }
 
+    fn commit_all_at(dir: &Path, message: &str, iso_date: &str) -> String {
+        git(dir, &["add", "-A"]);
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .env("GIT_AUTHOR_DATE", iso_date)
+            .env("GIT_COMMITTER_DATE", iso_date)
+            .args([
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "--no-verify",
+                "-q",
+                "-m",
+                message,
+            ])
+            .output()
+            .expect("git commit");
+        assert!(
+            out.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        git(dir, &["rev-parse", "HEAD"])
+    }
+
     fn single_registry() -> Registry {
         let subsystems = subsystem_json("hr-management", "HR", "ORG/hr-management", "master", true);
         Registry::from_json(&registry_json(&subsystems), "test").expect("registry")
@@ -3283,27 +3440,86 @@ mod tests {
     }
 
     #[test]
-    fn a_deletion_stays_promotable_when_the_target_lacks_the_file() {
+    fn deletion_is_applied_when_absent_on_target_and_eligible_when_present() {
         let (src, main, _a, _b, registry) = sandbox_status();
+        // `b.txt` is NOT on `development` yet; deleting it on `src` makes both
+        // trees match (neither has `b.txt`), so `commit_page_live` and
+        // `commit_details_live` report `Applied` — nothing left to delete.
         std::fs::remove_file(src.join("b.txt")).expect("remove b.txt");
         let _dropped = commit_all(&src, "Drop b.txt");
         let drop_sha = git(&src, &["rev-parse", "HEAD"]);
-        let statuses = integration_statuses_live(
+        let page = commit_page_live(
             &main,
+            &src,
             &registry,
             &StubGitHubOps::new(),
-            "development",
-            Some("hr-management"),
-            std::slice::from_ref(&drop_sha),
+            &CommitQuery {
+                subsystem_id: "hr-management".to_string(),
+                target_branch: "development".to_string(),
+                page: 1,
+                page_size: 25,
+                search: String::new(),
+                status_filter: None,
+                sort: crate::github::models::CommitSort::Newest,
+                shas: Some(vec![drop_sha.clone()]),
+            },
         )
-        .expect("statuses");
-        assert_eq!(statuses.len(), 1);
-        assert_ne!(
-            statuses[0].status.kind,
+        .expect("page");
+        assert_eq!(page.commits.len(), 1);
+        assert_eq!(
+            page.commits[0].status.kind,
             CommitStatusKind::Applied,
-            "absent on both sides proves nothing; a removal must stay promotable"
+            "file already absent on target means deletion has nothing left to apply"
         );
-        assert_eq!(statuses[0].status.kind, CommitStatusKind::Eligible);
+        let details = commit_details_live(
+            &main,
+            &src,
+            &registry,
+            &StubGitHubOps::new(),
+            "hr-management",
+            &drop_sha,
+            "development",
+        )
+        .expect("details");
+        assert_eq!(details.status.kind, CommitStatusKind::Applied);
+
+        // Now add `b.txt` on `development` with a strictly newer timestamp than
+        // `drop_sha`: target holds newer work, so the deletion must report `Divergent`.
+        git(&main, &["checkout", "-q", "development"]);
+        write(&main, "b.txt", "still on target\n");
+        let _ = commit_all_at(&main, "Add b.txt on development", "2099-01-01T00:00:00Z");
+        let details_newer = commit_details_live(
+            &main,
+            &src,
+            &registry,
+            &StubGitHubOps::new(),
+            "hr-management",
+            &drop_sha,
+            "development",
+        )
+        .expect("details when newer on target");
+        assert_eq!(details_newer.status.kind, CommitStatusKind::Divergent);
+
+        // Now create a file already on `development`, then delete it on `src`
+        // AFTERWARD: the deletion is newer than target and must be `Eligible`.
+        write(&main, "c.txt", "old copy on target\n");
+        let _ = commit_all_at(&main, "Add c.txt on development", "2020-01-01T00:00:00Z");
+        write(&src, "c.txt", "old copy on target\n");
+        let _ = commit_all_at(&src, "Add c.txt on src", "2020-01-01T00:00:00Z");
+        std::fs::remove_file(src.join("c.txt")).expect("remove c.txt");
+        let _ = commit_all_at(&src, "Delete c.txt on src", "2020-01-02T00:00:00Z");
+        let drop_c = git(&src, &["rev-parse", "HEAD"]);
+        let details_eligible = commit_details_live(
+            &main,
+            &src,
+            &registry,
+            &StubGitHubOps::new(),
+            "hr-management",
+            &drop_c,
+            "development",
+        )
+        .expect("details when deletion is newer");
+        assert_eq!(details_eligible.status.kind, CommitStatusKind::Eligible);
     }
 
     #[test]
@@ -4682,5 +4898,52 @@ mod tests {
 
         let status = status_page_for(&src, &main, &single_registry(), &feature);
         assert_eq!(status.kind, CommitStatusKind::Eligible);
+    }
+
+    #[test]
+    fn crlf_only_difference_reports_applied() {
+        let main = tmp("status-crlf-main");
+        init(&main, "master");
+        write(&main, "src/app.ts", "const a = 1;\r\nconst b = 2;\r\n");
+        let _ = commit_all(&main, "main crlf");
+        git(&main, &["branch", "staging"]);
+
+        let src = tmp("status-crlf-src");
+        init(&src, "master");
+        write(&src, "src/app.ts", "const a = 1;\nconst b = 2;\n");
+        let feature = commit_all(&src, "source lf");
+
+        let status = status_page_for(&src, &main, &single_registry(), &feature);
+        assert_eq!(
+            status.kind,
+            CommitStatusKind::Applied,
+            "identical text differing only by CRLF vs LF must report Applied"
+        );
+    }
+
+    #[test]
+    fn older_subsystem_blob_on_target_is_eligible_not_divergent() {
+        let src = tmp("status-behind-src");
+        init(&src, "master");
+        write(&src, "src/app.ts", "v1\n");
+        let _c1 = commit_all_at(&src, "c1", "2020-01-01T00:00:00Z");
+        write(&src, "src/app.ts", "v2\n");
+        let c2 = commit_all_at(&src, "c2", "2020-01-02T00:00:00Z");
+
+        // Target receives c1's exact blob AFTER c2 was committed on source
+        // (e.g., an earlier promotion landed later). Pure timestamps would
+        // falsely mark c2 Divergent; blob-history membership proves target is behind.
+        let main = tmp("status-behind-main");
+        init(&main, "master");
+        write(&main, "src/app.ts", "v1\n");
+        let _ = commit_all_at(&main, "promoted c1 later", "2020-01-03T00:00:00Z");
+        git(&main, &["branch", "staging"]);
+
+        let status = status_page_for(&src, &main, &single_registry(), &c2);
+        assert_eq!(
+            status.kind,
+            CommitStatusKind::Eligible,
+            "target holding an older subsystem blob must stay Eligible regardless of timestamp"
+        );
     }
 }

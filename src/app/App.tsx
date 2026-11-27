@@ -14,27 +14,17 @@ let updateNoticeShown = false;
 
 export default function App() {
   const app = useApp();
-  const { route, pushNotice, dismissNotice, openSettings, checkForUpdates } = app;
+  const { route, pushNotice, openSettings, checkForUpdates } = app;
   const authStatus = app.auth.data;
 
-  // One silent check per session: it tells the operator a release exists, never
-  // installs anything on its own, and stays quiet when the endpoint is unreachable.
+  // One silent check per session: populates the persistent header update pill
+  // when a release exists, never installs anything on its own, and stays quiet
+  // when the endpoint is unreachable.
   useEffect(() => {
     if (updateNoticeShown) return;
     updateNoticeShown = true;
-    void checkForUpdates().then((info) => {
-      if (!info) return;
-      pushNotice({
-        tone: 'info',
-        title: `Version ${info.version} is available`,
-        message: 'Click to open Settings › Updates.',
-        onClick: () => {
-          dismissNotice();
-          openSettings('updates');
-        },
-      });
-    });
-  }, [checkForUpdates, dismissNotice, openSettings, pushNotice]);
+    void checkForUpdates();
+  }, [checkForUpdates]);
 
   // A fixture-mode banner must be visible exactly once per session start. The
   // module-level flag survives the dev server's double-invoked mount, which
@@ -68,6 +58,8 @@ export default function App() {
         onSwitchAccount={handleSwitchAccount}
         targetBranch={app.targetBranch}
         selectedSubsystemName={app.selectedSubsystem?.name ?? null}
+        availableUpdate={app.availableUpdate}
+        onOpenUpdates={() => openSettings('updates')}
         notice={app.notice}
         onDismissNotice={app.dismissNotice}
       >

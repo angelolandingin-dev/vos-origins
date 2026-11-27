@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
+  ArrowDownToLine,
   Building2,
   CheckCircle2,
   ChevronDown,
@@ -21,6 +22,7 @@ import type { AuthStatus } from '../api/types';
 import { isTauriRuntime } from '../api/invoke';
 import { NAV_ITEMS, type Route } from '../app/navigation';
 import type { AsyncResult, Notice } from '../app/context';
+import type { UpdateInfo } from '../app/updater';
 import { cx } from './ui/cx';
 import { Button, GitHubMark, IconButton } from './ui/primitives';
 
@@ -34,6 +36,8 @@ export interface AppShellProps {
   onSwitchAccount: () => void;
   targetBranch: string;
   selectedSubsystemName: string | null;
+  availableUpdate?: UpdateInfo | null;
+  onOpenUpdates?: () => void;
   notice: Notice | null;
   onDismissNotice: () => void;
   children: ReactNode;
@@ -277,6 +281,8 @@ export function AppShell({
   onSwitchAccount,
   targetBranch,
   selectedSubsystemName,
+  availableUpdate,
+  onOpenUpdates,
   notice,
   onDismissNotice,
   children,
@@ -323,6 +329,18 @@ export function AppShell({
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          {availableUpdate && onOpenUpdates ? (
+            <button
+              type="button"
+              onClick={onOpenUpdates}
+              title={`Version ${availableUpdate.version} is available — click to open Settings › Updates`}
+              className="inline-flex h-[23px] cursor-pointer items-center gap-1.5 rounded-[3px] border border-accent/60 bg-accent-soft px-2 text-[11px] font-semibold text-accent-ink transition-colors hover:border-accent hover:bg-accent/20"
+            >
+              <ArrowDownToLine className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span>Update v{availableUpdate.version}</span>
+            </button>
+          ) : null}
+
           <span
             className="inline-flex h-[21px] items-center gap-1.5 rounded-[3px] border border-line bg-raised px-2 text-[11px] text-fg"
             title={status?.message ?? 'Checking the GitHub CLI…'}

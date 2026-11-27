@@ -431,7 +431,7 @@ impl GitHubAdapter {
             .collect();
         entries.sort_by(|a, b| b.occurred_at.cmp(&a.occurred_at));
         let total = entries.len() as u32;
-        entries.truncate(limit.clamp(1, 200) as usize);
+        entries.truncate(limit.clamp(1, 5000) as usize);
 
         Ok(IntegrationHistory {
             target_branch,
