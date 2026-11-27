@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 
 import { api, asApiError } from '../api/invoke';
 import type {
+  CommitStatus,
   CommitSummary,
   DependencyChange,
   PromotionDelivery,
@@ -68,14 +69,6 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const [targetBranchSetting, setTargetBranchState] = useState<string | null>(
     readTargetBranchSetting,
   );
-  const setTargetBranch = useCallback((branch: string) => {
-    setTargetBranchState(branch);
-    try {
-      window.localStorage.setItem(TARGET_BRANCH_KEY, branch);
-    } catch {
-      /* Storage unavailable - the selection simply does not survive a restart. */
-    }
-  }, []);
   const [selectedShas, setSelectedShasState] = useState<string[]>([]);
   const [focusedSha, setFocusedSha] = useState<string | null>(null);
   const [selectedSummaries, setSelectedSummaries] = useState<Map<string, CommitSummary>>(
@@ -96,6 +89,21 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     error: null,
     result: null,
   });
+  const setTargetBranch = useCallback(
+    (branch: string) => {
+      setTargetBranchState(branch);
+      if (!promotion.open) {
+        setSelectedShasState([]);
+        setSelectedSummaries(new Map());
+      }
+      try {
+        window.localStorage.setItem(TARGET_BRANCH_KEY, branch);
+      } catch {
+        /* Storage unavailable - the selection simply does not survive a restart. */
+      }
+    },
+    [promotion.open],
+  );
 
   const auth = useAsyncData(() => api.getAuthStatus(), [dataVersion]);
   const subsystems = useAsyncData(() => api.listSubsystems(), [dataVersion]);
@@ -132,13 +140,34 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
   const selectedSubsystem =
     subsystemList?.find((subsystem) => subsystem.id === selectedSubsystemId) ?? null;
 
-  const promotionDependencies = useAsyncData<DependencyChange[]>(async () => {
-    if (!promotion.open || promotion.shas.length === 0 || !selectedSubsystemId) return [];
+  const promotionDetails = useAsyncData<{
+    dependencies: DependencyChange[];
+    statuses: Record<string, CommitStatus>;
+  }>(async () => {
+    if (!promotion.open || promotion.shas.length === 0 || !selectedSubsystemId) {
+      return { dependencies: [], statuses: {} };
+    }
     const details = await Promise.all(
       promotion.shas.map((sha) => api.getCommitDetails(selectedSubsystemId, sha, targetBranch)),
     );
-    return details.flatMap((detail) => detail.dependencies);
-  }, [promotion.open, promotion.shas, selectedSubsystemId, targetBranch]);
+    const statuses: Record<string, CommitStatus> = {};
+    for (const detail of details) {
+      statuses[detail.sha] = detail.status;
+    }
+    return {
+      dependencies: details.flatMap((detail) => detail.dependencies),
+      statuses,
+    };
+  }, [promotion.open, promotion.shas, selectedSubsystemId, targetBranch, dataVersion]);
+
+  const promotionCommits = useMemo(() => {
+    const liveStatuses = promotionDetails.data?.statuses;
+    if (!liveStatuses) return promotion.commits;
+    return promotion.commits.map((commit) => {
+      const liveStatus = liveStatuses[commit.sha];
+      return liveStatus ? { ...commit, status: liveStatus } : commit;
+    });
+  }, [promotion.commits, promotionDetails.data?.statuses]);
 
   const promotionPreflight = useAsyncData<PromotionPreflight | null>(async () => {
     if (!promotion.open || promotion.shas.length === 0 || !selectedSubsystemId) return null;
@@ -489,9 +518,10 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       openExternal,
       promotion: {
         ...promotion,
-        error: promotion.error ?? promotionDependencies.error,
-        dependencies: promotionDependencies.data ?? [],
-        dependenciesLoading: promotionDependencies.loading,
+        commits: promotionCommits,
+        error: promotion.error ?? promotionDetails.error,
+        dependencies: promotionDetails.data?.dependencies ?? [],
+        dependenciesLoading: promotionDetails.loading,
         preflight: promotionPreflight.data ?? null,
         preflightLoading: promotionPreflight.loading,
       },
@@ -538,7 +568,8 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
       dismissNotice,
       openExternal,
       promotion,
-      promotionDependencies,
+      promotionCommits,
+      promotionDetails,
       promotionPreflight,
       openPromotionDialog,
       closePromotionDialog,

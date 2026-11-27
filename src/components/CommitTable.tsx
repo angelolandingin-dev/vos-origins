@@ -142,19 +142,27 @@ export function CommitTable({
   const commits = useMemo(() => page?.commits ?? [], [page]);
   const total = page?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / Math.max(pageSize, 1)));
-  const pageShas = useMemo(() => commits.map((commit) => commit.sha), [commits]);
+  const isPromotableCommit = (commit: CommitSummary) =>
+    commit.status.kind === 'eligible' || commit.status.kind === 'reverted';
+  const promotablePageShas = useMemo(
+    () => commits.filter(isPromotableCommit).map((commit) => commit.sha),
+    [commits],
+  );
   const selectedList = selectedShas ?? [];
   const selectable = Boolean(selectedShas && onToggleSha && onSelectShas && onClearSelection);
   const allPageSelected =
-    selectable && pageShas.length > 0 && pageShas.every((sha) => selectedList.includes(sha));
-  const somePageSelected = selectable && pageShas.some((sha) => selectedList.includes(sha));
+    selectable &&
+    promotablePageShas.length > 0 &&
+    promotablePageShas.every((sha) => selectedList.includes(sha));
+  const somePageSelected =
+    selectable && promotablePageShas.some((sha) => selectedList.includes(sha));
 
   const handleSelectPage = (checked: boolean) => {
     if (!onSelectShas) return;
     if (checked) {
-      onSelectShas(Array.from(new Set([...selectedList, ...pageShas])));
+      onSelectShas(Array.from(new Set([...selectedList, ...promotablePageShas])));
     } else {
-      onSelectShas(selectedList.filter((sha) => !pageShas.includes(sha)));
+      onSelectShas(selectedList.filter((sha) => !promotablePageShas.includes(sha)));
     }
   };
   const handlePromoteSelected = () => onPromoteSelected?.();
@@ -317,6 +325,7 @@ export function CommitTable({
           <ul aria-label="Commits" className="divide-y divide-line">
             {commits.map((commit) => {
               const selected = selectable && selectedList.includes(commit.sha);
+              const canSelect = isPromotableCommit(commit);
               const focused = focusedSha === commit.sha;
               const interactive = Boolean(onFocusSha);
               return (
@@ -342,9 +351,18 @@ export function CommitTable({
                     )}
                   >
                     {selectable ? (
-                      <span className="mt-0.5" onClick={(event) => event.stopPropagation()}>
+                      <span
+                        className="mt-0.5"
+                        onClick={(event) => event.stopPropagation()}
+                        title={
+                          canSelect || selected
+                            ? undefined
+                            : `Cannot promote: ${commit.status.label} on ${targetBranch}`
+                        }
+                      >
                         <Checkbox
                           checked={selected}
+                          disabled={!canSelect && !selected}
                           onChange={() => onToggleSha?.(commit.sha)}
                           label={`Select commit ${commit.shortSha} – ${commit.subject}`}
                         />
@@ -391,13 +409,14 @@ export function CommitTable({
                   <th scope="col" className="w-10 py-2 pl-2.5 text-left">
                     <Checkbox
                       checked={allPageSelected}
+                      disabled={promotablePageShas.length === 0}
                       inputRef={(element) => {
                         if (element) element.indeterminate = !allPageSelected && somePageSelected;
                       }}
                       onChange={(event) => {
                         handleSelectPage(event.target.checked);
                       }}
-                      label="Select all commits on this page"
+                      label="Select all promotable commits on this page"
                     />
                   </th>
                 ) : null}
@@ -422,6 +441,7 @@ export function CommitTable({
             <tbody>
               {commits.map((commit) => {
                 const selected = selectable && selectedList.includes(commit.sha);
+                const canSelect = isPromotableCommit(commit);
                 const focused = focusedSha === commit.sha;
                 return (
                   <tr
@@ -436,9 +456,17 @@ export function CommitTable({
                     {selectable ? (
                       <td className="py-2 pl-2.5 align-top">
                         {/* Ticking a box must not also move the details selection. */}
-                        <span onClick={(event) => event.stopPropagation()}>
+                        <span
+                          onClick={(event) => event.stopPropagation()}
+                          title={
+                            canSelect || selected
+                              ? undefined
+                              : `Cannot promote: ${commit.status.label} on ${targetBranch}`
+                          }
+                        >
                           <Checkbox
                             checked={selected}
+                            disabled={!canSelect && !selected}
                             onChange={() => {
                               onToggleSha?.(commit.sha);
                             }}
