@@ -275,7 +275,13 @@ function CommitWorkspacePanel({
   };
 
   const statusKind = details.data?.status.kind;
-  const isPromotable = statusKind === 'eligible' || statusKind === 'reverted';
+  const isPromotable =
+    statusKind !== undefined &&
+    statusKind !== 'integrated' &&
+    statusKind !== 'pr_open' &&
+    statusKind !== 'in_review' &&
+    statusKind !== 'applied' &&
+    statusKind !== 'blocked';
   const canPromote = hasMultiSelection || Boolean(details.data && isPromotable);
 
   const diffPanel = (

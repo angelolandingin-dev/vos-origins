@@ -142,10 +142,21 @@ export function CommitTable({
   const commits = useMemo(() => page?.commits ?? [], [page]);
   const total = page?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / Math.max(pageSize, 1)));
-  const isPromotableCommit = (commit: CommitSummary) =>
+  // Green/in-flight/blocked commits cannot be promoted on this target branch;
+  // everything else (eligible, reverted, divergent, superseded, unknown) can
+  // still be ticked individually so operators stay in control and can use
+  // PromotionDialog's preflight + exclusion controls.
+  const isBlockedForSelection = (commit: CommitSummary) =>
+    commit.status.kind === 'integrated' ||
+    commit.status.kind === 'pr_open' ||
+    commit.status.kind === 'in_review' ||
+    commit.status.kind === 'applied' ||
+    commit.status.kind === 'blocked';
+  const isSelectableCommit = (commit: CommitSummary) => !isBlockedForSelection(commit);
+  const isBulkSelectableCommit = (commit: CommitSummary) =>
     commit.status.kind === 'eligible' || commit.status.kind === 'reverted';
   const promotablePageShas = useMemo(
-    () => commits.filter(isPromotableCommit).map((commit) => commit.sha),
+    () => commits.filter(isBulkSelectableCommit).map((commit) => commit.sha),
     [commits],
   );
   const selectedList = selectedShas ?? [];
@@ -325,7 +336,7 @@ export function CommitTable({
           <ul aria-label="Commits" className="divide-y divide-line">
             {commits.map((commit) => {
               const selected = selectable && selectedList.includes(commit.sha);
-              const canSelect = isPromotableCommit(commit);
+              const canSelect = isSelectableCommit(commit);
               const focused = focusedSha === commit.sha;
               const interactive = Boolean(onFocusSha);
               return (
@@ -441,7 +452,7 @@ export function CommitTable({
             <tbody>
               {commits.map((commit) => {
                 const selected = selectable && selectedList.includes(commit.sha);
-                const canSelect = isPromotableCommit(commit);
+                const canSelect = isSelectableCommit(commit);
                 const focused = focusedSha === commit.sha;
                 return (
                   <tr
